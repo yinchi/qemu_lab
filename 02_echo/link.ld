@@ -6,11 +6,13 @@ SECTIONS
 	. = 0x40000000;
 
     /* .text.boot comes from start.S and must be aligned to
-    0x40000000, thus it comes first in our section ordering.
-    
-    All other sections come from main.c or are left empty. */
+    0x40000000, thus it comes first in our section ordering. */
 
 	.text : { *(.text.boot) *(.text*) }
+	/* Explictly placed, so that it doesn't get auto-assigned before .text */
+	.note.gnu.build-id : { *(.note.gnu.build-id) }
+
+	/* All other sections come from main.c or are left empty. */
 	.rodata : { *(.rodata*) }
 	.data : { *(.data*) }
 	.bss : { *(.bss*) *(COMMON) }
