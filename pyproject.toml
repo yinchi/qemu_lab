@@ -1,0 +1,11 @@
+[project]
+name = "qemu-lab"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "bash-kernel>=0.10.0",
+    "ipykernel>=7.3.0",
+]
