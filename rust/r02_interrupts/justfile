@@ -1,0 +1,6 @@
+import '../common.just'
+
+BIN := "r02_interrupts"
+
+# just --list
+default: list

@@ -1,0 +1,6 @@
+import '../common.just'
+
+BIN := "r01_hello"
+
+# just --list
+default: list
