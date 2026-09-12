@@ -88,7 +88,7 @@ works before it becomes load-bearing for later stages.
 
 **Goal:** nothing before this stage needed a heap at all -- this is the first
 genuinely new piece of infrastructure, not a port of something the C version
-already had. Needed outright if Stage 6 picks `fatfs` over `embedded-sdmmc`
+already had. Needed outright if Stage 7 picks `fatfs` over `embedded-sdmmc`
 (the former requires `alloc`, the latter doesn't), and useful generally for
 building up variable-length data -- a line of input, a path -- without a
 fixed-size buffer.
@@ -101,12 +101,67 @@ heap-allocated, growable buffer (`Vec<u8>`/`String`, growing as characters
 arrive rather than a fixed-size array), stop at Enter, echo the whole line
 back. Deliberately the first "accumulate input, then act on the whole line"
 logic in this roadmap, not just an allocator smoke test: it's the same basic
-shape Stage 8's minimal launcher needs (accumulate a line, then dispatch it),
-which Stage 10's full shell builds on again with real editing on top.
+shape Stage 9's minimal launcher needs (accumulate a line, then dispatch it);
+Stage 5 extends this same buffer with real cursor-aware editing, which
+Stage 11's full shell then builds on directly.
 
 ---
 
-## Stage 5: VirtIO block device -- `r05_blkdev`
+## Stage 5: Cursor-aware line editing -- `r05_lineedit`
+
+**Goal:** "echo, but with a movable cursor" -- prove real single-line editing
+(not just Stage 4's append-and-backspace-at-the-end model) works in
+isolation, before it becomes load-bearing infrastructure for Stage 11's shell
+and Stage 12's editor. Follows the same pattern as Stage 3 proving the timer
+in isolation before it became load-bearing: get the fiddly part right on its
+own, in the smallest possible program, rather than debugging it entangled
+with a tokenizer, pipes, or modal editing state. A direct extension of what
+already exists (Stage 3's timer, Stage 4's heap-backed buffer) rather than
+needing anything new from outside the project, which is why it comes right
+after Stage 4 instead of waiting behind the block-device/filesystem work.
+
+Deliberately not [`noline`](https://github.com/rustne-kretser/noline): its
+`sync_editor.rs`/`async_editor.rs` both read the next byte via a plain
+blocking/awaiting `read_exact`, with no timeout hook anywhere, and its
+`input.rs` parser only decides a lone Escape byte *wasn't* the start of a
+sequence once the next byte arrives -- there's no bound on how long that can
+take. Pressing Escape alone, with nothing following, hangs `noline`'s
+`readline()` indefinitely. That fails a specific design principle this stage
+is built around: **every keypress should produce something visible, or
+nothing at all, within a bounded time -- never an indefinite, invisible
+wait.**
+
+**Features:**
+- Extends Stage 4's growable buffer with a cursor position, so inserts and
+  deletes can happen anywhere in the line, not just at the end
+  (`insert(cursor, c)`/`remove(cursor)` in place of `push`/`pop`).
+- A small CSI/ANSI escape parser recognizing at minimum Left/Right arrow
+  (`ESC [ C`/`ESC [ D`) and Delete (`ESC [ 3 ~`) as single compound actions,
+  rather than as separate, individually-meaningless bytes.
+- Stage 3's timer, reused for the first time for something other than its
+  own demo: bounds how long a lone `ESC` byte is held pending disambiguation
+  from the start of a longer sequence, so it always resolves -- as a
+  standalone Escape keypress (shown in standard caret notation, `^[`) or as
+  part of a recognized sequence -- within a short, fixed timeout instead of
+  waiting forever.
+- Redraw logic: on insert or delete, reprint the line's tail from the cursor
+  onward, then reposition the terminal cursor back to where it belongs. The
+  same general technique classic line editors (and, at a coarser 2D grain,
+  `curses`' screen-diffing) use, chosen over relying on terminal-native
+  Insert/Delete-Character escapes (`ESC[@`/`ESC[P`) for portability across
+  whatever terminal emulator is actually connected.
+- Deliberately no history yet -- that's a thin extension added directly on
+  top of this stage's buffer and parser in Stage 11's shell, not duplicated
+  here.
+
+**Demo:** an interactive single-line editor over UART -- type text, move the
+cursor left and right and insert or delete mid-line, with the terminal
+correctly redrawing around each edit; press Enter to echo the final buffer
+content back exactly as it was displayed.
+
+---
+
+## Stage 6: VirtIO block device -- `r06_blkdev`
 
 **Goal:** a "disk" under QEMU, as the substrate the filesystem will sit on.
 
@@ -128,19 +183,18 @@ before any filesystem logic sits on top of it and could mask a transport bug.
 
 ---
 
-## Stage 6: Filesystem -- `r06_fs`
+## Stage 7: Filesystem -- `r07_fs`
 
-**Goal:** turn Stage 5's raw block device into files and directories.
+**Goal:** turn Stage 6's raw block device into files and directories.
 
 **Features -- an explicit choice between two real options:**
 - [`embedded-sdmmc`](https://github.com/rust-embedded-community/embedded-sdmmc-rs) --
   pure `no_std`, **no `alloc`** required, FAT16/32 without long filenames.
-  Needs only a `BlockDevice` trait impl wrapping Stage 5's VirtIO driver.
+  Needs only a `BlockDevice` trait impl wrapping Stage 6's VirtIO driver.
   The lighter-weight starting point, and doesn't need Stage 4 at all.
 - [`fatfs`](https://github.com/rafalh/rust-fatfs) -- more complete (long
   filenames, a more `std::fs`-like API), but requires `alloc` -- so it's
-  "free" once Stage 4 exists anyway, which it will by the time `cosmic-text`
-  needs it.
+  effectively free once Stage 4 exists anyway.
 
 Recommendation: start with `embedded-sdmmc` for this stage specifically (it's
 simpler and doesn't entangle the allocator with filesystem correctness), and
@@ -151,7 +205,7 @@ directory over UART, read a known file's contents and print them.
 
 ---
 
-## Stage 7: EL0 and user programs -- `r07_userspace`
+## Stage 8: EL0 and user programs -- `r08_userspace`
 
 **Goal:** the biggest single stage in this roadmap -- real user/kernel
 separation, not the function-pointer dispatch table the old shell-focused
@@ -168,46 +222,48 @@ a placeholder for "add a scheduler next."
   `unexpected_exception` since `03_interrupts` -- now populated for real.
 - `SVC`-based syscalls, a minimal set to start (`write`, `read`, `exit`).
 - A minimal ELF loader: parse a simple, statically-linked binary read from
-  Stage 6's filesystem, map its segments into the user region, `eret` into
+  Stage 7's filesystem, map its segments into the user region, `eret` into
   EL0 at its entry point.
 - ([jcomes.org's "From Scratch: An AArch64 OS in Rust"](https://jcomes.org/aarch64-os-hello_world)
   covers similar ground on exception levels and early EL1 entry -- worth
   reading as a reference, not following lock-step.)
 
-**Demo:** a tiny statically-linked "user" binary, stored on the Stage 6
+**Demo:** a tiny statically-linked "user" binary, stored on the Stage 7
 filesystem image, that calls the `write` syscall to print
 `hello from userspace` -- loaded from disk, launched at EL0, its output
 observed arriving back through the syscall path over UART.
 
 ---
 
-## Stage 8: a minimal program launcher -- `r08_repl`
+## Stage 9: a minimal program launcher -- `r09_repl`
 
-**Goal:** the bare mechanism Stage 9's utilities need to be individually
-testable at all -- Stage 7's demo got away with no selection mechanism
+**Goal:** the bare mechanism Stage 10's utilities need to be individually
+testable at all -- Stage 8's demo got away with no selection mechanism
 because there was only ever one program to run. "Type a name, find it on
 disk, load it, run it" is unavoidably shell-*shaped* functionality, but it's
 a hard prerequisite here, not the shell itself -- deliberately not the same
-stage as real line editing, history, or pipes; those are Stage 10, once
-Stage 9 gives them something worth piping.
+stage as real line editing, history, or pipes; those are Stage 11, once
+Stage 10 gives them something worth piping.
 
 **Features:**
-- A bare line-reading loop -- no `noline`, no history, no cursor movement,
-  same category of code as `02_echo`'s original polling loop -- accumulating
-  bytes into the heap-allocated growable buffer Stage 4's "echo line" demo
-  already proved, stopping at Enter.
+- A bare line-reading loop -- no history, no cursor movement, same category
+  of code as `02_echo`'s original polling loop -- accumulating bytes into
+  the heap-allocated growable buffer Stage 4's "echo line" demo already
+  proved, stopping at Enter. Deliberately not Stage 5's cursor-aware editor:
+  this stage is a hard prerequisite for testing utilities, not the polished
+  interactive experience Stage 11 aims for.
 - A tokenizer splitting the line into a program name + arguments (the same
-  tokenizer Stage 10's full shell reuses/extends later). The remaining
+  tokenizer Stage 11's full shell reuses/extends later). The remaining
   tokens after the program name are exactly what becomes `argv`, below.
-- Stage 7's ELF loader invoked directly on the named file, read from Stage
-  6's filesystem.
+- Stage 8's ELF loader invoked directly on the named file, read from Stage
+  7's filesystem.
 - **`argc`/`argv` setup, worked out in detail beforehand rather than
   improvised at implementation time:**
   - The tokenizer's output is held in Stage 4's heap, on the kernel (EL1)
     side -- there's no EL0 heap involved, and can't be: at this point the
     new program hasn't run a single instruction yet, including whatever it
     might use to set up a heap of its own.
-  - Starting from `stack_top` (Stage 7's already-mapped EL0 stack region) and
+  - Starting from `stack_top` (Stage 8's already-mapped EL0 stack region) and
     working *downward* -- the direction the stack grows, established all the
     way back in `01_hello/link.ld` -- the kernel writes each argument string,
     then the pointer array, into that memory, tracking where its write-cursor
@@ -224,15 +280,15 @@ Stage 9 gives them something worth piping.
     will end up; setting `SP` to its final value is the last step, not
     something done incrementally alongside the writes. Only then does `eret`
     happen, with `argc` and a pointer to the array passed via `x0`/`x1`.
-- `echo` itself, built as part of this stage rather than deferred to Stage 9:
-  argc/argv setup is meaningless to demo without a program that actually
+- `echo` itself, built as part of this stage rather than deferred to Stage
+  10: argc/argv setup is meaningless to demo without a program that actually
   consumes its arguments, and "print back what I was given" is the minimal
-  possible such program. It becomes the first of Stage 9's utilities in
+  possible such program. It becomes the first of Stage 10's utilities in
   practice, just built one stage early because it's what proves this stage's
   actual subject matter works.
 
 **Demo:** type `echo hello world` and press Enter -- the launcher tokenizes
-the line, loads `echo` via Stage 7's loader, copies `hello` and `world` onto
+the line, loads `echo` via Stage 8's loader, copies `hello` and `world` onto
 its EL0 stack with a correctly-rewritten pointer array, passes `argc`=2 and
 `argv` via `x0`/`x1` -- and `echo` prints `hello world` back, proving the
 whole pipeline end to end, not just that a named program can be loaded at
@@ -240,28 +296,28 @@ all.
 
 ---
 
-## Stage 9: mini-busybox utilities -- `r09_busybox`
+## Stage 10: mini-busybox utilities -- `r10_busybox`
 
 **Goal:** a handful of genuine external EL0 programs to exec -- named after
 [BusyBox](https://busybox.net/), the real-world project built on exactly this
 premise (a small bundle of minimal Unix-utility implementations for
 constrained/embedded systems). Sequenced *before* the full shell rather than
-alongside it: Stage 10's pipes/redirection demo is far more convincing piping
+alongside it: Stage 11's pipes/redirection demo is far more convincing piping
 real, independently-useful programs together than it would be inventing
 throwaway test binaries just to prove the plumbing works.
 
 **Features:**
-- Extends Stage 7's minimal `write`/`read`/`exit` syscall set to
+- Extends Stage 8's minimal `write`/`read`/`exit` syscall set to
   `open`/`read`/`write`/`close` -- needed by everything here (`echo` already
-  exists from Stage 8, built there specifically to prove `argc`/`argv`
+  exists from Stage 9, built there specifically to prove `argc`/`argv`
   setup, and needed none of these). `ls` additionally needs some way to
   enumerate directory entries -- a dedicated `readdir`-style syscall, or
   treating a directory as a readable pseudo-file of raw entry records, are
   both reasonable; worth deciding when this stage is actually reached rather
   than committing now.
 - `cat`, `ls`, `cp` as real, independent programs -- each one loaded through
-  Stage 7's ELF loader like any other, not special-cased, and each one a
-  real consumer of the `argc`/`argv` mechanism Stage 8 built for `echo`.
+  Stage 8's ELF loader like any other, not special-cased, and each one a
+  real consumer of the `argc`/`argv` mechanism Stage 9 built for `echo`.
 - **An open design question worth naming rather than silently deciding**:
   separate small binaries (simpler, each one a clean standalone exercise of
   the loader) vs. one true multi-call "busybox" binary that dispatches on how
@@ -269,36 +325,36 @@ throwaway test binaries just to prove the plumbing works.
   and/or filesystem to support multiple names resolving to the same file
   (traditionally via symlinks), which is new surface area of its own.
 
-**Demo:** run each new utility via Stage 8's minimal launcher: `cat` on a
+**Demo:** run each new utility via Stage 9's minimal launcher: `cat` on a
 known file prints its contents; `ls` lists the root directory read via
-Stage 6's filesystem; `cp` copies a file and the copy's contents are
-confirmed to match -- alongside `echo`, already working since Stage 8.
+Stage 7's filesystem; `cp` copies a file and the copy's contents are
+confirmed to match -- alongside `echo`, already working since Stage 9.
 
 ---
 
-## Stage 10: a real shell, with pipes -- `r10_shell`
+## Stage 11: a real shell, with pipes -- `r11_shell`
 
-**Goal:** upgrade Stage 8's bare launcher into something worth typing at
-regularly, now that Stage 9 gives it real programs worth combining -- not a
+**Goal:** upgrade Stage 9's bare launcher into something worth typing at
+regularly, now that Stage 10 gives it real programs worth combining -- not a
 rebuild from scratch, an extension of the same tokenizer and ELF-loader
-invocation Stage 8 already established.
+invocation Stage 9 already established.
 
 **Features:**
-- Real line editing with history, replacing Stage 8's bare polling loop:
-  either hand-built, or via [`noline`](https://github.com/rustne-kretser/noline)
-  (`no_std`, `embedded_io::Read`/`Write`-based, no-alloc static-buffer
-  construction confirmed via its own source -- see the earlier investigation
-  into its `input.rs` state machine). Note from that investigation: `noline`
-  owns the raw byte stream itself and does its own internal parsing -- there's
-  no seam to bolt an external parser like `vte` onto it, nor any need to.
-- Redirection (`>`/`<`): close to free, given Stage 9's `open`/`read`/
+- Real line editing with history, reusing Stage 5's cursor-aware buffer, CSI
+  parser, and redraw logic directly rather than pulling in `noline` -- it
+  doesn't satisfy Stage 5's bounded-wait requirement (confirmed via its own
+  source), and by this point we already have a working replacement anyway.
+  History is a thin addition on top: a ring buffer of past lines, plus
+  Up/Down-arrow handling (`ESC [ A`/`ESC [ B`) recognized by the same parser
+  that already handles Left/Right.
+- Redirection (`>`/`<`): close to free, given Stage 10's `open`/`read`/
   `write`/`close` syscalls already exist -- `cmd > file` is just "open the
   file, hand its descriptor to `cmd` as stdout."
 - **Pipes (`cmd1 | cmd2`), via temp files -- deliberately not true streaming
   concurrency.** Real pipe semantics need two processes actually running at
-  once, which Stage 7 explicitly rules out. Early MS-DOS hit this identical
+  once, which Stage 8 explicitly rules out. Early MS-DOS hit this identical
   single-tasking wall and solved it the same way we will: run `cmd1` to
-  completion with stdout redirected to a temp file on Stage 6's filesystem,
+  completion with stdout redirected to a temp file on Stage 7's filesystem,
   then run `cmd2` to completion with stdin redirected from that file, then
   delete it. **Named limitation, not a bug to fix later:** this only works
   for pipelines whose stages produce a *finite* amount of output that fits on
@@ -306,13 +362,13 @@ invocation Stage 8 already established.
 
 **Demo:** a `> ` prompt with working cursor movement and command history;
 `echo hello | cat` and `ls > listing.txt` both work via the temp-file
-mechanism above, using Stage 9's real utilities rather than synthetic test
+mechanism above, using Stage 10's real utilities rather than synthetic test
 programs; control returns to the prompt once each stage exits (via the
-`exit` syscall from Stage 7).
+`exit` syscall from Stage 8).
 
 ---
 
-## Stage 11 (capstone): a vi-like full-screen editor -- `r11_editor`
+## Stage 12 (capstone): a vi-like full-screen editor -- `r12_editor`
 
 **Goal:** genuinely harder than the shell's line editing, not just a bigger
 version of it -- a full-screen editor needs *both* directions of the VT100
@@ -345,12 +401,14 @@ big the screen even is.
   which is a good sign, but it doesn't declare `#![no_std]` explicitly, so
   treat it as "plausible, verify with an actual build against
   `aarch64-unknown-none` before relying on it" rather than confirmed.
-- **Conclusion:** no combination of existing crates removes the need to write
-  our own input parser -- that part is unavoidably new code either way.
-  Worth deciding once this stage is reached whether `ratatui`+a hand-written
-  `Backend` is worth its dependency weight over just hand-rolling both
-  directions with `anes` (or nothing at all) -- a real, open choice, not
-  settled here.
+- **Conclusion:** no combination of existing crates removes the need for our
+  own input parser -- but that parser already exists, as of Stage 5, for the
+  single-line case (CSI recognition, bounded ESC-timeout disambiguation).
+  What's newly needed here is extending it to drive a full 2D screen instead
+  of a single line's tail-reprint. Worth deciding once this stage is reached
+  whether `ratatui` + a hand-written `Backend` is worth its dependency weight
+  over extending Stage 5's approach directly (or `anes`) for the
+  buffer-diffing half -- a real, open choice, not settled here.
 
 **New features specific to this stage:**
 - Terminal-size discovery: no crate exists for this (checked). The
@@ -359,12 +417,13 @@ big the screen even is.
   arrives on.
 - A multi-line in-memory buffer, modal editing (insert vs. command mode, at
   minimum), and screen-region redraw logic driven by cursor-positioning
-  escapes -- the genuinely new work this stage exists for.
+  escapes -- extending Stage 5's single-line reprint-the-tail technique to a
+  full 2D screen, the genuinely new work this stage exists for.
 - File access reuses the `open`/`read`/`write`/`close` syscalls already
-  established in Stage 9 -- nothing new needed on that front, and the editor
-  is launched the same way as any other program via Stage 10's shell.
+  established in Stage 10 -- nothing new needed on that front, and the
+  editor is launched the same way as any other program via Stage 11's shell.
 
-**Demo:** launch the editor from Stage 10's shell against a file already
+**Demo:** launch the editor from Stage 11's shell against a file already
 present on the disk image, edit its text on-screen, save it, then -- to prove
 persistence, not just an in-memory illusion -- restart QEMU against the same
 `disk.img` and confirm the edit is still there.
