@@ -1,0 +1,6 @@
+import '../common.just'
+
+BIN := "r03_timer"
+
+# just --list
+default: list
