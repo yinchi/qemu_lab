@@ -3,7 +3,8 @@
     "rust-analyzer.linkedProjects": [
         "rust/r01_hello/Cargo.toml",
         "rust/r02_interrupts/Cargo.toml",
-        "rust/r03_timer/Cargo.toml"
+        "rust/r03_timer/Cargo.toml",
+        "rust/r04_alloc/Cargo.toml"
     ],
     "rust-analyzer.cargo.target": "aarch64-unknown-none-softfloat",
     "rust-analyzer.checkOnSave.allTargets": false

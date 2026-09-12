@@ -1,0 +1,6 @@
+import '../common.just'
+
+BIN := "r04_alloc"
+
+# just --list
+default: list
