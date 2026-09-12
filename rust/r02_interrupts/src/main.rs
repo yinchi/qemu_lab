@@ -146,7 +146,7 @@ fn handle_char(c: u8, out: &Uart) {
     match c {
         32..=126 => out.putc(c),
         b'\r' | b'\n' => out.puts("\r\n"), // carriage return / newline
-        0x1b => out.putc(b'^'),            // escape character
+        0x1b => out.puts("^["),            // escape character, shown as ^[ (standard caret notation)
         0x08 => out.puts("\x08 \x08"),     // backspace character
         _ => {}
     }
