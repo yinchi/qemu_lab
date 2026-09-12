@@ -1,0 +1,19 @@
+[package]
+name = "r05_lineedit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aarch64-cpu = "11.2.0"
+arm-gic = "0.9.1"
+fdt = "0.1.5"
+linked_list_allocator = "0.10.6"
+
+[build-dependencies]
+cc = "1"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

@@ -1,0 +1,6 @@
+import '../common.just'
+
+BIN := "r05_lineedit"
+
+# just --list
+default: list
