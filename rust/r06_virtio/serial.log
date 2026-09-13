@@ -1,0 +1,6 @@
+raw dtb_ptr: 0x0
+Discovered: 32 virtio-mmio slot(s)
+Block device found: 8 sectors.
+Font read from disk.
+virtio-gpu framebuffer ready.
+Printable ASCII rendered and flushed to the display.
