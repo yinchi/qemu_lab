@@ -14,7 +14,7 @@ build:
 
 # ELF file inspection on the built binary (copied out of target/ by `just build`)
 elf:
-    bash elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
+    bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
 
 # Builds disk.img from the raw font file -- the actual demo's "file read off disk".
 disk:
