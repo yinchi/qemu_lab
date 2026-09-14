@@ -150,12 +150,17 @@ pub fn build_key_names() -> BiMap<u16, &'static str> {
 /// Tracks which keys are currently held, indexed directly by keycode.
 pub struct KeyState {
     held: [bool; MAX_CODE],
+    /// The last key that was pressed (if still held), else None.
+    /// In other words, `None` may indicate that no key is currently held, or that the last
+    /// key pressed has been released.
+    last_held: Option<u16>,
 }
 
 impl KeyState {
     pub const fn new() -> Self {
         Self {
             held: [false; MAX_CODE],
+            last_held: None,
         }
     }
 
@@ -166,10 +171,30 @@ impl KeyState {
     /// the key is already recorded as held, so `set` returns `false` and nothing redraws.
     pub fn set(&mut self, code: u16, down: bool) -> bool {
         let idx = code as usize;
+
+        // Early return if the index is out of bounds or the key's state hasn't changed.
+        // Ensures correct last_held handling by only updating it when a key's state actually
+        // changes.
         if idx >= MAX_CODE || self.held[idx] == down {
             return false;
         }
+
+        // Update the held state for this key.
         self.held[idx] = down;
+
+        // Update the last_held field if this is a key-down or a key-up of the last_held key.
+        if down {
+            // Key-down
+            self.last_held = Some(code);
+        } else if self.last_held == Some(code) {
+            // Key-up of the last_held key. Clear the last_held field.
+            // We do not keep track of previously held keys beyond the last one; this
+            // is consistent with most systems where releasing the last key pressed stops
+            // any auto-repeat behavior.
+            self.last_held = None;
+        }
+
+        // Return success status.
         true
     }
 
@@ -199,6 +224,18 @@ impl KeyState {
             s.push_str("(none)");
         }
         s
+    }
+
+    /// Returns the last held key, if any.
+    pub fn describe_last_held(&self) -> String {
+        // SAFETY: see this method's doc comment.
+        match self.last_held {
+            Some(code) => match unsafe { crate::static_ref!(KEY_NAMES) }.get_by_left(&code) {
+                Some(name) => String::from(*name),
+                None => String::from("K{code}"),
+            },
+            None => String::from("(none)"),
+        }
     }
 }
 

@@ -74,7 +74,8 @@ fn show_keyboard_state(
     uart: &mut UartWriter,
 ) {
     show_row(console, 0, "Active keys: ", &keys.describe(), uart);
-    show_row(console, 1, "Locks: ", &locks.describe(), uart);
+    show_row(console, 1, "Last held key: ", &keys.describe_last_held(), uart);
+    show_row(console, 2, "Locks: ", &locks.describe(), uart);
 }
 
 /// Sets up the GIC distributor/CPU interface and the priority mask. Called once; `gic_enable`
