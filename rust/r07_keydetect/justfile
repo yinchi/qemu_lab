@@ -1,0 +1,30 @@
+BIN := "r07_keydetect"
+
+# just --list
+default: list
+
+# List available recipes.
+list:
+    cd {{justfile_directory()}} && just --list
+
+# Build the binary and copy it out of the target/ directory as an ELF file
+build:
+    cd {{justfile_directory()}} && cargo build --target aarch64-unknown-none-softfloat --release
+    cd {{justfile_directory()}} && cp target/aarch64-unknown-none-softfloat/release/{{BIN}} {{BIN}}.elf
+
+# ELF file inspection on the built binary (copied out of target/ by `just build`)
+elf:
+    bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
+
+# Builds disk.img from the raw font file -- the actual demo's "file read off disk".
+disk:
+    cp font/spleen.raw disk.img
+
+# Run with serial connected to the terminal (stdio), the font disk over virtio-blk, a
+# virtio-gpu display, and a virtio-keyboard input device.
+run: build disk
+    qemu-system-aarch64 -M virt -cpu max -nodefaults -serial mon:stdio \
+        -drive if=none,file=disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
+        -kernel {{BIN}}.elf

@@ -324,10 +324,25 @@ stage as real line editing, history, or pipes; those are Stage 12, once
 Stage 11 gives them something worth piping.
 
 **Features:**
+- A new token-emission layer, on top of (not inside) Stage 7's keymap module:
+  turns one raw key event plus the current modifier/lock state -- Stage 7's
+  `KeyState` (held keys) and `LockState` (CapsLock/NumLock/ScrollLock toggles)
+  -- into an actual character or control action, e.g. `KEY_A` becomes `'a'`
+  or `'A'` depending on Shift/CapsLock, `Ctrl`+letter becomes a control
+  character, Enter becomes the line terminator. This is the direct
+  replacement for `02_echo`'s "read one UART byte" primitive, and the first
+  place anything in this roadmap actually *acts on* Stage 7's held/lock
+  state rather than just displaying it back (all Stage 7's own demo ever
+  did). Deliberately a separate module from Stage 7's `KeyState`/`LockState`:
+  those two are pure state-tracking, updated the same way regardless of who
+  reads them; this one is interpretation, consumed differently by a shell
+  (wants characters) than a raw-mode app might (wants keycodes directly) --
+  keeping them apart keeps that seam available instead of baking one
+  consumer's needs into the state layer itself.
 - A bare line-reading loop -- no history, no cursor movement, same category
-  of code as `02_echo`'s original polling loop, just now consuming Stage 7's
-  keyboard events (via its keymap layer) instead of raw UART bytes --
-  accumulating characters into the heap-allocated growable buffer Stage 4's
+  of code as `02_echo`'s original polling loop, just now pulling characters
+  from the token layer above instead of reading raw UART bytes --
+  accumulating them into the heap-allocated growable buffer Stage 4's
   "echo line" demo already proved, stopping at Enter. Deliberately not Stage
   5's cursor-aware editor: this stage is a hard prerequisite for testing
   utilities, not the polished interactive experience Stage 12 aims for.
