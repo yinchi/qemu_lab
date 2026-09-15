@@ -1,0 +1,10 @@
+spleen.raw is the DOS/VGA raw font dump from Spleen 2.2.0
+(https://github.com/fcambus/spleen), at dos/spleen.raw.
+
+Copyright (c) 2018-2026, Frederic Cambus
+Released under the BSD 2-Clause license (SPDX: BSD-2-Clause).
+
+Format: 256 glyphs x 16 bytes each, one byte per row, 8x16 pixels,
+1 bit per pixel (MSB = leftmost pixel), indexed directly by character
+code -- the same layout the real VGA BIOS's "load user-defined font"
+call (INT 10h, AH=11h) expects.

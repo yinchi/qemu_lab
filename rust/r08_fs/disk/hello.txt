@@ -1,0 +1,8 @@
+Hello, filesystem!
+
+/
+├ fonts/
+│ ├ NOTICE
+│ └ spleen.raw
+├ hello.sh*
+└ hello.txt

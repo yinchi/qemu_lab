@@ -42,6 +42,24 @@ earlier pivot -- it simply isn't extended by the stages that follow it.
 Every crate named below was checked to actually exist, be `no_std`-compatible,
 and fit this use case before being included here -- not assumed from memory.
 
+From Stage 8 onward, wherever this roadmap layers Unix/POSIX-shaped behavior
+(naming, display conventions, eventually `ls`/`cat`/`cp`, eventually
+symlinks) over mechanisms that can't actually provide full POSIX semantics
+(FAT has no inode indirection, so no hard links; nothing here is kernel-level
+enough for a symlink to be transparent rather than an opt-in convention),
+**Cygwin is the reference, not a target to fully match.** Cygwin -- a
+POSIX-styled surface over NTFS/FAT with openly documented gaps, in real use
+for 25+ years -- is proof this pattern works honestly: match POSIX styling
+and behavior wherever it's cheap, and be explicit about where it isn't,
+rather than either overclaiming compatibility or reverting to a DOS-native
+style instead (checked, not assumed: "DOS with long filenames, styled
+consistently" isn't actually a real historical lineage either -- LFN was a
+Windows-95 GUI-era addition, and classic DOS command-line tools mostly
+stayed 8.3-only for their whole working life). Each stage that touches this
+boundary decides its own scoped subset of what to actually implement --
+this is a standing design reference, not a commitment to Cygwin feature
+parity.
+
 ---
 
 ## Stage 1: Rust bare-metal foundation -- `r01_hello`
@@ -264,22 +282,67 @@ any line-editing logic built on top of it later.
 
 **Goal:** turn Stage 6's raw block device into files and directories.
 
-**Features -- an explicit choice between two real options:**
-- [`embedded-sdmmc`](https://github.com/rust-embedded-community/embedded-sdmmc-rs) --
-  pure `no_std`, **no `alloc`** required, FAT16/32 without long filenames.
-  Needs only a `BlockDevice` trait impl wrapping Stage 6's VirtIO driver.
-  The lighter-weight starting point, and doesn't need Stage 4 at all.
-- [`fatfs`](https://github.com/rafalh/rust-fatfs) -- more complete (long
-  filenames, a more `std::fs`-like API), but requires `alloc` -- so it's
-  effectively free once Stage 4 exists anyway.
+**Filesystem crate:** [`hadris-fat`](https://crates.io/crates/hadris-fat) --
+FAT12/16/32 with long-filename (VFAT) support, built on `embedded-io`, no
+`std` needed (`default-features = false`, `features = ["alloc", "lfn",
+"read", "write", "sync"]`). Not the original plan -- both crates named here
+originally, `embedded-sdmmc` and [`fatfs`](https://github.com/rafalh/rust-fatfs),
+were checked to exist and claim `no_std` support before being written down,
+same standard as everything else in this doc, but `fatfs` turned out
+unbuildable in a genuinely no_std configuration on a modern toolchain: its
+published 0.3.6 depends on `core_io`, an abandoned polyfill crate whose build
+script hard-panics on any rustc newer than ~2021 (a hardcoded compiler
+commit-hash lookup table, no viable override). `embedded-sdmmc` remains a
+real, lighter-weight alternative (pure no_std, no `alloc` at all) if
+`hadris-fat`'s heavier dependency tree or `alloc` requirement ever becomes a
+problem -- not needed here since Stage 4 already provides the allocator.
 
-Recommendation: start with `embedded-sdmmc` for this stage specifically (it's
-simpler and doesn't entangle the allocator with filesystem correctness), and
-reconsider `fatfs` later only if long filenames turn out to matter.
+The block device is wrapped in a byte-addressable `Read`/`Write`/`Seek`
+adapter (`fat_io.rs`'s `BlkIo`) over Stage 6/7's IRQ-driven `Blk`, capped to
+one sector per call by design; `hadris-fat`'s own `read_exact`/cluster-chain
+logic drives however many calls are needed for a larger request, with a
+read-modify-write on the write side wherever a call doesn't land on a whole
+sector -- unavoidable for FAT-table/directory-entry writes specifically,
+since those sectors are shared across many files' metadata, not owned by one
+file the way a data cluster is.
 
-**Demo:** format a small FAT image on the host (`mkfs.fat`), list the root
-directory and read a known file's contents, printing both via Stage 6's
-display.
+**Design paradigm:** the Cygwin reference from this roadmap's intro, applied
+concretely -- POSIX-styled directory listing (closer in spirit to `ls -1F`
+than DOS's `<DIR>`-suffixed columns) and lowercase, case-sensitive naming,
+over FAT storage that can't back the parts of POSIX that would need real
+inode indirection: no hard links, ever, on this filesystem. Symlinks, if a
+later stage ends up needing them, are planned as Cygwin's own mechanism
+verbatim -- a plain file whose content is `!<symlink>` followed by the
+target path, the DOS `SYSTEM` attribute bit as a cheap candidate filter --
+not a bespoke lookalike, and not kernel-transparent: only ever followed by a
+program that chooses to (Stage 11's `cp`/`cat`, a future shell's exec
+lookup), never by this stage's filesystem layer itself. Not implemented
+here -- there's no consumer for it until a later stage gives it one.
+
+**Executable bit:** FAT has no execute-permission bit at all -- DOS never
+needed one, since `COMMAND.COM` dispatched purely on filename extension
+(`.COM`/`.EXE`/`.BAT`), never on stored metadata. This stage claims the
+other reserved attribute bit (`0x40`; `0x80` stays unclaimed) as this
+project's own convention for it, applied to exactly one user (there's no
+multi-user model here at all, so no owner/group/other distinction is even
+meaningful) -- `hadris-fat`'s `FatVolume::set_attributes` sets it, `ls
+-1F`'s `*` displays it. Deliberately a claim, not a guarantee, same as real
+POSIX: `chmod +x` on a file full of garbage still makes `ls -F` show `*`
+there too, and the real failure only ever surfaces later, at `execve()`,
+as its own distinct error (`ENOEXEC`) -- fully decoupled from what `ls`
+already displayed. This stage's demo marks a `.sh` file, which nothing on
+this system can actually run (no interpreter exists, and none is planned),
+specifically to demonstrate that split concretely: setting and displaying
+the bit needs no loader to exist yet, and (once Stage 9's loader does
+exist) actually enforcing it -- refusing to run an ELF file with the bit
+cleared -- is a separate, later decision, not something this stage commits
+to either way.
+
+**Demo:** format a small FAT image on the host (`mkfs.fat` + `mtools`, no
+loopback mount required -- see `r08_fs/justfile`), list the root directory,
+mark a file executable via `hadris-fat`'s write path (its first real
+exercise in this program -- everything above it only ever reads) and read
+a known file's contents, printing all of it via Stage 6's display.
 
 ---
 

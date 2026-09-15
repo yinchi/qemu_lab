@@ -7,7 +7,8 @@
         "rust/r04_alloc/Cargo.toml",
         "rust/r05_lineedit/Cargo.toml",
         "rust/r06_virtio/Cargo.toml",
-        "rust/r07_keydetect/Cargo.toml"
+        "rust/r07_keydetect/Cargo.toml",
+        "rust/r08_fs/Cargo.toml"
     ],
     "rust-analyzer.cargo.target": "aarch64-unknown-none-softfloat",
     "rust-analyzer.checkOnSave.allTargets": false

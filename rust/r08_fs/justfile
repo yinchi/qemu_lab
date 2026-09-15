@@ -1,0 +1,53 @@
+BIN := "r08_fs"
+
+# Fixed mkfs.fat volume serial and mtools file-timestamp epoch (2024-01-01 UTC) so `just disk`
+# produces a byte-identical disk.img every run instead of a fresh random serial/timestamp each
+# time -- otherwise every rebuild would show up as a spurious diff on a file that's committed
+# as a build artifact (same convention as r06/r07's font-only disk.img).
+VOLUME_SERIAL := "00000000"
+SOURCE_DATE_EPOCH := "1704067200"
+
+# just --list
+default: list
+
+# List available recipes.
+list:
+    cd {{justfile_directory()}} && just --list
+
+# Build the binary and copy it out of the target/ directory as an ELF file
+build:
+    cd {{justfile_directory()}} && cargo build --target aarch64-unknown-none-softfloat --release \
+        && cp target/aarch64-unknown-none-softfloat/release/{{BIN}} {{BIN}}.elf
+
+# ELF file inspection on the built binary (copied out of target/ by `just build`)
+elf:
+    bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
+
+# Builds disk.img: a 16 MiB FAT16 volume (dosfstools's mkfs.fat won't create a FAT16
+# filesystem below ~16 MiB -- it picks FAT12 instead), populated via mtools (mcopy) rather
+# than a loopback mount -- no root/mount required, and reproducible byte-for-byte given fixed
+# inputs. The volume label is deliberately set via `mlabel` in a separate step rather than
+# mkfs.fat's own `-n`: mkfs.fat stamps its volume-label directory entry with the real host
+# wall-clock time regardless of SOURCE_DATE_EPOCH (unlike mtools' own utilities, which honor
+# it), so `-n` alone would make disk.img differ on every rebuild.
+disk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{justfile_directory()}}
+    rm -f disk.img
+    truncate -s 16M disk.img
+    mkfs.fat -F 16 -i {{VOLUME_SERIAL}} disk.img
+    SOURCE_DATE_EPOCH={{SOURCE_DATE_EPOCH}} mlabel -i disk.img ::R08FS
+    SOURCE_DATE_EPOCH={{SOURCE_DATE_EPOCH}} mcopy -i disk.img disk/hello.txt ::/hello.txt
+    SOURCE_DATE_EPOCH={{SOURCE_DATE_EPOCH}} mcopy -i disk.img disk/hello.sh ::/hello.sh
+    SOURCE_DATE_EPOCH={{SOURCE_DATE_EPOCH}} mmd -i disk.img ::/fonts
+    SOURCE_DATE_EPOCH={{SOURCE_DATE_EPOCH}} mcopy -i disk.img disk/fonts/spleen.raw ::/fonts/spleen.raw
+
+# Run with serial connected to the terminal (stdio), the FAT-formatted disk over virtio-blk,
+# and a virtio-gpu display. No virtio-keyboard-device: this stage's demo (list the root
+# directory, read a known file's contents) takes no interactive input.
+run: build disk
+    qemu-system-aarch64 -M virt -cpu max -nodefaults -serial mon:stdio \
+        -drive if=none,file=disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
+        -device virtio-gpu-device \
+        -kernel {{BIN}}.elf
