@@ -39,6 +39,12 @@ impl Framebuffer {
             (self.ptr.add(self.pixel_offset(x, y)) as *mut u32).write_volatile(bgrx);
         }
     }
+
+    /// Gets the BGRX8888 color of the pixel at (`x`, `y`).
+    pub fn get_pixel(&self, x: usize, y: usize) -> u32 {
+        debug_assert!(x < self.width && y < self.height);
+        unsafe { (self.ptr.add(self.pixel_offset(x, y)) as *const u32).read_volatile() }
+    }
 }
 
 /// A software text console: cursor-addressable character cells rendered as glyphs into a raw
@@ -152,20 +158,54 @@ impl<'a> Console<'a> {
         }
     }
 
+    /// Scrolls the console up by one row.
+    /// 
+    /// We don't have a character-based buffer, so scrolling involves moving the pixel data up
+    /// by one row's height and clearing the last row.
+    pub fn scroll_up(&mut self, bg: u32) {
+        let row_height = GLYPH_HEIGHT;
+        let fb_width = self.fb.width;
+        let fb_height = self.fb.height;
+
+        // Move the pixel data up by one row's height.
+        for y in 0..(fb_height - row_height) {
+            for x in 0..fb_width {
+                self.fb.put_pixel(x, y, self.fb.get_pixel(x, y + row_height));
+            }
+        }
+
+        // Clear the last row.
+        self.clear_row(self.rows - 1, bg);
+    }
+
     /// Writes one character of text at the cursor, advancing it. `\r`, `\n`, and `\t` move the
-    /// cursor instead of drawing a glyph for them -- they're structural, not visible content, so
-    /// intercepting them here (rather than leaving it to a caller-side pre-split on `\n`, or
-    /// letting them fall through to `unicode_to_cp437` and draw whatever CP437 glyph happens to
-    /// occupy that byte) is what makes arbitrary UTF-8 text safe to feed straight through.
-    /// Anything else goes through `unicode_to_cp437` and `putc`, same as before.
+    /// cursor instead of drawing a glyph for them (rather than letting them fall through to
+    /// `unicode_to_cp437` and draw whatever CP437 glyph happens to occupy that byte).
+    /// 
+    /// User or system programs can use this function directly if treating the console as a dumb
+    /// terminal,but for more advanced terminal handling (e.g. a TUI), they might want to manage
+    /// cursor movement and screen updates themselves.
     pub fn write_char(&mut self, c: char, fg: u32, bg: u32) {
         match c {
             '\n' => {
+                // Treat newlines as \r\n, moving the cursor to the start of the next line.
                 self.cursor_col = 0;
+
+                // If we are already on the last row, scroll up to make room for the new line.
+                if self.cursor_row >= self.rows - 1 {
+                    // Scroll the console up by one row.
+                    self.scroll_up(bg);
+                }
+
+                // Move the cursor to the start of the next line.
                 self.cursor_row = (self.cursor_row + 1).min(self.rows - 1);
+
             }
             '\r' => self.cursor_col = 0,
             '\t' => {
+                // Move the cursor to the next tab stop.
+                // Provides a default action, but user apps should ideally handle tabs
+                // themselves for precise control rather than passing them to this function.
                 let next_stop = (self.cursor_col / TAB_WIDTH + 1) * TAB_WIDTH;
                 self.cursor_col = next_stop.min(self.cols - 1);
             }

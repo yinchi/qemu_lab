@@ -98,10 +98,7 @@ fn gic_enable(spi: u32) {
         .expect("failed to enable interrupt");
 }
 
-/// Reads a whole file into a freshly allocated `Vec<u8>` -- `FileReader::read_to_vec` already does
-/// exactly this (and more carefully: it bounds its up-front allocation against the volume's actual
-/// capacity, where a hand-rolled loop trusting `entry.len()` outright would let a corrupt directory
-/// entry force an arbitrarily large allocation), so there's no reason to re-loop it ourselves.
+/// Reads a whole file into a freshly allocated `Vec<u8>`
 fn read_file_to_vec(
     vol: &FatVolume<BlkIo>,
     entry: &hadris_fat::sync::FileEntry,
