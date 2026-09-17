@@ -472,6 +472,19 @@ throwaway test binaries just to prove the plumbing works.
   treating a directory as a readable pseudo-file of raw entry records, are
   both reasonable; worth deciding when this stage is actually reached rather
   than committing now.
+- `open()` needs somewhere to put its result -- Stage 9's `FileDescriptor`
+  dispatch (`r09_userspace/src/fd.rs`) is a fixed `0`/`1`/`2` match, not a
+  real per-process table, since nothing before this stage ever needed a
+  *new* fd number. This stage promotes it into an actual small array: add a
+  `File(handle)` variant to the existing `FileDescriptor` enum, replace
+  `for_fd`'s fixed match with a lookup into a `static mut` table (matching
+  `devices.rs`'s existing `BLK`/`GPU`/`CONSOLE`/`IDMAP` pattern), and give
+  `fd.rs` a `reset_for_launch()` that fills the table with the standard
+  three defaults -- called from `process.rs`'s `run_program`, the same
+  per-launch step that already sets `SPSR_EL1`/`ELR_EL1`/`SP_EL0` and
+  delegates to `elf::load`. `cp` -- needing a source and a destination open
+  at once -- is the first real exercise of more than the fixed three slots
+  being occupied simultaneously.
 - `cat`, `ls`, `cp` as real, independent programs -- each one loaded through
   Stage 9's ELF loader like any other, not special-cased, and each one a
   real consumer of the `argc`/`argv` mechanism Stage 10 built for `echo`.
@@ -494,7 +507,12 @@ confirmed to match -- alongside `echo`, already working since Stage 10.
 **Goal:** upgrade Stage 10's bare launcher into something worth typing at
 regularly, now that Stage 11 gives it real programs worth combining -- not a
 rebuild from scratch, an extension of the same tokenizer and ELF-loader
-invocation Stage 10 already established.
+invocation Stage 10 already established. A further goal, once this stage's
+own feature set is solid: `kernel_main` boots directly into this shell's own
+read-eval loop and never returns from it, replacing whatever ad hoc,
+hardcoded launch sequence earlier stages used for their own demos -- the
+same role a real Unix kernel's `init` (PID 1) plays, the one process the
+kernel starts directly, with everything else descending from it.
 
 **Features:**
 - Real line editing with history, reusing Stage 5's cursor-aware buffer
@@ -514,8 +532,65 @@ invocation Stage 10 already established.
   with Up/Down just two more keycodes Stage 7's driver already delivers as
   discrete events, no new parsing needed.
 - Redirection (`>`/`<`): close to free, given Stage 11's `open`/`read`/
-  `write`/`close` syscalls already exist -- `cmd > file` is just "open the
-  file, hand its descriptor to `cmd` as stdout."
+  `write`/`close` syscalls -- and Stage 11's own promotion of Stage 9's
+  fixed fd dispatch into a real per-process table. `cmd > file` is the
+  launcher opening the file itself, then rewriting the *child's* stdout
+  entry in that table -- before `run_program`'s `enter_el0()` call -- to
+  point at it, overriding the default `Console` entry `reset_for_launch()`
+  would otherwise leave in place. Not something `cmd` itself does or needs
+  to know about.
+- **Design note on nesting, not a commitment to `()` subshell syntax yet**:
+  the redirection mechanism above generalizes to nested scopes for free if
+  the `0`/`1`/`2` triple is modeled as a stack (e.g. `Vec<[FileDescriptor;
+  3]>` in `fd.rs`) rather than a single overridable slot -- pushing a
+  modified copy of the current triple on entering a scope (a redirected
+  command, or eventually a subshell), popping back to whatever was there
+  before on leaving it. This is what would make `( cmd1 > innerfile; cmd2 )
+  > outerfile`-style nesting correct: `cmd2` needs to see the outer
+  redirection again once `cmd1`'s own, more specific one pops, not the
+  shell's original console defaults. Higher-numbered slots (the
+  `File(handle)` entries `open()` hands out) stay outside this stack --
+  they belong to whichever program opened them and are closed by its own
+  `close()` calls, not scoped by the shell's redirection nesting.
+- **There is one fd table, not one per program.** Since at most one program
+  is ever resident (the same reasoning behind Part 2's single page table in
+  Stage 9), `open()`'s table is a single kernel-owned structure, reset to
+  the standard three defaults (or given specific redirection overrides) at
+  the start of each launch -- not something each program separately owns,
+  and not something that could leak state between one program's run and
+  the next. A program's own view of "its" file descriptors is isolated
+  from any other program's not because it has separate storage, but
+  because the table is always reset before it ever gets a chance to look.
+  There's a second, independent reason this stays safe, distinct from
+  "only one program at a time": the kernel itself never holds a fd number
+  for its own use, not even `0`/`1`/`2` -- those only come into being as
+  *meaning* when a syscall arrives and gets dispatched, and the kernel's
+  own diagnostics reach the same `Console`/UART resources through plain
+  `ConsoleWriter`/`UartWriter` calls, with no fd number involved at all.
+  So there's no risk of the kernel's own I/O colliding with a user
+  program's table the way two *processes'* tables could collide in a real
+  multi-process OS -- the kernel was never a participant in the fd
+  numbering scheme to begin with, only its arbiter.
+- **Running a script is recursion, not a new process -- but it still needs
+  Stage 16's environment stack to get scoping right.** Since this shell is
+  kernel-resident code, never itself loaded via Stage 9's ELF loader as an
+  EL0 program, `sh script.sh` (or `./script.sh`) isn't a fork/exec-style
+  re-invocation the way real Unix does it -- it's the same interpreter
+  function calling itself, reading the script's lines via Stage 11's `read`
+  and feeding each one through the same tokenize-and-launch logic the
+  interactive prompt already uses. The one real design decision this
+  surfaces is scoping, and it falls out of Stage 16's environment stack for
+  free once that exists, as two different invocation styles choosing
+  whether to push a new frame: `./run_script_with_own_scope.sh` pushes a
+  copy of the current environment before interpreting the script's lines
+  and pops it back off afterward, so anything the script `export`s stays
+  local to it -- matching real Unix's own child-process isolation, achieved
+  here without a real child process. `source script.sh` (POSIX's `.`)
+  pushes nothing at all: the script's lines run directly against the
+  *current* top-of-stack frame, so its `export`s persist in the caller
+  once it returns, identical to typing those same lines at the prompt
+  directly. Same underlying stack, same interpreter, the only difference
+  is whether a frame gets pushed first.
 - **Pipes (`cmd1 | cmd2`), via temp files -- deliberately not true streaming
   concurrency.** Real pipe semantics need two processes actually running at
   once, which Stage 9 explicitly rules out. Early MS-DOS hit this identical
@@ -535,7 +610,7 @@ Stage 9).
 
 ---
 
-## Stage 13 (capstone): a vi-like full-screen editor -- `r13_editor`
+## Stage 13 (Capstone 1): a vi-like full-screen editor -- `r13_editor`
 
 **Goal:** genuinely harder than the shell's line editing, not just a bigger
 version of it -- a full-screen editor needs a multi-line buffer and modal
@@ -579,3 +654,444 @@ present on the disk image, edit its text on Stage 6's display using
 Stage 7's keyboard, save it, then -- to prove persistence, not just an
 in-memory illusion -- restart QEMU against the same `disk.img` and confirm
 the edit is still there.
+
+---
+
+## Beyond Capstone 1
+
+Stage 13 is the first real checkpoint, not the finish line -- the project stays open-ended past
+it. The two stages below are small, self-contained additions that don't block, and aren't blocked
+by, Stages 10-13's own sequence; they're placed here rather than inserted earlier specifically to
+avoid renumbering that already-written sequence.
+
+## Stage 14: a real-time clock -- `r14_rtc`
+
+**Goal:** the same "prove the primitive works in isolation before it's load-bearing" pattern
+Stage 3 already used for the generic timer -- a new hardware peripheral, introduced on its own
+before anything else depends on it.
+
+**Features:**
+- A minimal driver for the PL031 RTC: confirmed present on QEMU's `virt` machine and
+  board-intrinsic (same category as the GIC/UART -- no `-device` flag needed, unlike the optional
+  virtio peripherals), verified empirically via a direct register read (`RTCDR` at `0x0901_0000`)
+  matching the host's own `date +%s` exactly. Just one register matters for a first cut: `RTCDR`
+  itself, a read-only 32-bit count of seconds since the Unix epoch -- `RTCLR`/`RTCMR`/the
+  interrupt-control registers exist for setting the clock or firing an alarm, neither needed here.
+- A new syscall, shaped like the existing ones (no arguments, current epoch-seconds returned in
+  `x0`) rather than inventing a new convention.
+- `date`, a new read-only EL0 utility -- prints the current time via the new syscall. **No
+  timezone support, by deliberate decision, not an oversight:** the raw RTC value is already
+  timezone-independent (Unix epoch seconds are UTC by definition -- that's exactly what matched
+  host time in the address above), and a real timezone (a zoneinfo/tzdata database, DST
+  transition rules, a configurable `$TZ`) is a genuinely large subsystem, wildly disproportionate
+  to what this stage needs. This system just runs in UTC, the same deliberate choice plenty of
+  real minimal/server/embedded systems make. Printing the raw epoch-seconds integer is a
+  sufficient first cut; human-readable calendar formatting (still UTC) is a nice-to-have on top,
+  not required. Stage 16's environment variables are what would actually unlock this later --
+  `$TZ` is ordinarily just one conventional variable riding on that general mechanism, not
+  something that needs its own bespoke configuration path.
+
+**Demo:** run `date` via Stage 10's launcher twice, a few seconds apart, and confirm the printed
+value actually advances -- proving it's live, not a build-time constant.
+
+---
+
+## Stage 15: real file timestamps on save -- `r15_save_time`
+
+**Goal:** replace the fixed, build-time `SOURCE_DATE_EPOCH` timestamp every file on `disk.img`
+carries since Stage 8 with a genuine, RTC-sourced one, for any file a program actually writes at
+runtime -- the first point since Stage 8 where a file's on-disk timestamp reflects something other
+than that fixed build-time value.
+
+**Features:**
+- Stage 14's RTC driver, called from wherever `hadris-fat`'s write path currently leaves a
+  written file's directory-entry timestamp at whatever default it has -- check `hadris-fat`'s own
+  API for how a caller supplies a modification timestamp on write when this stage is reached.
+- No new consumer needed: `cp` (Stage 11) and the editor's `save` (Stage 13) already write file
+  content through `hadris-fat`; this stage only changes what timestamp those existing writes
+  carry, not what writes files in the first place.
+
+**Demo:** `cp` a file (or save from the editor), inspect its directory entry, and confirm the
+timestamp reflects real "now" -- rather than the fixed build-time value every other file on the
+image still carries.
+
+---
+
+## Stage 16: environment variables -- `r16_env`
+
+**Goal:** give programs (and the shell that launches them) a genuine, general-purpose key=value
+store, by extending Stage 10's `argc`/`argv` mechanism with the third array real `execve()` passes
+alongside them -- `envp` -- rather than inventing a special-purpose configuration path each time
+something new (like Stage 14's own deliberately-deferred `$TZ`) needs configuring.
+
+**Features:**
+- A third array, `envp`: `NULL`-terminated pointers to `"KEY=VALUE"` C-style strings, written onto
+  the new program's stack the same way Stage 10 already writes `argv`'s strings and pointer array,
+  passed via `x2` alongside `argc` (`x0`)/`argv` (`x1`) -- extending Stage 10's own mechanism, not
+  replacing it.
+- The shell (Stage 12) gains `export KEY=VALUE` (updating an entry before the *next* launch) and
+  passes its own current environment to every child it launches -- the parent-to-child inheritance
+  real Unix gets for free from `fork()`, replicated here by hand since there's no `fork()` to
+  inherit from automatically.
+- **A stack of environment frames, not one flat global table** -- the same `Vec`-of-frames shape
+  Stage 12's fd-triple design already uses for redirection nesting, applied here to give script
+  execution correct scoping (see Stage 12's own note on `source` vs. `./script.sh`): pushing a
+  copy of the current frame on entering a scope that should get its own isolated environment,
+  popping it back off on leaving; running a script inline against the current frame instead, with
+  no push at all, is what `source`/`.` does. Two different call sites into one shared mechanism,
+  not two separate features.
+- `env`/`printenv`, a small utility printing the current environment -- cheap once the mechanism
+  exists, matching Stage 11's other utilities' spirit.
+
+**Demo:** four checks, each isolating one piece of the mechanism:
+1. **Inheritance:** `export FOO=bar`, then run a program that reads its own `envp` and prints
+   `FOO`'s value -- confirming the variable was actually passed down, not just set in the shell's
+   own memory.
+2. **Own scope:** `./run_script_with_own_scope.sh` containing `export BAZ=qux`; after it returns,
+   confirm `BAZ` is *not* visible in the shell -- the pushed frame was popped back off, taking the
+   script's own export with it.
+3. **`source`:** `source run_script_with_own_scope.sh` (the same script, run the other way);
+   after it returns, confirm `BAZ` *is* now visible in the shell -- no frame was pushed, so the
+   export applied directly to the caller's own environment, exactly as if typed at the prompt.
+4. **The door this reopens:** a `date` reading `$TZ` (even just a fixed UTC offset, no
+   DST/zoneinfo database needed) and adjusting its printed output accordingly.
+
+**A verified, real upgrade path beyond the fixed-offset default, if ever wanted:** the
+[`chrono-tz`](https://github.com/chronotope/chrono-tz) crate supports `no_std`
+(`chrono`/`chrono-tz` both with `default-features = false`) and embeds the full IANA database,
+historical DST transitions included -- genuine `$TZ`-aware local time, not just a fixed offset.
+Its own README warns that "the additional binary size added by this library may overflow
+available program space" on a real microcontroller; that specific risk doesn't apply to us (a
+QEMU-emulated host with generous RAM, not a flash-constrained MCU), but it still has one concrete
+consequence worth naming here rather than discovering later: `mmu.rs`'s fixed 2 MiB user window
+(`USER_SIZE`) was sized for tiny, few-KB demo binaries, and a program statically linking a full
+timezone database would be the first thing to actually pressure-test that budget -- likely still
+fine, but worth deliberately re-checking (or enlarging the window) when this is reached, not
+assuming it fits by default.
+
+---
+
+## Stage 17: arbitrarily large binaries -- `r17_large_binaries`
+
+**Goal:** let a program's footprint use as much RAM as it actually needs, up to what's genuinely
+free -- not the small, uniform ceiling every program has been held to since Stage 9. Directly
+motivated by Stage 16's `chrono-tz` aside: a program linking a full timezone database needs
+meaningfully more than `hello`/`crash` ever did, and paying that same cost for every program
+regardless of need is the wrong trade.
+
+**Features:**
+- `elf.rs`'s `load()` computes the ELF's actual footprint (the highest `p_vaddr + p_memsz` across
+  every `PT_LOAD` segment) before mapping anything, instead of checking each segment against a
+  single fixed `USER_SIZE` constant.
+- `mmu.rs`'s `USER_SIZE` becomes a ceiling, not the amount actually mapped -- the mapped extent
+  for a given load is whatever `elf::load()` just computed for that specific program. Still
+  identity-mapped, still growing from the same fixed `USER_BASE` (every user binary is linked at
+  that same address; growing the window doesn't mean giving up the fixed base), still no physical
+  frame allocator needed -- the extra room is already sitting there, deliberately unmapped, in the
+  gap between the kernel's region and the top of RAM.
+- **Shrink-on-load, not just grow-on-load:** the one genuinely new correctness requirement
+  variable-sized windows introduce. If program A needed 500 KB and program B (loaded next) only
+  needs 10 KB, B must not inherit A's leftover 490 KB still marked `USER`-accessible -- memory B
+  never asked for, doesn't know about, but could still touch given a bug. Each load must
+  explicitly revoke access to whatever extent exceeds *this* program's own needs, not just extend
+  into more of it. The existing broad `tlbi vmalle1is` at the end of `load()` already covers the
+  invalidate half of this for free (it was designed to be correct regardless of what changed, not
+  a precise per-page flush).
+
+**Demo:** load and run a deliberately oversized test binary (a static array well beyond the
+previous 2 MiB ceiling, or Stage 16's `chrono-tz`-linked `date` itself) immediately followed by
+`hello` -- confirming the large binary runs correctly, and that `hello`'s own (much smaller)
+window is genuinely clean afterward, e.g. by having `hello` (or a dedicated test) attempt to read
+memory beyond its own footprint and confirm it faults, proving the leftover extent was actually
+revoked, not just left mapped and merely unused.
+
+---
+
+## Stage 18: growable memory at runtime -- `r18_brk`
+
+**Goal:** let an already-running program ask for more memory as it goes, rather than only ever
+getting a fixed allocation decided once at load time -- needed for anything whose memory needs
+depend on runtime input, like Stage 13's editor opening a file of unknown size.
+
+**Features:**
+- A new syscall, `brk`-shaped: request the heap be extended to a new end address (or by some
+  increment). The kernel handler reuses Stage 17's own mechanism -- map more of the same
+  already-reserved, deliberately-free RAM immediately following whatever's already mapped for
+  this program -- just triggered by an explicit runtime request instead of computed once from the
+  ELF header.
+- `userlib` gains its own `#[global_allocator]` -- reusing `linked_list_allocator`, the same crate
+  the kernel's own heap already uses -- starting with a small initial heap and calling `brk` to
+  grow it on demand, rather than syscalling on every individual allocation. `hello`/`crash` need
+  none of this; the editor is the first EL0 program with genuine dynamic-allocation needs.
+- The heap sits in the natural gap between the loaded segments (bottom of the window) and the
+  stack (top, growing down) -- the classic Unix layout, already implied by this project's
+  existing choice of where the stack lives. Worth a deliberate guard gap between wherever the
+  heap has grown to and the stack, rather than assuming they'll never meet, matching this
+  project's own established "leave it unmapped" philosophy elsewhere.
+
+**Demo:** open Stage 13's editor against progressively larger files -- confirming each one loads
+and can be edited without hitting a fixed ceiling, and that the heap's growth is genuinely on
+demand (a small file doesn't pre-allocate room for a large one it'll never open).
+
+---
+
+## Beyond Capstone 1, part 2: job control
+
+The stages below form one coupled block, working toward a second capstone. Unix-style job control
+needs *something* to background in the first place -- which means finally revisiting, not
+incrementally patching around, the "at most one program is ever resident" assumption threaded
+through Stage 9's single page table and Stage 12's single fd table. Deliberately scoped narrow
+throughout: this block adds *at most two* simultaneously resident programs, never a general
+N-process scheduler -- Capstone 2 itself (Stage 23) never needs more than that. The one exception is
+Stage 24, added after the capstone specifically to prove something the capstone's own demos don't
+need: genuine forced preemption between the two slots, not just cooperative handoff.
+
+## Stage 19: two resident programs -- `r19_suspend`
+
+**Goal:** the foundational primitive everything else in this block builds on -- letting a second
+program stay alive, dormant, while the first one keeps running, instead of Stage 9's "exactly one,
+and its state is abandoned the moment it stops" model. This is deliberately *not* a scheduler: it
+adds the ability to suspend and later resume a program's exact state, not the ability to
+time-slice between two actively-running ones.
+
+**Features:**
+- A second, independent user memory window, alongside the existing one -- Stage 17's per-load
+  footprint computation applies to each window independently, so neither program pays for the
+  other's size.
+- A second, independent saved-EL0-context slot, generalizing `process.s`'s existing
+  `enter_el0`/`resume_kernel` checkpoint mechanism. Today, `enter_el0` only ever checkpoints the
+  *kernel's* own context (into `KERNEL_CTX`) so `resume_kernel` can return to it once a program
+  exits or faults -- there's no way to checkpoint a *program's* own EL0-side state (`SPSR_EL1`/
+  `ELR_EL1`/`SP_EL0`/`x0`-`x30`, all already sitting in the trap frame `kernel_entry` pushes for
+  every syscall) instead of discarding it. This stage adds the symmetrical operation: a
+  `suspend_current()` that saves the *currently running* program's state into a per-slot area
+  rather than running it to completion, and a matching resume that restores it and `eret`s back in
+  exactly where it left off.
+- A second slot in `fd.rs`'s table, one per resident program rather than one shared table reset on
+  every launch. Stage 12's own reasoning for a single table ("at most one program is ever
+  resident") stops holding the moment a second one can be alive-but-dormant at the same time; each
+  slot now keeps its own three-plus-`File(handle)` entries, still reset by `reset_for_launch()`
+  when a *fresh* program is loaded into that slot, but no longer reset just because the *other*
+  slot's occupant changed.
+- Explicitly not a scheduler: switching between the two slots only ever happens at an explicit
+  call from kernel code reacting to something specific (Stage 20's signal, Capstone 2's blocked
+  pipe read/write) -- never a timer interrupt forcing a switch mid-instruction. No ready queue, no
+  priority, no notion of "runnable."
+
+**Demo:** a kernel-only harness (no shell/signal vocabulary exists yet to drive this from the
+prompt): load a small test program into slot 0, let it run partway and print a marker, suspend it,
+load and run a second test program in slot 1 to completion, then resume the first program from
+slot 0 and confirm it continues exactly where it left off -- printing its own second marker
+afterward, with any local state (e.g. a loop counter) intact. Expected output order proves the
+interleaving actually happened: the first program's first marker, the second program's complete
+output, then the first program's second marker.
+
+---
+
+## Stage 20: signals -- `r20_signals`
+
+**Goal:** a kernel-to-program asynchronous notification mechanism, needed specifically for
+`SIGTSTP` (`Ctrl+Z`) -- the first event in this project that's imposed on a still-running program
+from outside, rather than something it calls voluntarily (`exit`) or synchronously traps into
+(a segfault).
+
+**Features:**
+- `Ctrl+Z` recognized at the keyboard driver level (Stage 7), intercepted before it ever reaches
+  whichever program currently owns keyboard input -- matching real termios' `ISIG` line-discipline
+  behavior, where the terminal driver, not the foreground program, is what normally recognizes it.
+- When recognized while a program occupies the foreground slot, the kernel calls Stage 19's
+  `suspend_current()` on it directly. `SIGTSTP`'s default action (get suspended, nothing more)
+  needs no program-side handler at all, so this first cut deliberately doesn't build general
+  signal-handler registration (a `sigaction`-equivalent) -- narrow by design, the same spirit as
+  Stage 9's segfault handling covering exactly the EC values it needs and nothing more.
+- **A concrete, verified design precedent for how Stage 13's editor should behave once this
+  exists**: real vim does *not* intercept `Ctrl+Z` -- it lets the terminal driver suspend it
+  normally, the simpler and more common default. Real nano *does* intercept it (its own `SIGTSTP`
+  handling), and has to provide `^T^Z` as an explicit escape hatch to actually suspend despite
+  that. Stage 13's editor, vi-like by its own stated design reference, follows vim's precedent: it
+  never reads `Ctrl+Z` as an editing keystroke, so this stage's kernel-level interception is the
+  only thing that ever sees it, and no editor-side change is needed at all.
+- **A second, closely-related signal, needed for correctness rather than authenticity: the
+  `SIGTTIN` equivalent for background stdin.** Stage 7's keyboard driver only ever has one
+  legitimate destination for "the current keystroke," so once Stage 19 lets a second program be
+  resident in the background slot, that program's `Keyboard::read()` must not be allowed to
+  silently consume input meant for whatever's actually in the foreground. If a background slot
+  blocks on a keyboard read, the kernel suspends that slot on the spot (the same mechanism
+  `Ctrl+Z` uses) instead of ever delivering it a keystroke -- resumed only once Stage 22's `fg`
+  brings it back to the foreground. Unlike `SIGTSTP`, this isn't optional or deferrable: without
+  it, a background job that happens to read stdin would race the shell for keystrokes.
+- `SIGINT` (`Ctrl+C`, killing rather than suspending the foreground job) and `SIGCHLD` (notifying
+  of a background job's exit) are the obvious next-most-needed signals, named here deliberately as
+  *not* in scope -- this stage wires up exactly what Stage 22's job control needs to function, not
+  a general signal subsystem.
+
+**Demo:** none of its own -- `Ctrl+Z` has nothing useful to return control *to* until Stage 22's
+shell vocabulary exists, so this stage is verified together with Stage 22's demo, below.
+
+---
+
+## Stage 21: sleep -- `r21_sleep`
+
+**Goal:** a way for a program to voluntarily give up the CPU for a bounded duration, distinct from
+every other way control has changed hands so far in this block (`Ctrl+Z`, an outside event; a
+blocked pipe read/write, a consequence of what another program is doing). Introduced now
+specifically so Stage 22's job-control demo has a genuinely useful long-running background program,
+rather than an arbitrary busy-loop.
+
+**Features:**
+- A new syscall, `sleep`-shaped: takes a duration, returns once it's elapsed. Reuses Stage 19's
+  `suspend_current()` directly -- sleeping *is* suspension, just with a deadline attached instead of
+  an external trigger.
+- A deadline field alongside each slot's saved context, checked from Stage 3's existing periodic
+  timer IRQ handler (already firing regardless of which slot is in the foreground). On every tick,
+  the handler checks whether any suspended slot's deadline has passed and, if so, resumes it. This
+  is a *cooperative* wake, not preemption: nothing forces the resumed program to do anything in
+  particular, it simply continues from wherever it called `sleep()`, which for a loop is typically
+  straight into printing and calling `sleep()` again.
+- Deadlines are computed from Stage 3's tick count (elapsed time), not Stage 14's RTC -- this is a
+  scheduling primitive (a relative duration), not a calendar-time one; Stage 14's RTC stays reserved
+  for `date`'s absolute wall-clock display.
+- A `sleep` utility (a thin wrapper parsing a duration argument) and a small test program that loops
+  `print; sleep(1s)` forever -- the concrete vehicle for Stage 22's background-job demo.
+- **Worth naming for `jobs`'s sake (Stage 22)**: a sleeping background job and a `Ctrl+Z`-stopped
+  one look identical at the slot level -- both "not running, has a saved context" -- distinguished
+  only by *why* (a pending deadline vs. a delivered signal). `jobs` should report "Sleeping" rather
+  than "Stopped" when that's the actual reason, even though the underlying suspend/resume mechanism
+  is exactly the same either way.
+
+**Demo:** a kernel-only harness, no shell needed yet: load the sleep-loop test program into slot 0;
+while it's dormant waiting on its first deadline, load and run a second, short test program to
+completion in slot 1; confirm the sleep-loop then resumes on its own on the next tick after its
+deadline passes, without anything explicitly telling it to -- proving the wake is genuinely
+deadline-driven, not something requiring an outside resume call the way Stage 19's own demo needed.
+
+---
+
+## Stage 22: job control in the shell -- `r22_jobs`
+
+**Goal:** give Stage 12's shell the vocabulary for managing Stage 19/20/21's underlying mechanism --
+`&`, `jobs`, `fg`, `bg` -- the same relationship Stage 16's `export` has to its environment stack:
+the mechanism already exists, this stage is purely the shell-level interface to it.
+
+**Features:**
+- `cmd &`: the shell loads `cmd` into the background slot and returns to its own prompt
+  immediately, instead of blocking until it exits.
+- `jobs`: lists the background slot's occupant -- its command line and whether it's currently
+  running or stopped.
+- `fg`: swaps the background slot into the foreground slot (Stage 19's resume, now targeting
+  slot 0) and hands it the keyboard again.
+- `bg`: resumes a stopped or sleeping background job in place, without taking over the terminal --
+  it keeps running (as long as it doesn't block on keyboard input) while the shell keeps its own
+  prompt.
+- `jobs` reports each job's actual state (running, stopped, or -- thanks to Stage 21 --
+  sleeping), not just a generic "backgrounded."
+- **Named limitation, not a bug**: at most one background job can exist at a time, a direct
+  consequence of Stage 19's deliberate two-slot cap -- matching Stage 12's own precedent of naming
+  a scope boundary explicitly (its "no infinite/streaming pipelines... ever") rather than leaving
+  it implicit.
+- **A deliberate decision on background stdout, matching real POSIX rather than adding new
+  machinery to avoid it**: a background job's stdout still defaults to the shared `Console` fd
+  (Stage 9's default, untouched unless explicitly redirected), and nothing suspends or buffers its
+  writes -- the same behavior real terminals have by default (`TOSTOP` off), where a background
+  job's output is simply allowed to interleave with whatever else is on screen. On a real Linux
+  terminal running vim, this is exactly what happens when an unredirected background job writes
+  output: it splices visually into vim's own display, purely cosmetically, and disappears the next
+  time vim redraws from its own internal buffer. The same property holds here for free: Stage 13's
+  editor already does a full-page rewrite from its in-memory buffer on every single edit, so any
+  background-job corruption on screen is erased by the user's very next keystroke. A cosmetic wart,
+  not a correctness issue -- no new machinery needed, and authentic to how real job control
+  actually behaves.
+- **The clean alternative, for anyone who doesn't want that wart**: the same escape hatch real
+  Unix users reach for -- redirect the backgrounded command's stdout to a file (`cmd > log &`,
+  already available from Stage 12) and poll that file instead of watching the shared console at
+  all. This is also where Stage 11's utility set gains its first genuinely new member since that
+  stage was written: `tail` (print a file's last *N* lines, one-shot, no follow mode -- a small
+  variation on `cat`'s already-existing read loop, not a new syscall or mechanism), giving a
+  concrete way to check a background job's progress by re-running `tail log` every so often without
+  ever touching the framebuffer it's writing to.
+
+**Demo:** launch Stage 21's `print; sleep(1s)` loop in the background with `&`; `jobs` shows it
+sleeping/running; `fg` brings it to the foreground; `Ctrl+Z` stops it (now genuinely stopped,
+distinct from merely sleeping); `bg` resumes it in the background; `jobs` reflects each state
+change accurately throughout.
+
+---
+
+## Stage 23 (Capstone 2): job control and streaming pipes -- `r23_capstone2`
+
+**Goal:** the second capstone, playing the same role for this block that Stage 13 played for
+Stages 9-13 -- a demo that only works if every preceding stage in the block is genuinely correct,
+combining job-controlling a real program (not a throwaway test binary) with the one limitation
+Stage 12 itself named as permanent.
+
+**Features:**
+- **Real bounded-buffer, blocking pipes, replacing Stage 12's temp-file mechanism.** `cmd1 | cmd2`
+  now loads both ends into the two resident slots at once (Stage 19), connected by a small
+  fixed-size kernel buffer. Writing to a full buffer suspends the writer's slot and switches to the
+  reader; reading an empty buffer symmetrically suspends the reader and switches to the writer --
+  a targeted application of Stage 19's suspend/resume, triggered by blocked I/O rather than
+  Stage 20's `Ctrl+Z` path. Still no timer-driven preemption anywhere in this: control changes
+  hands only at these explicit blocking points, the same cooperative model Stage 19 established.
+- This directly overturns Stage 12's own named-permanent limitation ("no infinite/streaming
+  pipelines under this design, ever") -- `yes | head` becomes possible for the first time, since
+  `yes` never has to finish producing (infinite) output before `head` starts consuming it.
+- Stage 13's editor gets real job control with zero editor-side changes: since it never reads
+  `Ctrl+Z` (Stage 20's vim precedent), suspending it, doing something else at the prompt, and
+  `fg`-ing it back exercises the exact same mechanism already proven on throwaway test programs in
+  Stages 19-22 -- now against a program with real state (an open file, cursor position, unsaved
+  edits) that must survive the round trip correctly.
+
+**Demo, two parts, mirroring Stage 13's own single end-to-end demo:**
+1. **Job control:** open Stage 13's editor on a file, make an edit, `Ctrl+Z`, run a few other
+   commands at the prompt (confirming the shell stayed fully responsive throughout), `fg` back in,
+   confirm the edit and cursor position are exactly as left, save, and exit.
+2. **Streaming pipes:** a `yes | head -n 5`-style pipeline produces exactly 5 lines and returns
+   control to the prompt, despite `yes` itself never terminating on its own -- proof the pipe is
+   genuinely streaming, not silently buffering all of `yes`'s (infinite) output before `head` ever
+   gets to run.
+
+---
+
+## Stage 24: true preemptive multitasking -- `r24_preempt`
+
+**Goal:** the one kind of context switch this whole block has deliberately avoided until now --
+forced, not voluntary. Every switch built so far (`Ctrl+Z`, a blocked pipe, `sleep`) is either the
+running program's own choice or a direct consequence of something it did; none of Capstone 2's own
+demos need anything more, which is why this stage sits *after* it rather than inside it. This is
+genuine single-core preemptive multitasking in the same sense real Unix has always used the term on
+a uniprocessor -- one CPU, a periodic timer interrupt, the interrupt handler forcibly checkpointing
+whatever's running and handing the CPU to something else, whether that program asked to give it up
+or not. It's the real mechanism, not an approximation of it, just scoped here to two slots instead
+of an arbitrary number. Worth being explicit about what it *isn't*: true parallelism (multiple
+programs' instructions actually executing at the same instant) needs multiple physical cores, which
+this project's single-core QEMU target doesn't have and doesn't need for this to be authentic --
+single-core preemptive multitasking has never required more than one CPU, only a fast enough,
+regular enough interrupt to make switching invisible.
+
+**Features:**
+- Stage 3's timer IRQ handler gains a new responsibility alongside Stage 21's deadline check: on
+  every tick (or every Nth tick, a fixed quantum), it forcibly calls Stage 19's `suspend_current()`
+  on whichever slot is presently running -- even if that program never called anything, never
+  blocked, never slept -- and resumes the other slot.
+- The quantum (ticks per turn) is a single fixed constant: strict round-robin between the (at most)
+  two slots, no priority, no fairness accounting beyond that -- matching this whole block's
+  established "as simple as correctly solving what's needed" scope.
+- A slot that's genuinely dormant (sleeping, `Ctrl+Z`'d, blocked on pipe I/O) is skipped by the
+  round-robin rather than force-resumed early: forced preemption only ever applies to a slot that's
+  actually running and would otherwise keep the CPU indefinitely.
+
+**Demo:** the one thing nothing earlier in this block could demonstrate, made quantifiable rather
+than eyeballed. Two CPU-bound test programs, neither ever calling `sleep`, blocking on I/O, or
+otherwise voluntarily yielding -- one writes an endless stream of `'a'`, the other an endless stream
+of `'b'`, each via the ordinary `write(1, ...)` syscall -- loaded into both slots at once with no
+shell interaction between them. `fd.rs`'s `Console::write` already routes through `ConsoleWriter`,
+which unconditionally echoes to UART regardless of what's on the framebuffer, so the raw byte
+stream is capturable straight from QEMU's UART-to-host-stdout passthrough (per this project's own
+established capture technique -- background QEMU, redirect to a file, `kill`, then inspect it) --
+sidestepping the framebuffer/`Console` corruption question entirely, not because it was fixed, but
+because this demo never needs to look at the screen at all. Success is two-part, checked against
+the captured byte stream: **finely interleaved** (short alternating runs of `a`s and `b`s, not one
+long run of each in sequence -- which is exactly what Stage 19's own cooperative demo would produce
+instead, its second program's *entire* output landing as one uninterrupted block), and **roughly
+balanced** (close to a 50/50 split, confirming the fixed quantum is being applied evenly to both
+slots, not starving one in favor of the other).
