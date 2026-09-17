@@ -1,0 +1,47 @@
+BIN := "r09_userspace"
+
+# Fixed mkfs.fat volume serial so `just disk` produces a byte-identical disk.img every run
+# instead of a fresh random serial each time (SOURCE_DATE_EPOCH's own default now lives in
+# folder_to_img.sh, shared across every stage that calls it -- see that script's own comment).
+VOLUME_SERIAL := "00000000"
+
+# just --list
+default: list
+
+# List available recipes.
+list:
+    cd {{justfile_directory()}} && just --list
+
+# Build the kernel and copy it out of the target/ directory as an ELF file
+build:
+    cd {{justfile_directory()}} && cargo build --target aarch64-unknown-none-softfloat --release \
+        && cp target/aarch64-unknown-none-softfloat/release/{{BIN}} {{BIN}}.elf
+
+# ELF file inspection on the built binary (copied out of target/ by `just build`)
+elf:
+    bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
+
+# Builds disk.img: the two EL0 test binaries (hello, crash -- see ../user/) first, staged into
+# disk/bin/, then handed to folder_to_img.sh along with the static files already staged in
+# disk/ (hello.txt, hello.sh, fonts/), the same set r08_fs's own disk.img carried.
+disk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGET=aarch64-unknown-none-softfloat
+    cd {{justfile_directory()}}
+    cd ../user/hello && cargo build --target ${TARGET} --release
+    cd ../crash && cargo build --target ${TARGET} --release
+    cd {{justfile_directory()}}
+    cp ../user/hello/target/${TARGET}/release/hello disk/bin/hello
+    cp ../user/crash/target/${TARGET}/release/crash disk/bin/crash
+    ../folder_to_img.sh disk.img 16M R09US {{VOLUME_SERIAL}} disk
+
+# Run with serial connected to the terminal (stdio), the FAT-formatted disk over virtio-blk,
+# and a virtio-gpu display. No virtio-keyboard-device: this stage's demo (hello/crash, run in
+# sequence from kernel_main) takes no interactive input, same reasoning as r08_fs's own run
+# recipe.
+run: build disk
+    qemu-system-aarch64 -M virt -cpu max -nodefaults -serial mon:stdio \
+        -drive if=none,file=disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
+        -device virtio-gpu-device \
+        -kernel {{BIN}}.elf

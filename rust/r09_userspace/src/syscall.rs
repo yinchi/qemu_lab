@@ -1,0 +1,92 @@
+//! `SVC`-based syscalls and the segfault path, both reached from
+//! `sync_el0_64` (`vectors.s`) via `sync_el0_handler`.
+
+use core::fmt::Write;
+
+use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
+
+use crate::console::ConsoleWriter;
+
+// Syscall numbers -- Linux's real aarch64 values (see `userlib`'s own copy of these same
+// constants for why: borrowed for familiarity, no other Linux-ABI-compatibility claim).
+const SYS_READ: usize = 63;
+const SYS_WRITE: usize = 64;
+const SYS_EXIT: usize = 93;
+
+// The ESR_EL1 EC field values this handler decodes -- see sync_el0_handler for what each one
+// means here.
+const EC_SVC64: u64 = 0x15;
+const EC_IABT_LOWER: u64 = 0x20;
+const EC_DABT_LOWER: u64 = 0x24;
+
+/// Mirrors `kernel_entry`'s stack layout exactly (`vectors.s`): all 31 GPRs
+/// (`x0`-`x30`), then the `ELR_EL1`/`SPSR_EL1` pair saved on entry.
+/// `sync_el0_64` passes the frame's base address in `x0` before calling
+/// `sync_el0_handler`, so this struct is how Rust reads the syscall's
+/// number/arguments back out of it, and writes the return value back in
+/// before `kernel_exit` restores everything.
+#[repr(C)]
+pub struct TrapFrame {
+    pub x: [u64; 31],
+    pub elr_el1: u64,
+    pub spsr_el1: u64,
+}
+
+/// Called from `sync_el0_64` with the trap frame's address in `x0`.
+/// Decodes `ESR_EL1`'s `EC` field to tell a deliberate syscall apart from
+/// a fault -- see the three arms below for what each one does.
+#[unsafe(no_mangle)]
+extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
+
+    let esr = ESR_EL1.get(); // read the Exception Syndrome Register (ESR_EL1)
+    let ec = (esr >> 26) & 0x3f; // extract the Exception Class (EC) field from ESR_EL1
+
+    match ec {
+        // EC_SVC64 indicates a 64-bit SVC (syscall) from EL0.
+        EC_SVC64 => {
+            // SAFETY: regs points at kernel_entry's just-saved frame,
+            // still live on the exception stack -- sole access to it here.
+            let regs = unsafe { &mut *regs };
+            let nr = regs.x[8] as usize; // syscall number
+            let a0 = regs.x[0] as usize; // first argument
+            let a1 = regs.x[1] as usize; // second argument
+            let a2 = regs.x[2] as usize; // third argument
+            match nr {
+                SYS_WRITE => regs.x[0] = crate::fd::write(a0, a1, a2) as u64,
+                SYS_READ => regs.x[0] = crate::fd::read(a0, a1, a2) as u64,
+                SYS_EXIT => {
+                    // Never returns to kernel_exit's normal eret-back-to-EL0
+                    // path -- resume_kernel (process.s) restores the register
+                    // set enter_el0 checkpointed and jumps straight back into
+                    // run_program's call site instead.
+                    // SAFETY: only reachable once run_program has actually
+                    // called enter_el0 (process.s's KERNEL_CTX holds a real
+                    // checkpoint, not its zeroed initial state).
+                    unsafe { crate::process::resume_kernel() }
+                }
+                _ => regs.x[0] = (-1i64) as u64, // no such syscall
+            }
+        }
+
+        // EC_IABT_LOWER and EC_DABT_LOWER indicate instruction and data aborts from EL0,
+        // respectively.
+        EC_IABT_LOWER | EC_DABT_LOWER => {
+            let far = FAR_EL1.get(); // read the Fault Address Register (FAR_EL1)
+            let _ = write!(
+                ConsoleWriter,
+                "\r\nSegmentation fault (address {far:#x}, ESR_EL1 {esr:#x})\r\n"
+            );
+            // SAFETY: only reachable once run_program has actually called
+            // enter_el0 (process.s's KERNEL_CTX holds a real checkpoint, not
+            // its zeroed initial state).
+            unsafe { crate::process::resume_kernel() }
+        }
+        _ => {
+            // Anything else (FP exceptions, alignment faults, etc.) --
+            // deliberately narrow decoding, not a general fault-handling
+            // framework. `8` is sync_el0_64's own index into
+            // unexpected_exception's ERROR_TYPES table.
+            crate::unexpected_exception(8)
+        }
+    }
+}
