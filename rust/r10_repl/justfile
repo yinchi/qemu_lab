@@ -1,0 +1,43 @@
+BIN := "r10_repl"
+
+# Fixed mkfs.fat volume serial so `just disk` produces a byte-identical disk.img every run
+# instead of a fresh random serial each time -- same as r09_userspace's own justfile.
+VOLUME_SERIAL := "00000000"
+
+# just --list
+default: list
+
+# List available recipes.
+list:
+    cd {{justfile_directory()}} && just --list
+
+# Build the kernel and copy it out of the target/ directory as an ELF file
+build:
+    cd {{justfile_directory()}} && cargo build --target aarch64-unknown-none-softfloat --release
+    cd {{justfile_directory()}} && cp target/aarch64-unknown-none-softfloat/release/{{BIN}} {{BIN}}.elf
+
+# ELF file inspection on the built binary (copied out of target/ by `just build`)
+elf:
+    bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
+
+# Builds disk.img: echo (see ../user/echo/) first, staged into disk/bin/, then handed to
+# folder_to_img.sh along with the static files already staged in disk/ (fonts/) -- same pattern
+# r09_userspace's own disk recipe uses.
+disk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGET=aarch64-unknown-none-softfloat
+    cd {{justfile_directory()}}
+    cd ../user/echo && cargo build --target ${TARGET} --release
+    cd {{justfile_directory()}}
+    cp ../user/echo/target/${TARGET}/release/echo disk/bin/echo
+    ../folder_to_img.sh disk.img 16M R10RE {{VOLUME_SERIAL}} disk
+
+# Run with serial connected to the terminal (stdio), the FAT-formatted disk over virtio-blk, a
+# virtio-gpu display, and a virtio-keyboard input device.
+run: build disk
+    qemu-system-aarch64 -M virt -cpu max -nodefaults -serial mon:stdio \
+        -drive if=none,file=disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
+        -kernel {{BIN}}.elf

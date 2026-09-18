@@ -10,7 +10,9 @@
         "rust/r07_keydetect/Cargo.toml",
         "rust/r08_fs/Cargo.toml",
         "rust/r09_userspace/Cargo.toml",
+        "rust/r10_repl/Cargo.toml",
         "rust/user/userlib/Cargo.toml",
+        "rust/user/echo/Cargo.toml",
         "rust/user/hello/Cargo.toml",
         "rust/user/crash/Cargo.toml"
     ],

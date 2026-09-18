@@ -164,12 +164,84 @@ pub fn terminate<T: Termination>(result: T) -> ! {
 /// One invocation of this per binary crate -- `userlib::entry!(run);` --
 /// replaces what would otherwise be a hand-written wrapper duplicated
 /// across every EL0 program this roadmap builds.
+///
+/// For a program that wants its command-line arguments, use `entry_with_args!` instead --
+/// deliberately a separate macro rather than a change to this one, since Stage 9's `hello`/
+/// `crash` already depend on `$run` taking no arguments and are done, not to be revisited.
 #[macro_export]
 macro_rules! entry {
     ($run:path) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn main() -> ! {
             $crate::terminate($run())
+        }
+    };
+}
+
+/// One argument in an `Args` (`argv[0]` is the program's own name, same C convention) --
+/// `argc`/`argv` themselves, as `_start` receives them in `x0`/`x1`, aren't Rust-safe to hand a
+/// program directly: this decodes them into an ordinary, `Copy`, single-pass iterator once, in
+/// the shared runtime, rather than every consumer (`echo` now; `cat`/`ls`/`cp`/the editor in
+/// Stages 11/13) re-implementing C-string scanning and UTF-8 validation itself.
+#[derive(Clone, Copy)]
+pub struct Args {
+    argv: *const *const u8,
+    remaining: usize,
+}
+
+impl Iterator for Args {
+    type Item = &'static str;
+
+    fn next(&mut self) -> Option<&'static str> {
+        if self.remaining == 0 {
+            return None;
+        }
+        // SAFETY: see `args`'s doc comment -- the only way to construct an `Args` is through
+        // it, so its contract already holds for every entry this reads.
+        unsafe {
+            let ptr = *self.argv;
+            let mut len = 0;
+            while *ptr.add(len) != 0 {
+                len += 1;
+            }
+            let bytes = core::slice::from_raw_parts(ptr, len);
+            self.argv = self.argv.add(1);
+            self.remaining -= 1;
+            // The kernel only ever writes argument strings it got from its own UTF-8 `str`
+            // buffer (see `ROADMAP.md`'s Stage 10 section) -- invalid UTF-8 here would mean
+            // that contract was already broken, not something to paper over by silently ending
+            // the iteration early.
+            Some(core::str::from_utf8(bytes).expect("argv entry was not valid UTF-8"))
+        }
+    }
+}
+
+/// Decodes the raw `argc`/`argv` `_start` received into an `Args` iterator.
+///
+/// # Safety
+/// `argv` must point to an array of exactly `argc` valid pointers, each to a NUL-terminated,
+/// UTF-8 byte sequence, all still mapped for as long as the returned `Args` is used -- true for
+/// whatever `_start` forwards directly from the kernel's own `eret`, never something a program
+/// should construct itself.
+pub unsafe fn args(argc: usize, argv: *const *const u8) -> Args {
+    Args {
+        argv,
+        remaining: argc,
+    }
+}
+
+/// Like `entry!`, but for a program that wants its command-line arguments: generates the
+/// `#[no_mangle] extern "C" fn main(argc: usize, argv: *const *const u8) -> !` that `start.s`'s
+/// `bl main` branches to (forwarding `x0`/`x1` unchanged -- see `start.s`'s doc comment), decodes
+/// them via `args`, and calls `$run` with the resulting `Args`.
+#[macro_export]
+macro_rules! entry_with_args {
+    ($run:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn main(argc: usize, argv: *const *const u8) -> ! {
+            // SAFETY: `_start` (start.s) forwards these straight from the kernel's `eret`,
+            // upholding `args`'s contract by construction.
+            $crate::terminate($run(unsafe { $crate::args(argc, argv) }))
         }
     };
 }

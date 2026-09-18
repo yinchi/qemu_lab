@@ -2,14 +2,19 @@
 .global _start
 
 /* Every EL0 binary built against userlib shares this entry point: the
-kernel's loader `eret`s straight into it (per r09_userspace's ELF loader),
-with SP_EL0 already set to the top of the fixed user window. There is no
-argc/argv setup yet (that's Stage 10) and no stack reservation needed here
--- the kernel owns the whole user window's layout and decides where the
-stack lives independently of this binary's own sections.
+kernel's loader `eret`s straight into it, with SP_EL0 already set -- to the
+top of the fixed user window for a program taking no arguments (Stage 9's
+hello/crash), or to wherever Stage 10's argv/stack setup left it, with
+argc/argv in x0/x1 per the standard AArch64 calling convention, for one
+that does. No stack reservation is needed here either way -- the kernel
+owns the whole user window's layout and decides where the stack lives
+independently of this binary's own sections.
 
-`main` here is the `#[no_mangle] extern "C" fn main() -> !` the
-`userlib::entry!` macro generates in each binary crate -- see lib.rs. */
+`bl main` forwards x0/x1 unchanged, since nothing above it touches those
+registers -- whether `main` actually reads them as argc/argv depends only
+on which of `userlib::entry!`/`entry_with_args!` (see lib.rs) generated
+this crate's `main`: a 0-arg one simply never reads them, a 2-arg one
+does. */
 _start:
 	bl	main
 

@@ -406,9 +406,17 @@ Stage 11 gives them something worth piping.
   of code as `02_echo`'s original polling loop, just now pulling characters
   from the token layer above instead of reading raw UART bytes --
   accumulating them into the heap-allocated growable buffer Stage 4's
-  "echo line" demo already proved, stopping at Enter. Deliberately not Stage
-  5's cursor-aware editor: this stage is a hard prerequisite for testing
-  utilities, not the polished interactive experience Stage 12 aims for.
+  "echo line" demo already proved, stopping at Enter. This loop is
+  deliberately the *only* place Backspace ever gets handled: it pops the
+  buffer right here, before Enter is ever reached, rather than being
+  forwarded as a raw control byte to whatever eventually reads fd 0 -- a
+  real program's stdin should only ever see a finished line's printable
+  bytes plus a trailing newline, the same way a real tty's canonical
+  (cooked-mode) line discipline works. Stage 11's `Keyboard::read()` reads
+  from this same completed-line buffer rather than reinventing its own
+  key-to-byte encoding. Deliberately not Stage 5's cursor-aware editor:
+  this stage is a hard prerequisite for testing utilities, not the
+  polished interactive experience Stage 12 aims for.
 - A tokenizer splitting the line into a program name + arguments (the same
   tokenizer Stage 12's full shell reuses/extends later). The remaining
   tokens after the program name are exactly what becomes `argv`, below.
@@ -485,6 +493,14 @@ throwaway test binaries just to prove the plumbing works.
   delegates to `elf::load`. `cp` -- needing a source and a destination open
   at once -- is the first real exercise of more than the fixed three slots
   being occupied simultaneously.
+- `Keyboard::read()` (currently a stub returning `0` -- see its comment in
+  `r09_userspace/src/fd.rs`) gets its real body here: reading from Stage
+  10's completed-line buffer one finished line at a time, rather than
+  draining raw key events itself. The buffering -- and the Backspace
+  absorption in particular -- already happened once, in Stage 10's line
+  loop; this is purely a second reader for it. Keeps `Keyboard` and a
+  `File(handle)` symmetric at the `read()` call `for_fd`'s dispatch already
+  treats uniformly, which is exactly what Stage 12's redirection needs.
 - `cat`, `ls`, `cp` as real, independent programs -- each one loaded through
   Stage 9's ELF loader like any other, not special-cased, and each one a
   real consumer of the `argc`/`argv` mechanism Stage 10 built for `echo`.
@@ -538,7 +554,11 @@ kernel starts directly, with everything else descending from it.
   entry in that table -- before `run_program`'s `enter_el0()` call -- to
   point at it, overriding the default `Console` entry `reset_for_launch()`
   would otherwise leave in place. Not something `cmd` itself does or needs
-  to know about.
+  to know about. `cmd < file` is the symmetric case on the `stdin` entry --
+  reading straight from the file, no analogous buffering step needed the
+  way Stage 11's `Keyboard::read()` needed one, since a file's bytes are
+  already fixed and complete. Redirection only ever swaps *which* `read()`
+  a program's fd 0 reaches; it never changes what reading it produces.
 - **Design note on nesting, not a commitment to `()` subshell syntax yet**:
   the redirection mechanism above generalizes to nested scopes for free if
   the `0`/`1`/`2` triple is modeled as a stack (e.g. `Vec<[FileDescriptor;
@@ -648,6 +668,31 @@ either direction).
 - File access reuses the `open`/`read`/`write`/`close` syscalls already
   established in Stage 11 -- nothing new needed on that front, and the
   editor is launched the same way as any other program via Stage 12's shell.
+- A toggleable raw-mode switch on fd 0 -- the one genuinely new syscall
+  surface this stage needs. Off by default (Stage 10/11's canonical,
+  line-buffered mode); once this editor switches it on, `handle_keyboard_irq`
+  routes its `Token`s straight to whatever this editor's own `read()` calls
+  pull from, bypassing Stage 10's line-editing loop entirely -- no
+  Enter-wait, no Backspace-absorption, since the editor decides what
+  Backspace means itself (delete-under-cursor, not "edit the pending
+  line"). Switched back off on exit, restoring Stage 12's shell to
+  canonical mode. Not `termios`/ANSI raw mode -- just this project's own
+  version of the same cooked-vs-raw distinction, since Stage 7's
+  `virtio-keyboard` already delivers discrete key events with nothing
+  escape-sequence-shaped to negotiate. Nothing before this stage has
+  anything to toggle it; the switch itself is worth having now regardless,
+  so `tokens.rs`'s `Token` (already carrying raw evdev codes and modifier
+  flags, not just resolved characters) has a real consumer to have been
+  designed for.
+- Flipping this switch on is also the first thing that has to unmask DAIF for a running program.
+  Stage 10's `process::run_program` masks every DAIF bit for a program's entire time at EL0 --
+  closing a real reentrancy hazard (a keyboard IRQ landing mid-program could otherwise re-enter
+  `handle_keyboard_irq` while `run_program` is still on the stack, remapping the very user window
+  the program is executing out of) that stays invisible for Stage 10-12's programs only because
+  they're too short-lived between syscalls to ever hit it. This editor is the first program that
+  runs for a genuinely long time *and* needs interrupts (specifically the keyboard's) to reach it
+  while it does, so the raw-mode switch needs to unmask (at minimum) the keyboard's IRQ alongside
+  routing its `Token`s -- and re-mask on exit, same as the routing itself gets undone.
 
 **Demo:** launch the editor from Stage 12's shell against a file already
 present on the disk image, edit its text on Stage 6's display using
@@ -1072,7 +1117,23 @@ regular enough interrupt to make switching invisible.
 - Stage 3's timer IRQ handler gains a new responsibility alongside Stage 21's deadline check: on
   every tick (or every Nth tick, a fixed quantum), it forcibly calls Stage 19's `suspend_current()`
   on whichever slot is presently running -- even if that program never called anything, never
-  blocked, never slept -- and resumes the other slot.
+  blocked, never slept -- and resumes the other slot. This is the second, and last, thing that
+  needs the timer's IRQ to actually reach a running program -- Stage 10's `process::run_program`
+  masks every DAIF bit for a program's entire time at EL0 specifically so *nothing* interrupts it
+  (Stage 13's raw-mode switch was the first, narrower exception, unmasking the keyboard for a
+  program that asked for it), and genuine forced preemption is impossible if the timer can't
+  land either. `DAIF.I` itself has no per-source granularity, though -- it's a single "IRQs
+  on/off" switch, unable to distinguish the timer's interrupt from the keyboard's -- so the fix
+  isn't a DAIF-level trick, it's the same per-interrupt enable mechanism this project already
+  uses at the GIC (`gic.enable_interrupt`): `DAIF.I` stays unmasked for a program's entire time
+  at EL0 from this stage on, with the timer's PPI simply always enabled (true unconditionally
+  since Stage 3, nothing new needed) and the keyboard's SPI left disabled at the GIC exactly as
+  Stage 10-12 already leave it, unless this particular running slot is the one Stage 13 put into
+  raw mode -- an independent, per-program exception, not something this stage changes. `Blk`'s
+  SPI was never actually part of the hazard either way: it only ever interrupts in response to
+  something the kernel itself initiated and is already synchronously waiting on (`read_blocks_irq`/
+  `write_blocks_irq`'s own `wfe` spin), never unsolicited, so its enabled state at EL0 was never
+  what reentrancy-safety depended on.
 - The quantum (ticks per turn) is a single fixed constant: strict round-robin between the (at most)
   two slots, no priority, no fairness accounting beyond that -- matching this whole block's
   established "as simple as correctly solving what's needed" scope.
