@@ -37,24 +37,12 @@ pub fn write_all(fd: usize, mut bytes: &[u8]) -> Result<(), isize> {
 }
 
 /// `Invalid argument`, for the few errors a program reports on its own rather than getting from a
-/// syscall -- same value and same convention as the kernel's.
-pub const EINVAL: isize = -22;
+/// syscall -- same value and same convention as the kernel's (both come from the `abi` crate).
+pub use abi::errno::EINVAL;
 
-/// Human-readable text for a negative error a syscall returned. These are the same values
-/// `r11_busybox/src/errno.rs` defines (negated Linux errno numbers); the two crates agree by
-/// convention, like the syscall numbers.
+/// Human-readable text for a negative error a syscall returned -- see `abi::errno::errmsg`.
 pub fn errmsg(code: isize) -> &'static str {
-    match code {
-        -2 => "No such file or directory", // ENOENT
-        -5 => "I/O error", // EIO
-        -9 => "Bad file descriptor", // EBADF
-        -13 => "Permission denied", // EACCES
-        -20 => "Not a directory", // ENOTDIR
-        -21 => "Is a directory", // EISDIR
-        EINVAL => "Invalid argument",
-        -24 => "Too many open files", // EMFILE
-        _ => "Unknown error",
-    }
+    abi::errno::errmsg(code)
 }
 
 /// Prints `prog: what: <message for code>` to stderr -- the shape every failing program uses.

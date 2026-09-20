@@ -15,32 +15,22 @@ core::arch::global_asm!(include_str!("start.s"));
 /// A user-program panic must not double-panic the kernel -- it terminates
 /// the program the same way any other abnormal ending does, via `exit`.
 /// `101` matches `std`'s own conventional exit code for a panicking Rust
-/// process, for the same reason borrowing Linux's syscall numbers above
-/// does: familiarity, not a functional dependency on anything upstream.
+/// process, for the same reason the `abi` crate borrows Linux's syscall numbers:
+/// familiarity, not a functional dependency on anything upstream.
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     exit(101)
 }
 
-/// Syscall numbers. These are Linux's real aarch64 values (verified against
-/// `include/uapi/asm-generic/unistd.h`), borrowed for familiarity only --
-/// this project makes no other Linux-ABI-compatibility claim. In
-/// particular: `SYS_EXIT` is plain `exit` (93), the single-thread-exit
-/// syscall, not `exit_group` (94, what glibc's `exit()` actually calls to
-/// tear down every thread in a process) -- irrelevant here since this
-/// project has no threads, but worth naming so the choice reads as
-/// deliberate rather than a mistake. Argument meaning, error/`errno`
-/// conventions, and every syscall this project doesn't implement are all
-/// our own design, not Linux's. Must stay in sync with the kernel's own
-/// copy of these constants (r09_userspace's syscall dispatch) by
-/// convention, since the two crates don't share a dependency.
-pub const SYS_CHMOD: usize = 53;
-pub const SYS_OPEN: usize = 56;
-pub const SYS_CLOSE: usize = 57;
-pub const SYS_GETDENTS: usize = 61;
-pub const SYS_READ: usize = 63;
-pub const SYS_WRITE: usize = 64;
-pub const SYS_EXIT: usize = 93;
+// Syscall numbers, `O_*` flags, directory-record layout, attribute bits: the definitions live in the
+// shared `abi` crate (the kernel uses the same ones) and are re-exported here, so programs keep
+// writing `userlib::SYS_WRITE`, `userlib::ATTR_EXEC`, ... exactly as before.
+pub use abi::fs::{
+    ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, NAME_MAX, O_RDONLY, O_WRONLY,
+};
+pub use abi::syscall::{
+    SYS_CHMOD, SYS_CLOSE, SYS_EXIT, SYS_GETDENTS, SYS_OPEN, SYS_READ, SYS_WRITE,
+};
 
 /// Issues `svc #0` with `nr` in `x8` and the full `x0`-`x5` argument width
 /// this project's calling convention allows. Callers go through the `syscall!`
@@ -114,11 +104,6 @@ pub fn read(fd: usize, buf: &mut [u8]) -> isize {
     syscall!(SYS_READ, fd, buf.as_mut_ptr() as usize, buf.len())
 }
 
-/// `open` flag: read-only. Also opens a directory, for `getdents`.
-pub const O_RDONLY: usize = 0;
-/// `open` flag: write. Creates the file if it doesn't exist, and always starts it empty.
-pub const O_WRONLY: usize = 1;
-
 /// Opens the file or directory at `path` (absolute, or relative to the root -- there is no
 /// working directory yet) and returns its fd, or a negative error.
 pub fn open(path: &str, flags: usize) -> isize {
@@ -130,18 +115,6 @@ pub fn open(path: &str, flags: usize) -> isize {
 pub fn close(fd: usize) -> isize {
     syscall!(SYS_CLOSE, fd)
 }
-
-/// Longest name a directory record can carry.
-pub const NAME_MAX: usize = 255;
-/// Size of one record `getdents` fills in: `size: u32` (little-endian), `attrs: u8`,
-/// `name_len: u8`, then `NAME_MAX` bytes of name, NUL-padded. Decode one with `DirEnt::parse`.
-pub const DIRENT_SIZE: usize = 4 + 1 + 1 + NAME_MAX;
-
-// FAT attribute bits, as they appear in `DirEnt::attrs` and in `chmod`'s masks.
-pub const ATTR_READ_ONLY: u8 = 0x01;
-pub const ATTR_DIRECTORY: u8 = 0x10;
-/// This project's own "executable" convention, not a standard FAT bit -- see ROADMAP.md's Stage 8.
-pub const ATTR_EXEC: u8 = 0x40;
 
 /// Fills `buf` with as many whole `DIRENT_SIZE` records as fit from an fd opened on a directory,
 /// picking up where the last call left off. Returns the number of bytes filled -- `0` once the

@@ -1,0 +1,9 @@
+[package]
+name = "abi"
+version = "0.1.0"
+edition = "2024"
+
+# The kernel <-> user-program ABI: syscall numbers, errno values, and the fixed record layouts
+# both sides must agree on. `no_std`, no dependencies; shared by `userlib` (and through it every
+# program) and by the kernel of every stage that adopts it (r12_shell onward).
+[dependencies]

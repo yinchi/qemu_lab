@@ -3,3 +3,15 @@
 *.log
 rust/**/target/
 **/disk/bin/*.exe
+**/disk/tests/*.exe
+**/disk/tmp/
+# Generated disk images are build products from r12_shell onward (`just disk` rebuilds them,
+# byte-for-byte reproducibly). r06-r11's were committed before that decision and stay tracked.
+rust/**/disk.img
+!rust/r06_virtio/disk.img
+!rust/r07_keydetect/disk.img
+!rust/r08_fs/disk.img
+!rust/r09_userspace/disk.img
+!rust/r10_repl/disk.img
+!rust/r11_busybox/disk.img
+__pycache__/

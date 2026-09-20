@@ -573,119 +573,87 @@ all of this and more unattended.
 
 ## Stage 12: a real shell, with pipes -- `r12_shell`
 
-**Goal:** upgrade Stage 10's bare launcher into something worth typing at
-regularly, now that Stage 11 gives it real programs worth combining -- not a
-rebuild from scratch, an extension of the same tokenizer and ELF-loader
-invocation Stage 10 already established. A further goal, once this stage's
-own feature set is solid: `kernel_main` boots directly into this shell's own
-read-eval loop and never returns from it, replacing whatever ad hoc,
-hardcoded launch sequence earlier stages used for their own demos -- the
-same role a real Unix kernel's `init` (PID 1) plays, the one process the
-kernel starts directly, with everything else descending from it.
+**Goal:** upgrade Stage 10's bare launcher into something worth typing at regularly, now that Stage 11
+gives it real programs worth combining -- an extension of the same tokenizer and ELF-loader invocation,
+not a rebuild. `kernel_main` ends in the shell's read-eval loop and never returns, the role a Unix
+kernel's `init` (PID 1) plays. The shell stays **kernel-resident** (never loaded through Stage 9's ELF
+loader as an EL0 program); what it would take to move it to userspace is recorded below. This is the
+largest stage so far, so its full plan -- Steps, per-Step tests, the state it ends in, the decisions
+behind it and a POSIX-alignment table -- lives in [`Stage12.md`](Stage12.md); this section is the
+summary.
 
-**Features:**
-- Real line editing with history, reusing Stage 5's cursor-aware buffer
-  (insert/remove at an arbitrary position) directly -- but no longer reusing
-  Stage 5's CSI parser or its ANSI reprint-the-tail redraw: input now comes
-  from Stage 7's `virtio-keyboard` as discrete, unambiguous key events (no
-  escape sequences to parse, and hence nothing for `noline`'s unbounded-ESC
-  problem to even apply to), and redraws go straight to Stage 6's console --
-  there's no remote cursor to reposition blindly, so the cell that changed
-  is simply rewritten directly via `put_char`. Making the cursor itself
-  visible needs its own small solution, though: unlike VGA's hardware cursor
-  register, `virtio-gpu` has no cell-aware cursor at all (only a 64x64 ARGB
-  pointer overlay, sized for a mouse pointer, not a character cell), so a
-  visible text cursor is drawn as an ordinary glyph -- e.g. a solid block --
-  via the same `put_char` path as any other character. History is a thin
-  addition on top: a ring buffer of past lines,
-  with Up/Down just two more keycodes Stage 7's driver already delivers as
-  discrete events, no new parsing needed.
-- **Directory-oriented commands, deferred here from Stage 11:** `cd` (necessarily a shell builtin --
-  an external program can't change its parent's working directory), `pwd`, and a working
-  directory for relative paths to resolve against (Stage 11's `open` treats every path as
-  root-relative); `mkdir`, `rm` and `mv` as utilities, which need new directory-mutating syscalls
-  (`hadris-fat` already provides `create_dir`, `delete` and `rename`). Each gets a row in
-  `docs/progs.md`.
-- Redirection (`>`/`<`): close to free, given Stage 11's `open`/`read`/
-  `write`/`close` syscalls -- and Stage 11's own promotion of Stage 9's
-  fixed fd dispatch into a real per-process table. `cmd > file` is the
-  launcher opening the file itself, then rewriting the *child's* stdout
-  entry in that table -- before `run_program`'s `enter_el0()` call -- to
-  point at it, overriding the default `Console` entry `reset_for_launch()`
-  would otherwise leave in place. Not something `cmd` itself does or needs
-  to know about. `cmd < file` is the symmetric case on the `stdin` entry --
-  reading straight from the file, no analogous buffering step needed the
-  way Stage 11's `Keyboard::read()` needed one, since a file's bytes are
-  already fixed and complete. Redirection only ever swaps *which* `read()`
-  a program's fd 0 reaches; it never changes what reading it produces.
-- **Design note on nesting, not a commitment to `()` subshell syntax yet**:
-  the redirection mechanism above generalizes to nested scopes for free if
-  the `0`/`1`/`2` triple is modeled as a stack (e.g. `Vec<[FileDescriptor;
-  3]>` in `fd.rs`) rather than a single overridable slot -- pushing a
-  modified copy of the current triple on entering a scope (a redirected
-  command, or eventually a subshell), popping back to whatever was there
-  before on leaving it. This is what would make `( cmd1 > innerfile; cmd2 )
-  > outerfile`-style nesting correct: `cmd2` needs to see the outer
-  redirection again once `cmd1`'s own, more specific one pops, not the
-  shell's original console defaults. Higher-numbered slots (the
-  `File(handle)` entries `open()` hands out) stay outside this stack --
-  they belong to whichever program opened them and are closed by its own
-  `close()` calls, not scoped by the shell's redirection nesting.
-- **There is one fd table, not one per program.** Since at most one program
-  is ever resident (the same reasoning behind Part 2's single page table in
-  Stage 9), `open()`'s table is a single kernel-owned structure, reset to
-  the standard three defaults (or given specific redirection overrides) at
-  the start of each launch -- not something each program separately owns,
-  and not something that could leak state between one program's run and
-  the next. A program's own view of "its" file descriptors is isolated
-  from any other program's not because it has separate storage, but
-  because the table is always reset before it ever gets a chance to look.
-  There's a second, independent reason this stays safe, distinct from
-  "only one program at a time": the kernel itself never holds a fd number
-  for its own use, not even `0`/`1`/`2` -- those only come into being as
-  *meaning* when a syscall arrives and gets dispatched, and the kernel's
-  own diagnostics reach the same `Console`/UART resources through plain
-  `ConsoleWriter`/`UartWriter` calls, with no fd number involved at all.
-  So there's no risk of the kernel's own I/O colliding with a user
-  program's table the way two *processes'* tables could collide in a real
-  multi-process OS -- the kernel was never a participant in the fd
-  numbering scheme to begin with, only its arbiter.
-- **Running a script is recursion, not a new process -- but it still needs
-  Stage 16's environment stack to get scoping right.** Since this shell is
-  kernel-resident code, never itself loaded via Stage 9's ELF loader as an
-  EL0 program, `sh script.sh` (or `./script.sh`) isn't a fork/exec-style
-  re-invocation the way real Unix does it -- it's the same interpreter
-  function calling itself, reading the script's lines via Stage 11's `read`
-  and feeding each one through the same tokenize-and-launch logic the
-  interactive prompt already uses. The one real design decision this
-  surfaces is scoping, and it falls out of Stage 16's environment stack for
-  free once that exists, as two different invocation styles choosing
-  whether to push a new frame: `./run_script_with_own_scope.sh` pushes a
-  copy of the current environment before interpreting the script's lines
-  and pops it back off afterward, so anything the script `export`s stays
-  local to it -- matching real Unix's own child-process isolation, achieved
-  here without a real child process. `source script.sh` (POSIX's `.`)
-  pushes nothing at all: the script's lines run directly against the
-  *current* top-of-stack frame, so its `export`s persist in the caller
-  once it returns, identical to typing those same lines at the prompt
-  directly. Same underlying stack, same interpreter, the only difference
-  is whether a frame gets pushed first.
-- **Pipes (`cmd1 | cmd2`), via temp files -- deliberately not true streaming
-  concurrency.** Real pipe semantics need two processes actually running at
-  once, which Stage 9 explicitly rules out. Early MS-DOS hit this identical
-  single-tasking wall and solved it the same way we will: run `cmd1` to
-  completion with stdout redirected to a temp file on Stage 8's filesystem,
-  then run `cmd2` to completion with stdin redirected from that file, then
-  delete it. **Named limitation, not a bug to fix later:** this only works
-  for pipelines whose stages produce a *finite* amount of output that fits on
-  disk -- no infinite/streaming pipelines under this design, ever.
+**Phase 1 (Steps 1-5): fix and restructure what exists**, because reviewing Stages 9-11 found
+things the shell shouldn't be built on:
+- A malformed ELF no longer panics the kernel (Stage 11's `chmod +x` made that reachable): `load()`
+  validates everything first and `launch` reports `cannot execute: Exec format error`. A command word
+  containing `/` runs that path.
+- One small `abi` crate (syscall numbers, errno values, dirent layout) shared by kernel and `userlib`
+  instead of copies kept in sync by convention; unknown syscalls return `ENOSYS`, bad pointers `EFAULT`.
+- The kernel heap grows from 1 MiB to 16 MiB (a static in `.bss`; the real ceiling is the fixed user
+  address, not QEMU); the user stack becomes an explicit mapping with a guard.
+- The console write path decodes UTF-8 across `write` calls (no more `<invalid utf8>` for binary output
+  or a character split at a 4096-byte boundary) and stops flushing the GPU per fragment.
+- One line-discipline module replaces the two duplicated copies (the prompt's and `read(0)`'s).
+- **The eval loop leaves IRQ context.** Today `handle_keyboard_irq` calls `launch`, so a program runs
+  inside an unacknowledged interrupt -- which is why every DAIF bit is masked at EL0 and `read(0)` drains
+  the device itself. Instead the IRQ handler only enqueues `Token`s onto a ring buffer, `kernel_main`'s
+  loop consumes them, and programs run with interrupts enabled.
 
-**Demo:** a `> ` prompt on Stage 6's display with working cursor movement
-and command history via Stage 7's keyboard; `echo hello | cat` and
-`ls > listing.txt` both work via the temp-file mechanism above, using
-Stage 11's real utilities rather than synthetic test programs; control
-returns to the prompt once each stage exits (via the `exit` syscall from
-Stage 9).
+**Phase 2 (Steps 6-12): the shell**
+- **Shell-state frames.** A stack of `{cwd, stdio triple}` (Stage 16 adds `env`) with two distinct
+  operations: `with_scope` pushes a whole frame (a script's own scope) and `with_stdio` saves and
+  restores only the stdio triple (every redirect, so a redirected builtin's `cd` still sticks).
+  There is still one fd table, not one per program -- at most one program is ever resident, so the
+  kernel-owned table is rebuilt from the top frame's stdio triple at each launch (Stage 19 revisits
+  this).
+- **Working directory:** `cd` (a builtin), `pwd` (a program over a new `getcwd` syscall), one path
+  resolver with `.`/`..`. `mkdir`, `rm` (with `-r`) and `mv` as utilities over new directory-mutating
+  syscalls (`hadris-fat` already has `create_dir`, `delete` and `rename`). `chdir` as a syscall is
+  deliberately absent until state is per-process.
+- **A lexer that keeps quoting information** (POSIX quoting; `#` only at word start), replacing
+  `shlex::split`, which can't tell `echo "|"` from a pipe.
+- **Redirection:** `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`, applied left to right and on builtins too; no fds
+  above 2 or here-documents.
+- **Scripts are recursion, not processes** -- the interpreter calling itself. `source`/`.` runs against
+  the current frame; `sh FILE` and `./FILE` push one, so a script's `cd` and redirects don't leak,
+  as they wouldn't from a real child process. A non-ELF exec-bit file that looks like text runs as a
+  script (bash's `ENOEXEC` fallback).
+- **Line editing and history:** Stage 5's cursor-aware buffer (insert/remove at a position) without its
+  CSI parser or ANSI redraw -- input arrives as discrete key events and redraws go straight through
+  `put_char` -- a block-glyph cursor, Left/Right/Home/End/Delete, Ctrl+A/E/U/K, and a history ring on
+  Up/Down. Programs' `read(0)` stays a tty-style canonical mode (Backspace, Ctrl+U, Ctrl+D).
+- **Pipes via temp files, deliberately not true streaming concurrency.** Real pipes need two processes
+  running at once, which Stage 9 rules out. As early MS-DOS did, `cmd1` runs to completion with stdout
+  in a temp file under `/tmp`, then `cmd2` with stdin from it, then the file is deleted -- every stage
+  runs, the pipeline's status is the last stage's, and the pipe is bound before a stage's own redirects,
+  as in POSIX. **Named limitation, not a bug to fix later:** finite output that fits on disk only --
+  no infinite/streaming pipelines under this design, ever (Stage 23 replaces the design, not this
+  limitation).
+- The disk image grows to 64 MiB FAT16 (its root directory stays a fixed 512 slots, so everything lives
+  in subdirectories) and is gitignored from this stage on. Tests live in this stage's own `disk/tests/`
+  and `test/progs/`, never in `user/`, which holds only core utilities; `just test` runs host-side unit
+  tests for the pure-logic modules and a QEMU-driven suite that types on the virtio keyboard.
+
+**Path to a userspace `sh`.** Not built here, but each prerequisite has an owner:
+
+| A userspace `sh` needs | Provided by |
+|---|---|
+| The shell not running in IRQ context; one input queue independent of its reader | Stage 12, Step 5 |
+| Per-process `cwd`, stdio bindings and `env`, inherited by a child | Stage 16 adds `env`; Stage 19's slots hold a process struct (Stage 12's frame is plain data so it can become that struct) |
+| Two programs resident at once (the shell stays loaded while a child runs) | Stage 19, with Stages 17/18 for window sizing and heap |
+| `spawn`/`wait` syscalls (the fork/exec equivalent) | Stages 19 and 22 |
+| `chdir` (number reserved) and `dup2`-style fd control | new syscalls once state is per-process |
+| Real pipes between resident programs; job control | Stages 23 and 20-22 |
+| `./script` and `sh script` as a real child process | Stage 19+ spawn (Stage 12's `with_scope` is the same operation) |
+
+**Demo:** a `> ` prompt on Stage 6's display; edit a long command mid-line and recall it with Up;
+`cd bin`, `pwd`, `ls`; `echo hello | cat`; `ls > listing.txt`, `cat listing.txt`, `echo more >>
+listing.txt`;
+`mkdir work`, `cd work`, then a script that `cd`s run as `./s.sh` (the directory is unchanged afterward)
+and as `source s.sh` (it changed); `cp`, `mv`, `rm -r work`; `chmod +x` on a binary file and run it
+(`cannot execute binary file`); `crash` (`exit 139`, and the prompt is still there); type while a
+CPU-bound program runs and watch the keys arrive afterward; restart QEMU against the same `disk.img` and
+find the files still there. `just test` runs the automated version of all of this unattended.
 
 ---
 
@@ -729,9 +697,7 @@ either direction).
   editor is launched the same way as any other program via Stage 12's shell.
 - A toggleable raw-mode switch on fd 0 -- the one genuinely new syscall
   surface this stage needs. Off by default (Stage 10/11's canonical,
-  line-buffered mode); once this editor switches it on, `handle_keyboard_irq`
-  routes its `Token`s straight to whatever this editor's own `read()` calls
-  pull from, bypassing Stage 10's line-editing loop entirely -- no
+  line-buffered mode); once this editor switches it on, its own `read()` calls pop `Token`s straight from the token queue Stage 12 introduced, bypassing the line discipline entirely -- no
   Enter-wait, no Backspace-absorption, since the editor decides what
   Backspace means itself (delete-under-cursor, not "edit the pending
   line"). Switched back off on exit, restoring Stage 12's shell to
@@ -743,15 +709,13 @@ either direction).
   so `tokens.rs`'s `Token` (already carrying raw evdev codes and modifier
   flags, not just resolved characters) has a real consumer to have been
   designed for.
-- Flipping this switch on is also the first thing that has to unmask DAIF for a running program.
-  Stage 10's `process::run_program` masks every DAIF bit for a program's entire time at EL0 --
-  closing a real reentrancy hazard (a keyboard IRQ landing mid-program could otherwise re-enter
-  `handle_keyboard_irq` while `run_program` is still on the stack, remapping the very user window
-  the program is executing out of) that stays invisible for Stage 10-12's programs only because
-  they're too short-lived between syscalls to ever hit it. This editor is the first program that
-  runs for a genuinely long time *and* needs interrupts (specifically the keyboard's) to reach it
-  while it does, so the raw-mode switch needs to unmask (at minimum) the keyboard's IRQ alongside
-  routing its `Token`s -- and re-mask on exit, same as the routing itself gets undone.
+- Flipping this switch on needs no interrupt-mask changes. Stages 10-11 masked every DAIF bit for a
+  program's whole time at EL0 to close a reentrancy hazard (a keyboard IRQ re-entering
+  `handle_keyboard_irq` while `run_program` was still on the stack), but Stage 12 removes the hazard
+  instead of masking around it: the keyboard IRQ only enqueues `Token`s, the shell's loop runs outside
+  IRQ context, and programs run with interrupts enabled. Raw mode is then purely a routing switch on
+  that queue -- who consumes each `Token`, the shell's line discipline or this editor directly -- and
+  keystrokes typed while a program isn't reading wait in the queue instead of being lost.
 
 **Demo:** launch the editor from Stage 12's shell against a file already
 present on the disk image, edit its text on Stage 6's display using
@@ -829,21 +793,21 @@ alongside them -- `envp` -- rather than inventing a special-purpose configuratio
 something new (like Stage 14's own deliberately-deferred `$TZ`) needs configuring.
 
 **Features:**
-- A third array, `envp`: `NULL`-terminated pointers to `"KEY=VALUE"` C-style strings, written onto
-  the new program's stack the same way Stage 10 already writes `argv`'s strings and pointer array,
+- A third array, `envp`: `NULL`-terminated pointers to `"KEY=VALUE"` C-style strings, written onto the new program's stack the same way Stage 10 already writes `argv`'s strings and pointer array (through the `push_cstr_array` helper Stage 12 extracts from `run_program`),
   passed via `x2` alongside `argc` (`x0`)/`argv` (`x1`) -- extending Stage 10's own mechanism, not
   replacing it.
 - The shell (Stage 12) gains `export KEY=VALUE` (updating an entry before the *next* launch) and
   passes its own current environment to every child it launches -- the parent-to-child inheritance
   real Unix gets for free from `fork()`, replicated here by hand since there's no `fork()` to
   inherit from automatically.
-- **A stack of environment frames, not one flat global table** -- the same `Vec`-of-frames shape
-  Stage 12's fd-triple design already uses for redirection nesting, applied here to give script
-  execution correct scoping (see Stage 12's own note on `source` vs. `./script.sh`): pushing a
-  copy of the current frame on entering a scope that should get its own isolated environment,
-  popping it back off on leaving; running a script inline against the current frame instead, with
-  no push at all, is what `source`/`.` does. Two different call sites into one shared mechanism,
-  not two separate features.
+- **The environment joins Stage 12's shell-state frame -- no new stack.** Stage 12 already builds the
+  frame stack (`{cwd, stdio triple}`, `with_scope` pushing a whole frame, `with_stdio` saving only the
+  redirections); this stage adds an `env` field to that frame and nothing else. `./script.sh` and `sh`
+  push a copy of the current frame, so anything the script exports stays local to it; `source`/`.`
+  pushes nothing, so its `export`s persist in the caller -- the scoping split Stage 12 already
+  demonstrates with `cd`, now covering environment variables too. `cd` with no operand switches from `/`
+  to `$HOME`. Because the frame is plain data it is also what becomes a per-process struct once
+  Stage 19 lets a child exist (see Stage 12's path to a userspace `sh`).
 - `env`/`printenv`, a small utility printing the current environment -- cheap once the mechanism
   exists, matching Stage 11's other utilities' spirit.
 
@@ -977,6 +941,12 @@ time-slice between two actively-running ones.
   slot now keeps its own three-plus-`File(handle)` entries, still reset by `reset_for_launch()`
   when a *fresh* program is loaded into that slot, but no longer reset just because the *other*
   slot's occupant changed.
+- **This stage is also the gate for moving the shell to userspace** (Stage 12 keeps it
+  kernel-resident): a shell that launches a child has to stay loaded while the child runs, which needs
+  exactly this second window and saved context. What remains after it is small and named in Stage 12's
+  path-to-a-userspace-`sh` table: `spawn`/`wait` syscalls (Stage 22), turning Stage 12's shell-state frame
+  into a per-process struct a child inherits (with the `chdir` syscall whose number Stage 12 reserves),
+  and `dup2`-style fd control.
 - Explicitly not a scheduler: switching between the two slots only ever happens at an explicit
   call from kernel code reacting to something specific (Stage 20's signal, Capstone 2's blocked
   pipe read/write) -- never a timer interrupt forcing a switch mid-instruction. No ready queue, no
@@ -1000,7 +970,8 @@ from outside, rather than something it calls voluntarily (`exit`) or synchronous
 (a segfault).
 
 **Features:**
-- `Ctrl+Z` recognized at the keyboard driver level (Stage 7), intercepted before it ever reaches
+- `Ctrl+Z` recognized at the keyboard driver level (Stage 7; concretely, in Stage 12's token-queue
+  producer, before the `Token` is ever queued), intercepted before it ever reaches
   whichever program currently owns keyboard input -- matching real termios' `ISIG` line-discipline
   behavior, where the terminal driver, not the foreground program, is what normally recognizes it.
 - When recognized while a program occupies the foreground slot, the kernel calls Stage 19's
@@ -1128,7 +1099,9 @@ combining job-controlling a real program (not a throwaway test binary) with the 
 Stage 12 itself named as permanent.
 
 **Features:**
-- **Real bounded-buffer, blocking pipes, replacing Stage 12's temp-file mechanism.** `cmd1 | cmd2`
+- **Real bounded-buffer, blocking pipes, replacing Stage 12's temp-file mechanism** (the pipeline
+  code is isolated in one function there so it's replaceable; a kernel-heap buffer was considered for
+  Stage 12 and not built -- still finite, so it wouldn't have lifted the limitation either). `cmd1 | cmd2`
   now loads both ends into the two resident slots at once (Stage 19), connected by a small
   fixed-size kernel buffer. Writing to a full buffer suspends the writer's slot and switches to the
   reader; reading an empty buffer symmetrically suspends the reader and switches to the writer --
@@ -1176,22 +1149,14 @@ regular enough interrupt to make switching invisible.
   every tick (or every Nth tick, a fixed quantum), it forcibly calls Stage 19's `suspend_current()`
   on whichever slot is presently running -- even if that program never called anything, never
   blocked, never slept -- and resumes the other slot. This is the second, and last, thing that
-  needs the timer's IRQ to actually reach a running program -- Stage 10's `process::run_program`
-  masks every DAIF bit for a program's entire time at EL0 specifically so *nothing* interrupts it
-  (Stage 13's raw-mode switch was the first, narrower exception, unmasking the keyboard for a
-  program that asked for it), and genuine forced preemption is impossible if the timer can't
-  land either. `DAIF.I` itself has no per-source granularity, though -- it's a single "IRQs
-  on/off" switch, unable to distinguish the timer's interrupt from the keyboard's -- so the fix
-  isn't a DAIF-level trick, it's the same per-interrupt enable mechanism this project already
-  uses at the GIC (`gic.enable_interrupt`): `DAIF.I` stays unmasked for a program's entire time
-  at EL0 from this stage on, with the timer's PPI simply always enabled (true unconditionally
-  since Stage 3, nothing new needed) and the keyboard's SPI left disabled at the GIC exactly as
-  Stage 10-12 already leave it, unless this particular running slot is the one Stage 13 put into
-  raw mode -- an independent, per-program exception, not something this stage changes. `Blk`'s
-  SPI was never actually part of the hazard either way: it only ever interrupts in response to
-  something the kernel itself initiated and is already synchronously waiting on (`read_blocks_irq`/
-  `write_blocks_irq`'s own `wfe` spin), never unsolicited, so its enabled state at EL0 was never
-  what reentrancy-safety depended on.
+  needs the timer's IRQ to actually reach a running program -- and unlike what Stages 10-11 assumed,
+  nothing has to be unmasked for it: since Stage 12 (Step 5) `run_program` no longer masks DAIF at EL0
+  (the shell's loop runs outside IRQ context and the keyboard IRQ only enqueues `Token`s, so the
+  reentrancy hazard the mask existed for is gone). What this stage adds is only that the timer's
+  PPI is enabled at the GIC (as in Stage 3; the Stage 12 kernel doesn't use it yet) and its handler
+  *acts* on the tick. Neither the keyboard's SPI nor `Blk`'s needs special handling: `Blk` only ever
+  interrupts in response to something the kernel itself initiated and is already synchronously
+  waiting on (`read_blocks_irq`/`write_blocks_irq`'s own `wfe` spin), never unsolicited.
 - The quantum (ticks per turn) is a single fixed constant: strict round-robin between the (at most)
   two slots, no priority, no fairness accounting beyond that -- matching this whole block's
   established "as simple as correctly solving what's needed" scope.

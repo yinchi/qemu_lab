@@ -1,0 +1,307 @@
+#![no_std]
+#![no_main]
+
+extern crate alloc;
+
+// The kernel's layers, bottom to top: `arch` and `platform` (the CPU and the board), `drivers`
+// (device protocols), the services built on them -- `fs`, `console`, `keyboard` -- then `exec`
+// (programs), `syscall`, and `shell` at the top. A module uses ones at or below its own level.
+mod arch;
+mod console;
+mod drivers;
+mod exec;
+mod fs;
+mod keyboard;
+mod platform;
+mod shell;
+mod syscall;
+mod util;
+
+use core::fmt::Write;
+use core::panic::PanicInfo;
+use core::sync::atomic::Ordering;
+
+use aarch64_cpu::registers::{DAIF, ELR_EL1, ESR_EL1, Readable, Writeable};
+use abi::fs::ATTR_EXEC;
+use arm_gic::{IntId, InterruptGroup, gicv2::GicV2};
+use linked_list_allocator::LockedHeap;
+
+use crate::arch::gic::{gic_enable, gic_setup};
+use crate::arch::mmu;
+use crate::console::font::{FONT_DATA, Font};
+use crate::console::{BG, Console, show_row};
+use crate::drivers::virtio::blk::Blk;
+use crate::drivers::virtio::gpu::Gpu;
+use crate::drivers::virtio::input::Keyboard;
+use crate::fs::blkio::{BlkIo, VOL};
+use crate::fs::{find_entry, read_file_to_vec};
+use crate::keyboard::keymap::{KEY_NAMES, KEY_STATE, LOCK_STATE, build_key_names};
+use crate::keyboard::keymap::{KeyState, LockState};
+use crate::keyboard::line::{LINE, LineBuffer};
+use crate::platform::base_addresses::{BASE_ADDRESSES, init_base_addresses};
+use crate::platform::globals::{BLK, BLK_SPI, CONSOLE, GPU, KEYBOARD, KEYBOARD_SPI};
+use crate::platform::uart::{UART0, UartWriter, uart_ensure_newline, uart_write};
+use crate::shell::PROMPT;
+
+/// Size of the kernel heap: 16 MiB, up from 1 MiB in Stage 11. A launch reads a whole ELF into a
+/// `Vec` (capped at `shell::launch`'s `MAX_PROGRAM_SIZE`, half of this), `fs/files.rs` snapshots
+/// directory listings and holds open readers/writers (each with `hadris-fat`'s own buffers), and
+/// none of it is freed until the program is done. The heap is a static in `.bss`, so `arch/mmu.rs`
+/// maps it with the rest of the kernel image (`__data_start..__kernel_end`) and nothing else needs
+/// to know its size. The ceiling is not QEMU's RAM but the fixed user address: every user binary is
+/// linked at `0x44000000`, so the image (about 21 MiB with this heap, from `0x40000000`) must end
+/// below it -- which leaves a guard gap of roughly 40 MiB, where earlier stages' 6 MiB image left
+/// 48 MiB.
+const HEAP_SIZE: usize = 16 * 1024 * 1024;
+static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+
+#[global_allocator]
+static ALLOCATOR: LockedHeap = LockedHeap::empty();
+
+/// Reads the font through the filesystem (`fonts/spleen.raw`), same as any other file -- no
+/// more special-cased raw sector read the way Stage 6/7 needed before a real filesystem existed.
+///
+/// SAFETY: nothing else may touch FONT_DATA concurrently -- true here, since this only ever runs
+/// once, from `kernel_main`, before anything else exists that could read or write it.
+#[allow(clippy::deref_addrof)]
+unsafe fn read_font(vol: &hadris_fat::sync::FatVolume<BlkIo>) -> &'static [u8; 4096] {
+    let root = vol.root_dir();
+    let fonts_dir_entry = find_entry(&root, "fonts").expect("fonts/ not found on the disk image");
+    let fonts_dir = root
+        .open_entry(&fonts_dir_entry)
+        .expect("failed to open fonts directory");
+    let font_entry =
+        find_entry(&fonts_dir, "spleen.raw").expect("fonts/spleen.raw not found on the disk image");
+    let font_bytes = read_file_to_vec(vol, &font_entry);
+    unsafe {
+        (&raw mut FONT_DATA as *mut u8).copy_from_nonoverlapping(font_bytes.as_ptr(), 4096);
+        // `FONT_DATA` isn't an `Option`, so `static_mut_ref!`/`static_ref!` (see `util.rs`)
+        // don't apply to it -- deliberately kept as its own plain raw-pointer access rather than
+        // complicating those two macros to handle a single one-off non-`Option` case.
+        &*(&raw const FONT_DATA)
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
+    // SAFETY: the only call to `init`, and it happens before anything else
+    // can possibly allocate.
+    unsafe { ALLOCATOR.lock().init(&raw mut HEAP as *mut u8, HEAP_SIZE) };
+
+    // Needs the allocator above (BiMap is hashmap-backed) but nothing else -- populated this
+    // early because KeyState::describe needs it from its very first call onward (see KEY_NAMES's
+    // doc comment in keyboard/keymap.rs).
+    // SAFETY: sole write, happening before anything could possibly call KeyState::describe.
+    unsafe {
+        KEY_NAMES = Some(build_key_names());
+    }
+
+    let mut uart0_writer = UartWriter { uart: &UART0 };
+    init_base_addresses(dtb_ptr, &mut uart0_writer);
+
+    // The MMU, turned on for the first time anywhere in this crate (see r09_userspace's own
+    // first use, mirrored here). Must come after init_base_addresses (GICD/GICC are only known
+    // once the DTB has been parsed) but before gic_setup/any other device access -- every
+    // subsequent MMIO touch goes through the page table from this point on.
+    mmu::enable(BASE_ADDRESSES.get_gicd(), BASE_ADDRESSES.get_gicc());
+    uart0_writer.write_str("MMU enabled.\r\n").unwrap_or(());
+
+    gic_setup();
+
+    // Find the VirtIO block device and hand it over to BLK, then enable its SPI -- from this
+    // point on, a real IRQ can call `static_mut_ref!(BLK)` inside `irq_handler`, so this write
+    // must (and does) happen before `gic_enable(blk_spi)`. Unlike Stage 6/7, BLK stays live (and
+    // its SPI enabled) for this program's entire remaining life: fs/blkio.rs's BlkIo reaches
+    // through it for every filesystem read, not just one early font load.
+    let (blk, blk_spi) = Blk::find(BASE_ADDRESSES.virtio_mmio_slots())
+        .expect("no virtio-blk device found among the virtio-mmio slots");
+    // SAFETY: sole write to BLK, and it happens before BLK_SPI's GIC line is enabled below --
+    // irq_handler can't observe BLK until then.
+    unsafe {
+        BLK = Some(blk);
+    }
+
+    BLK_SPI.store(blk_spi, Ordering::Relaxed);
+    gic_enable(blk_spi);
+
+    // DAIF stays unmasked from here on (never re-masked) -- both Stage 2/3's precedent and this
+    // stage's rest of kernel_main run with real IRQs enabled the whole time.
+    DAIF.write(DAIF::I::CLEAR);
+
+    // Mount the FAT filesystem built by `just disk` (see justfile) -- BlkIo presents the whole
+    // block device as one byte-addressable stream, so hadris-fat can find its own boot sector,
+    // FAT tables, and directory entries without this code needing to know their layout.
+    //
+    // SAFETY: BLK is populated and its SPI enabled above.
+    let blk_io = unsafe { BlkIo::new() };
+    let vol =
+        hadris_fat::sync::FatVolume::open(blk_io).expect("failed to mount the FAT filesystem");
+    uart0_writer
+        .write_str("FAT filesystem mounted.\r\n")
+        .unwrap_or(());
+
+    // Mark every program in bin/ executable, per Stage 8's ATTR_EXEC convention -- claimed there,
+    // enforced by `shell::launch` for the first time. `folder_to_img.sh`'s mtools-based image
+    // build has no way to set this (mtools' `mattrib` only manages the standard DOS r/h/s/a
+    // bits, not this project's own reserved one), so, same as r08_fs's own demo, it's set here
+    // at boot instead -- freshly every run, since `just disk` reformats the image from scratch
+    // each time.
+    {
+        let root = vol.root_dir();
+        let bin_dir_entry = find_entry(&root, "bin").expect("bin/ not found on the disk image");
+        let bin_dir = root
+            .open_entry(&bin_dir_entry)
+            .expect("failed to open bin directory");
+        // Collected first: `set_attributes` rewrites directory entries, which mustn't happen
+        // underneath a live `entries()` iterator over the same directory.
+        let programs: alloc::vec::Vec<_> = bin_dir
+            .entries()
+            .map(|r| {
+                let hadris_fat::sync::DirectoryEntry::Entry(entry) =
+                    r.expect("directory entry read failed");
+                entry
+            })
+            .filter(|entry| entry.is_file())
+            .collect();
+        for entry in programs {
+            let new_attrs = hadris_fat::raw::DirEntryAttrFlags::from_bits_retain(
+                entry.attributes().bits() | ATTR_EXEC,
+            );
+            vol.set_attributes(&entry, new_attrs)
+                .expect("failed to set a program's executable bit");
+        }
+    }
+
+    // SAFETY: BLK is populated and its SPI enabled above.
+    let font = Font::new(unsafe { read_font(&vol) });
+
+    uart0_writer
+        .write_str("Font read from disk.\r\n")
+        .unwrap_or(());
+
+    // Find the VirtIO GPU device and set up the console -- polled, not interrupt-driven; see
+    // drivers/virtio/gpu.rs's doc comment on why.
+    let mut gpu_dev = Gpu::find(BASE_ADDRESSES.virtio_mmio_slots())
+        .expect("no virtio-gpu device found among the virtio-mmio slots");
+    let fb = gpu_dev.framebuffer();
+    let mut console = Console::new(fb.into(), font);
+    console.clear(BG);
+
+    // Find the VirtIO input device -- this stage's new piece. Its SPI isn't enabled yet: doing
+    // so before CONSOLE/GPU/KEY_STATE/LOCK_STATE are populated below would let a keypress IRQ
+    // reach handle_keyboard_irq while those statics are still None.
+    let (keyboard, kb_spi) = Keyboard::find(BASE_ADDRESSES.virtio_mmio_slots())
+        .expect("no virtio-input device found among the virtio-mmio slots");
+
+    uart0_writer
+        .write_str("Keyboard found -- listening for key events via IRQ.\r\n")
+        .unwrap_or(());
+
+    let init_keys = KeyState::new();
+    let init_locks = LockState::new();
+    show_row(&mut console, 0, PROMPT, "");
+    gpu_dev.flush();
+    uart_ensure_newline();
+    uart_write(PROMPT.as_bytes());
+
+    // Hand every piece of state handle_keyboard_irq needs over to its static home.
+    //
+    // SAFETY: sole writes to each of these, and KEYBOARD_SPI's GIC line isn't enabled until
+    // after this block -- irq_handler's keyboard branch can't run, and so can't observe any of
+    // these, until then.
+    unsafe {
+        CONSOLE = Some(console);
+        GPU = Some(gpu_dev);
+        KEYBOARD = Some(keyboard);
+        KEY_STATE = Some(init_keys);
+        LOCK_STATE = Some(init_locks);
+        LINE = Some(LineBuffer::new());
+        VOL = Some(vol);
+    }
+    KEYBOARD_SPI.store(kb_spi, Ordering::Relaxed);
+    gic_enable(kb_spi);
+
+    // Sleep between interrupts -- every actual event, blk or keyboard, is now handled entirely
+    // by irq_handler.
+    loop {
+        unsafe { core::arch::asm!("wfe") };
+    }
+}
+
+/// Handles IRQ (Interrupt Request) exceptions -- the only two possible sources are the block
+/// device (only during the font read early in `kernel_main`) and the keyboard (for the rest of
+/// the program's life).
+///
+/// See `arch::gic::gic_setup`'s doc comment for why this constructs its own `GicV2` rather than
+/// sharing one via a static.
+#[unsafe(no_mangle)]
+extern "C" fn irq_handler() {
+    let mut gic = unsafe {
+        GicV2::new(
+            BASE_ADDRESSES.get_gicd() as *mut _,
+            BASE_ADDRESSES.get_gicc() as *mut _,
+        )
+    };
+
+    // Group0: matches the C version's plain GICC_IAR/GICC_EOIR (offsets 0x00C/0x010), which is
+    // what this QEMU config (no `secure=on`, no GIC Security Extensions) actually uses -- Group1
+    // goes through the separate AIAR/AEOIR registers instead.
+    if let Some(intid) = gic.get_and_acknowledge_interrupt(InterruptGroup::Group0) {
+        if intid == IntId::spi(BLK_SPI.load(Ordering::Relaxed)) {
+            // SAFETY: BLK is populated before BLK_SPI's GIC line is ever enabled (kernel_main).
+            unsafe { static_mut_ref!(BLK) }.ack_interrupt();
+        } else if intid == IntId::spi(KEYBOARD_SPI.load(Ordering::Relaxed)) {
+            shell::handle_keyboard_irq();
+        }
+        gic.end_interrupt(intid, InterruptGroup::Group0);
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn unexpected_exception(v: usize) -> ! {
+    const ERROR_TYPES: [&str; 16] = [
+        "sync_el1t",
+        "irq_el1t",
+        "fiq_el1t",
+        "error_el1t",
+        "sync_el1h",
+        "irq_el1h",
+        "fiq_el1h",
+        "error_el1h",
+        "sync_el0_64",
+        "irq_el0_64",
+        "fiq_el0_64",
+        "error_el0_64",
+        "sync_el0_32",
+        "irq_el0_32",
+        "fiq_el0_32",
+        "error_el0_32",
+    ];
+
+    let esr = ESR_EL1.get();
+    let elr = ELR_EL1.get();
+    panic!(
+        "Unexpected exception occurred {}\r\n\
+        ESR_EL1: {:#x}, ELR_EL1: {:#x}",
+        ERROR_TYPES[v], esr, elr
+    );
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    let mut uart0_writer = UartWriter { uart: &UART0 };
+    write!(
+        &mut uart0_writer,
+        "\r\n\nKernel Panic! (at: {})\r\n\n{}\r\n",
+        info.location().unwrap_or(core::panic::Location::caller()),
+        info.message(),
+    )
+    .unwrap_or(());
+    hang()
+}
+
+fn hang() -> ! {
+    loop {
+        unsafe { core::arch::asm!("wfe") };
+    }
+}

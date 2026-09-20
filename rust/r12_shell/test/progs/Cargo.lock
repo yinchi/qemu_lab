@@ -15,6 +15,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "testprogs"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "progs",
+ "userlib",
+]
+
+[[package]]
 name = "userlib"
 version = "0.1.0"
 dependencies = [
