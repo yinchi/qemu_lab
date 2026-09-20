@@ -1,7 +1,7 @@
 //! Shared `no_std` runtime for every EL0 binary this roadmap builds from
-//! Stage 9 onward (`hello`/`crash` now; `echo`/`cat`/`ls`/`cp`/the editor in
-//! Stages 10-13): the entry stub (`start.s`), the raw syscall wrapper, and
-//! the `write`/`read`/`exit` syscalls themselves, all built against the
+//! Stage 9 onward (the programs in `../progs`, and later the editor): the entry stub
+//! (`start.s`), the raw syscall wrapper, and the syscalls themselves (`write`/`read`/`exit`,
+//! plus `open`/`close`/`getdents`/`chmod` from Stage 11), all built against the
 //! standard AArch64/Linux calling convention -- syscall number in `x8`, up
 //! to 6 args in `x0`-`x5`, return value in `x0` -- the same shape
 //! `ROADMAP.md`'s Stage 9 assumes, not invented here.
@@ -34,6 +34,10 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 /// our own design, not Linux's. Must stay in sync with the kernel's own
 /// copy of these constants (r09_userspace's syscall dispatch) by
 /// convention, since the two crates don't share a dependency.
+pub const SYS_CHMOD: usize = 53;
+pub const SYS_OPEN: usize = 56;
+pub const SYS_CLOSE: usize = 57;
+pub const SYS_GETDENTS: usize = 61;
 pub const SYS_READ: usize = 63;
 pub const SYS_WRITE: usize = 64;
 pub const SYS_EXIT: usize = 93;
@@ -102,11 +106,74 @@ pub fn write(fd: usize, buf: &[u8]) -> isize {
     syscall!(SYS_WRITE, fd, buf.as_ptr() as usize, buf.len())
 }
 
-/// Reads up to `buf.len()` bytes from the file descriptor `fd` into `buf`.
-/// Stage 9 never calls this -- the kernel-side handler is a stub until
-/// Stage 11.
+/// Reads up to `buf.len()` bytes from the file descriptor `fd` into `buf`. Returns the number of
+/// bytes read -- `0` at end of file -- or a negative value on error. From fd `0` (the keyboard)
+/// this blocks until a whole line has been typed and returns that line, newline included, no
+/// matter how large `buf` is.
 pub fn read(fd: usize, buf: &mut [u8]) -> isize {
     syscall!(SYS_READ, fd, buf.as_mut_ptr() as usize, buf.len())
+}
+
+/// `open` flag: read-only. Also opens a directory, for `getdents`.
+pub const O_RDONLY: usize = 0;
+/// `open` flag: write. Creates the file if it doesn't exist, and always starts it empty.
+pub const O_WRONLY: usize = 1;
+
+/// Opens the file or directory at `path` (absolute, or relative to the root -- there is no
+/// working directory yet) and returns its fd, or a negative error.
+pub fn open(path: &str, flags: usize) -> isize {
+    syscall!(SYS_OPEN, path.as_ptr() as usize, path.len(), flags)
+}
+
+/// Closes `fd`. For a file opened with `O_WRONLY` this is also what commits its final size to
+/// disk, so a failure here means the write may not have landed.
+pub fn close(fd: usize) -> isize {
+    syscall!(SYS_CLOSE, fd)
+}
+
+/// Longest name a directory record can carry.
+pub const NAME_MAX: usize = 255;
+/// Size of one record `getdents` fills in: `size: u32` (little-endian), `attrs: u8`,
+/// `name_len: u8`, then `NAME_MAX` bytes of name, NUL-padded. Decode one with `DirEnt::parse`.
+pub const DIRENT_SIZE: usize = 4 + 1 + 1 + NAME_MAX;
+
+// FAT attribute bits, as they appear in `DirEnt::attrs` and in `chmod`'s masks.
+pub const ATTR_READ_ONLY: u8 = 0x01;
+pub const ATTR_DIRECTORY: u8 = 0x10;
+/// This project's own "executable" convention, not a standard FAT bit -- see ROADMAP.md's Stage 8.
+pub const ATTR_EXEC: u8 = 0x40;
+
+/// Fills `buf` with as many whole `DIRENT_SIZE` records as fit from an fd opened on a directory,
+/// picking up where the last call left off. Returns the number of bytes filled -- `0` once the
+/// listing is exhausted -- or a negative error.
+pub fn getdents(fd: usize, buf: &mut [u8]) -> isize {
+    syscall!(SYS_GETDENTS, fd, buf.as_mut_ptr() as usize, buf.len())
+}
+
+/// One decoded `getdents` record.
+pub struct DirEnt<'a> {
+    pub size: u32,
+    pub attrs: u8,
+    pub name: &'a str,
+}
+
+impl<'a> DirEnt<'a> {
+    /// Decodes the record in `raw`, which must be exactly `DIRENT_SIZE` bytes. `None` if the
+    /// name isn't valid UTF-8.
+    pub fn parse(raw: &'a [u8]) -> Option<Self> {
+        let name_len = raw[5] as usize;
+        Some(Self {
+            size: u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
+            attrs: raw[4],
+            name: core::str::from_utf8(&raw[6..6 + name_len]).ok()?,
+        })
+    }
+}
+
+/// Sets the `set` bits and clears the `clear` bits of `path`'s attribute byte. Only
+/// `ATTR_READ_ONLY` and `ATTR_EXEC` may be named. Returns `0`, or a negative error.
+pub fn chmod(path: &str, set: u8, clear: u8) -> isize {
+    syscall!(SYS_CHMOD, path.as_ptr() as usize, path.len(), set as usize, clear as usize)
 }
 
 /// Ends the calling program and returns control to the kernel -- the only
@@ -181,8 +248,8 @@ macro_rules! entry {
 /// One argument in an `Args` (`argv[0]` is the program's own name, same C convention) --
 /// `argc`/`argv` themselves, as `_start` receives them in `x0`/`x1`, aren't Rust-safe to hand a
 /// program directly: this decodes them into an ordinary, `Copy`, single-pass iterator once, in
-/// the shared runtime, rather than every consumer (`echo` now; `cat`/`ls`/`cp`/the editor in
-/// Stages 11/13) re-implementing C-string scanning and UTF-8 validation itself.
+/// the shared runtime, rather than every consumer (`echo`, `cat`, `ls`, ..., and later the
+/// editor) re-implementing C-string scanning and UTF-8 validation itself.
 #[derive(Clone, Copy)]
 pub struct Args {
     argv: *const *const u8,

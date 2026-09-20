@@ -21,7 +21,7 @@ build:
 elf:
     bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
 
-# Builds disk.img: the two EL0 test binaries (hello, crash -- see ../user/) first, staged into
+# Builds disk.img: the two EL0 test binaries (hello, crash -- see ../user/progs/) first, staged into
 # disk/bin/, then handed to folder_to_img.sh along with the static files already staged in
 # disk/ (hello.txt, hello.sh, fonts/), the same set r08_fs's own disk.img carried.
 disk:
@@ -29,11 +29,10 @@ disk:
     set -euo pipefail
     TARGET=aarch64-unknown-none-softfloat
     cd {{justfile_directory()}}
-    cd ../user/hello && cargo build --target ${TARGET} --release
-    cd ../crash && cargo build --target ${TARGET} --release
+    cd ../user/progs && cargo build --target ${TARGET} --release
     cd {{justfile_directory()}}
-    cp ../user/hello/target/${TARGET}/release/hello disk/bin/hello
-    cp ../user/crash/target/${TARGET}/release/crash disk/bin/crash
+    cp ../user/progs/target/${TARGET}/release/hello disk/bin/hello
+    cp ../user/progs/target/${TARGET}/release/crash disk/bin/crash
     ../folder_to_img.sh disk.img 16M R09US {{VOLUME_SERIAL}} disk
 
 # Run with serial connected to the terminal (stdio), the FAT-formatted disk over virtio-blk,

@@ -269,6 +269,6 @@ kernel wrote, builds a `&[u8]` slice of that length, advances to the next slot, 
 validates the bytes as UTF-8 to produce the `&'static str` it actually returns.
 
 Because `Args` is a plain `Copy` iterator, a consumer can use ordinary `Iterator` combinators on
-it without any special handling -- `echo` (`user/echo/src/main.rs`), the first program built
+it without any special handling -- `echo` (`user/progs/src/bin/echo.rs`), the first program built
 against `entry_with_args!`, drops its own name with a plain `args.skip(1)` before printing the
 rest back.

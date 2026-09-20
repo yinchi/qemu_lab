@@ -1,4 +1,4 @@
-BIN := "r10_repl"
+BIN := "r11_busybox"
 
 # Fixed mkfs.fat volume serial so `just disk` produces a byte-identical disk.img every run
 # instead of a fresh random serial each time -- same as r09_userspace's own justfile.
@@ -20,18 +20,24 @@ build:
 elf:
     bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
 
-# Builds disk.img: echo (see ../user/progs/) first, staged into disk/bin/, then handed to
-# folder_to_img.sh along with the static files already staged in disk/ (fonts/) -- same pattern
-# r09_userspace's own disk recipe uses.
+# Builds disk.img: every program in ../user/progs (one cargo build; see docs/progs.md), staged
+# into disk/bin/ as <name>.exe -- the launcher tries the bare name first and then name.exe, same
+# as Cygwin's shell, so `cat` finds bin/cat.exe -- then handed to folder_to_img.sh along with the
+# static files already staged in disk/ (fonts/, the text/binary fixtures the utilities are
+# demoed on).
 disk:
     #!/usr/bin/env bash
     set -euo pipefail
     TARGET=aarch64-unknown-none-softfloat
     cd {{justfile_directory()}}
-    cd ../user/progs && cargo build --target ${TARGET} --release
-    cd {{justfile_directory()}}
-    cp ../user/progs/target/${TARGET}/release/echo disk/bin/echo
-    ../folder_to_img.sh disk.img 16M R10RE {{VOLUME_SERIAL}} disk
+    (cd ../user/progs && cargo build --target ${TARGET} --release)
+    rm -rf disk/bin
+    mkdir -p disk/bin
+    for src in ../user/progs/src/bin/*.rs; do
+        name=$(basename "$src" .rs)
+        cp ../user/progs/target/${TARGET}/release/${name} disk/bin/${name}.exe
+    done
+    ../folder_to_img.sh disk.img 16M R11BB {{VOLUME_SERIAL}} disk
 
 # Run with serial connected to the terminal (stdio), the FAT-formatted disk over virtio-blk, a
 # virtio-gpu display, and a virtio-keyboard input device.
@@ -41,3 +47,9 @@ run: build disk
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -kernel {{BIN}}.elf
+
+# Boots the kernel headless and drives it by typing on the virtio keyboard through the QEMU
+# monitor's `sendkey`, checking each command's output (from the serial log) and the resulting
+# disk contents -- see test/run_tests.py. Works on a copy of disk.img, so it never modifies it.
+test: build disk
+    python3 {{justfile_directory()}}/test/run_tests.py {{justfile_directory()}}/{{BIN}}.elf {{justfile_directory()}}/disk.img

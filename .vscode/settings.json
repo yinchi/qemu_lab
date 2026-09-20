@@ -11,10 +11,9 @@
         "rust/r08_fs/Cargo.toml",
         "rust/r09_userspace/Cargo.toml",
         "rust/r10_repl/Cargo.toml",
+        "rust/r11_busybox/Cargo.toml",
         "rust/user/userlib/Cargo.toml",
-        "rust/user/echo/Cargo.toml",
-        "rust/user/hello/Cargo.toml",
-        "rust/user/crash/Cargo.toml"
+        "rust/user/progs/Cargo.toml"
     ],
     "rust-analyzer.cargo.target": "aarch64-unknown-none-softfloat",
     "rust-analyzer.checkOnSave.allTargets": false

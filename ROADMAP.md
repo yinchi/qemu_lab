@@ -472,49 +472,102 @@ real, independently-useful programs together than it would be inventing
 throwaway test binaries just to prove the plumbing works.
 
 **Features:**
-- Extends Stage 9's minimal `write`/`read`/`exit` syscall set to
-  `open`/`read`/`write`/`close` -- needed by everything here (`echo` already
-  exists from Stage 10, built there specifically to prove `argc`/`argv`
-  setup, and needed none of these). `ls` additionally needs some way to
-  enumerate directory entries -- a dedicated `readdir`-style syscall, or
-  treating a directory as a readable pseudo-file of raw entry records, are
-  both reasonable; worth deciding when this stage is actually reached rather
-  than committing now.
-- `open()` needs somewhere to put its result -- Stage 9's `FileDescriptor`
-  dispatch (`r09_userspace/src/fd.rs`) is a fixed `0`/`1`/`2` match, not a
-  real per-process table, since nothing before this stage ever needed a
-  *new* fd number. This stage promotes it into an actual small array: add a
-  `File(handle)` variant to the existing `FileDescriptor` enum, replace
-  `for_fd`'s fixed match with a lookup into a `static mut` table (matching
-  `devices.rs`'s existing `BLK`/`GPU`/`CONSOLE`/`IDMAP` pattern), and give
-  `fd.rs` a `reset_for_launch()` that fills the table with the standard
-  three defaults -- called from `process.rs`'s `run_program`, the same
-  per-launch step that already sets `SPSR_EL1`/`ELR_EL1`/`SP_EL0` and
-  delegates to `elf::load`. `cp` -- needing a source and a destination open
-  at once -- is the first real exercise of more than the fixed three slots
-  being occupied simultaneously.
-- `Keyboard::read()` (currently a stub returning `0` -- see its comment in
-  `r09_userspace/src/fd.rs`) gets its real body here: reading from Stage
-  10's completed-line buffer one finished line at a time, rather than
-  draining raw key events itself. The buffering -- and the Backspace
-  absorption in particular -- already happened once, in Stage 10's line
-  loop; this is purely a second reader for it. Keeps `Keyboard` and a
-  `File(handle)` symmetric at the `read()` call `for_fd`'s dispatch already
-  treats uniformly, which is exactly what Stage 12's redirection needs.
-- `cat`, `ls`, `cp` as real, independent programs -- each one loaded through
-  Stage 9's ELF loader like any other, not special-cased, and each one a
-  real consumer of the `argc`/`argv` mechanism Stage 10 built for `echo`.
-- **An open design question worth naming rather than silently deciding**:
-  separate small binaries (simpler, each one a clean standalone exercise of
-  the loader) vs. one true multi-call "busybox" binary that dispatches on how
-  it was invoked (`argv[0]`) -- authentic to the name, but needs the shell
-  and/or filesystem to support multiple names resolving to the same file
-  (traditionally via symlinks), which is new surface area of its own.
+- **One multi-bin Cargo package, one ELF per program -- not a single
+  multi-call binary.** The open question this stage started with (separate
+  small binaries vs. one BusyBox-style binary dispatching on `argv[0]`) is
+  settled: `user/progs/` is a single package whose `src/bin/<name>.rs` files
+  each build to their own standalone ELF, sharing one `Cargo.toml`, one
+  `link.ld`, and a `src/lib.rs` of common helpers (`user/userlib/` stays the
+  runtime underneath). A true multi-call binary would have needed multiple
+  names resolving to one file -- traditionally symlinks, which nothing here
+  implements yet (see Stage 8) -- and would have saved nothing on a 16 MiB
+  disk; each program is still loaded through Stage 9's ELF loader like any
+  other, not special-cased. Stage 9's and 10's `hello`/`crash`/`echo` crates
+  were folded into this package. `docs/progs.md` is the living record of every
+  program: its POSIX equivalent, exactly which subset of it is supported, and
+  which stage added each feature.
+- **The utilities:** `cat`, `ls`, `cp`, `head`, `tail`, `wc`, `hexdump`,
+  `true`, `false`, `chmod` -- alongside `echo`, already working since Stage
+  10. `tail` and `chmod` are additions to this stage's original list of three:
+  `tail` was pulled forward from Stage 22 (it's a small variation on `cat`'s
+  read loop), and `chmod` is the first program to write the `0x40`
+  executable-bit convention (Stage 8) from userspace -- restricted to
+  `+x`/`-x`/`+w`/`-w`, since FAT has no other permission bits. `cd`, `pwd`,
+  `mkdir`, `rm` and `mv` are Stage 12's, not this stage's: `cd` has to be a
+  shell builtin, `pwd` and relative paths need a working directory that only a
+  shell can hold, and the rest need directory-mutating syscalls this stage
+  doesn't add. Programs are installed on disk as `bin/<name>.exe`, with the
+  launcher trying the bare name first and `name.exe` second (Cygwin's own
+  lookup order); `.exe` here is a naming convention that makes the files
+  recognizable as programs to a host inspecting `disk.img`, not something the
+  loader consults.
+- **New syscalls**, all with Linux aarch64 numbers borrowed for familiarity
+  and our own argument conventions: `open` (a path, read or write -- a write
+  open creates the file if needed and always starts it empty, with no append
+  or seek, since `cp` is the only writer), `close` (which also commits a
+  written file's size to disk), `getdents` (a dedicated directory-reading
+  syscall, filling fixed-size records -- decided in favor of this over treating
+  a directory as a readable pseudo-file), and `chmod`. Errors come back as a
+  negated Linux errno (`errno.rs`); the kernel's pointer validation was also
+  hardened to reject a `ptr + len` that wraps around the address space.
+- `open()` needs somewhere to put its result: Stage 9's fixed `0`/`1`/`2`
+  match in `fd.rs` is promoted into an actual `static mut` table of
+  `Option<FileDescriptor>`, with a new `File(handle)` variant indexing
+  `files.rs`'s open-file table (readers, writers, and snapshotted directory
+  listings). `fd::reset_for_launch()`, called from `process.rs`'s
+  `run_program` before each launch, refills the table with the standard three
+  entries and closes anything left over; `fd::end_launch()` closes and commits
+  whatever the program left open once it exits or faults. `cp` -- needing a
+  source and a destination open at once -- is the first real exercise of more
+  than the fixed three slots being occupied simultaneously.
+- **`Keyboard::read()` (fd 0) blocks inside the syscall.** The plan for this
+  stage originally was to read from Stage 10's completed-line buffer. That
+  can't work as written: `run_program` masks every DAIF bit for a program's
+  whole time at EL0, so no keyboard IRQ ever fires while a program runs, and
+  nothing would ever complete a line for it to read. Instead `read(0)`
+  drains the virtio-keyboard queue directly (which fills regardless of the
+  mask) through the same token-to-`LineBuffer` path the prompt uses -- the
+  shared piece factored out into `input.rs` -- so Backspace is still absorbed
+  in exactly one place and a program only ever sees a finished line plus its
+  newline, like a real tty's cooked mode. Ctrl+D on an empty line is
+  end-of-file, which is what lets `cat` with no arguments stop. Keeps
+  `Keyboard` and a `File(handle)` symmetric at the `read()` call `for_fd`'s
+  dispatch treats uniformly, which is exactly what Stage 12's redirection needs.
+- **A nonzero exit status is reported.** `exit`'s argument was previously
+  discarded; it's now returned by `run_program`, and the launcher prints
+  `exit N` for a nonzero status (`false` prints `exit 1`; a program stopped by
+  a fault, `exit 139`, same as a shell would report a segfault) -- otherwise
+  `true` and `false` would be indistinguishable.
+- **Console output is mirrored to the UART.** Everything a program prints, the
+  shell prompt, and each finished input line also go to the serial port (with
+  `\r\n` line endings), so a serial log is a readable transcript of a session.
+  This is what makes the automated test below possible. It applies to plain
+  line-oriented console writes; a raw-mode full-screen program (Stage 13's
+  editor) would bypass it.
+- **More kernel memory.** The kernel stack grows from 16 KiB to 1 MiB and the
+  heap from 128 KiB to 1 MiB (the kernel image has a 16 MiB budget and comes
+  to about 6 MiB, mapped apart from user memory, so nothing is gained by being
+  stingy). The new
+  filesystem-write path is the deepest call chain in the kernel -- keyboard IRQ,
+  through `launch`, into a syscall, down into `hadris-fat` -- and the stack sits
+  directly above `.bss`, so overflowing it silently corrupts the heap rather
+  than faulting; this showed up as an intermittent `virtio-drivers` assertion
+  during `cp`, which 16 KiB and even 64 KiB stacks (with the old heap) hit.
+- **Automated test.** `just test` (`r11_busybox/test/run_tests.py`) boots the
+  kernel headless and drives it exactly as a user would -- typing on the
+  virtio keyboard through the QEMU monitor's `sendkey` -- then checks each
+  command's output against the serial log and the disk image's final contents
+  (copied files byte-for-byte, attribute bits) after QEMU has exited. It works
+  on a copy of `disk.img`.
 
 **Demo:** run each new utility via Stage 10's minimal launcher: `cat` on a
-known file prints its contents; `ls` lists the root directory read via
-Stage 8's filesystem; `cp` copies a file and the copy's contents are
-confirmed to match -- alongside `echo`, already working since Stage 10.
+known file prints its contents; `ls -F` lists the root directory read via
+Stage 8's filesystem; `cp` copies a file (text and binary) and the copy is
+confirmed to match, from the shell and from the host; `head`/`tail`/`wc`/
+`hexdump` on the same fixture; `chmod -x` makes a program refuse to launch and
+`chmod +x` restores it; `cat` with no arguments echoes typed lines back until
+Ctrl+D -- alongside `echo`, already working since Stage 10. `just test` runs
+all of this and more unattended.
 
 ---
 
@@ -547,6 +600,12 @@ kernel starts directly, with everything else descending from it.
   addition on top: a ring buffer of past lines,
   with Up/Down just two more keycodes Stage 7's driver already delivers as
   discrete events, no new parsing needed.
+- **Directory-oriented commands, deferred here from Stage 11:** `cd` (necessarily a shell builtin --
+  an external program can't change its parent's working directory), `pwd`, and a working
+  directory for relative paths to resolve against (Stage 11's `open` treats every path as
+  root-relative); `mkdir`, `rm` and `mv` as utilities, which need new directory-mutating syscalls
+  (`hadris-fat` already provides `create_dir`, `delete` and `rename`). Each gets a row in
+  `docs/progs.md`.
 - Redirection (`>`/`<`): close to free, given Stage 11's `open`/`read`/
   `write`/`close` syscalls -- and Stage 11's own promotion of Stage 9's
   fixed fd dispatch into a real per-process table. `cmd > file` is the
@@ -1049,11 +1108,10 @@ the mechanism already exists, this stage is purely the shell-level interface to 
 - **The clean alternative, for anyone who doesn't want that wart**: the same escape hatch real
   Unix users reach for -- redirect the backgrounded command's stdout to a file (`cmd > log &`,
   already available from Stage 12) and poll that file instead of watching the shared console at
-  all. This is also where Stage 11's utility set gains its first genuinely new member since that
-  stage was written: `tail` (print a file's last *N* lines, one-shot, no follow mode -- a small
-  variation on `cat`'s already-existing read loop, not a new syscall or mechanism), giving a
-  concrete way to check a background job's progress by re-running `tail log` every so often without
-  ever touching the framebuffer it's writing to.
+  all. This is where Stage 11's `tail` (print a file's last *N* lines, one-shot, no follow mode --
+  already built there as a small variation on `cat`'s read loop) earns its keep: a concrete way to
+  check a background job's progress by re-running `tail log` every so often without ever touching
+  the framebuffer it's writing to.
 
 **Demo:** launch Stage 21's `print; sleep(1s)` loop in the background with `&`; `jobs` shows it
 sleeping/running; `fg` brings it to the foreground; `Ctrl+Z` stops it (now genuinely stopped,
