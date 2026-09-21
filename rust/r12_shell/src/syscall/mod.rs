@@ -81,7 +81,7 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
         EC_IABT_LOWER | EC_DABT_LOWER => {
             let far = FAR_EL1.get(); // read the Fault Address Register (FAR_EL1)
             // On the console as well as the UART: whoever wrote last has moved the console cursor,
-            // and `handle_keyboard_irq` resyncs INPUT_ROW from it once the launch returns.
+            // and the shell's next prompt (`start_prompt`) starts from wherever it ended up.
             uart_ensure_newline();
             fd::console_start_line();
             fd::console_write(

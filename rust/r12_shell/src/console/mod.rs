@@ -63,7 +63,15 @@ impl Console {
 
     /// Draws `glyph` (`width` cells wide) with its left edge at (`row`, `col`), without moving the
     /// cursor. If it covers only half of a wide glyph already there, the other half is blanked.
-    fn draw_glyph(&mut self, row: usize, col: usize, glyph: &Glyph, width: usize, fg: u32, bg: u32) {
+    fn draw_glyph(
+        &mut self,
+        row: usize,
+        col: usize,
+        glyph: &Glyph,
+        width: usize,
+        fg: u32,
+        bg: u32,
+    ) {
         assert!(row < self.rows && col + width <= self.cols);
         for other_half in self.grid.place(row, col, width).into_iter().flatten() {
             self.fill_cell(row, other_half, bg);
@@ -94,9 +102,9 @@ impl Console {
         self.cursor.move_to(row, col);
     }
 
-    /// The cursor's current (row, col) -- used to resync `main.rs`'s own `INPUT_ROW` after a
-    /// program's output (`fd::write`'s `Console` case) has moved the cursor independently of
-    /// anything the shell's own line-editing did.
+    /// The cursor's current (row, col) -- used by the line discipline's `begin` to find the row for
+    /// a new line after a program's output (`fd::write`'s `Console` case) has moved the cursor
+    /// independently of anything the line editing did.
     pub fn cursor(&self) -> (usize, usize) {
         (self.cursor.row, self.cursor.col)
     }
@@ -195,17 +203,17 @@ impl Console {
 /// line finishes. Display only: the UART hears the prompt and each *finished* line (see
 /// `handle_keyboard_irq`), not a running echo of every keystroke.
 ///
-/// Renders via `write_char` specifically so `line` -- which, coming from `LINE`, may contain a
+/// Renders via `write_char` specifically so `line` -- which, coming from the line buffer, may contain a
 /// literal `\t` -- gets real tab-stop/control-character handling.
 ///
 /// If `prefix`+`line` would overflow this row's width (counted in cells, so a wide character is two),
 /// only `line`'s *tail* is shown -- whole characters, never half a wide glyph -- a
 /// sliding window, not wrapping onto the next row. Wrapping would go uncleared by `clear_row`
 /// above (only `row` itself is cleared), leaving stale glyphs behind once the line shrinks back;
-/// `LINE` itself (see `line.rs`) is never truncated, only this on-screen slice of it.
+/// The line buffer itself (see `line.rs`) is never truncated, only this on-screen slice of it.
 ///
 /// The whole row width is usable: text that fills it exactly leaves the cursor on the last cell with
-/// the wrap pending (see `cells.rs`), and the `'\n'` `LineEvent::Finished` writes moves off it
+/// the wrap pending (see `cells.rs`), and the `'\n'` the line discipline writes when a line finishes moves off it
 /// without a blank row in between.
 pub fn show_row(console: &mut Console, row: usize, prefix: &str, line: &str) {
     console.clear_row(row, BG);

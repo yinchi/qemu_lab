@@ -16,10 +16,10 @@ use aarch64_paging::paging::MemoryRegion;
 
 use super::elfparse::{self, ElfError, PAGE_SIZE, PF_W, PF_X, Segment};
 use super::usermem::UserMemory;
+use crate::arch::mmu;
 use crate::platform::base_addresses::{
     USER_BASE, USER_IMAGE_END, USER_SIZE, USER_STACK_BOTTOM, USER_STACK_TOP,
 };
-use crate::arch::mmu;
 use crate::platform::globals::IDMAP;
 use crate::static_mut_ref;
 

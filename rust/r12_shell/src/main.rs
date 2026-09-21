@@ -30,10 +30,7 @@ use crate::arch::{
     gic::{gic_enable, gic_setup},
     mmu,
 };
-use crate::console::{
-    BG, Console,
-    show_row,
-};
+use crate::console::{BG, Console};
 use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
 use crate::fs::{
     blkio::{BlkIo, VOL},
@@ -41,14 +38,13 @@ use crate::fs::{
 };
 use crate::keyboard::{
     keymap::{KEY_NAMES, KEY_STATE, KeyState, LOCK_STATE, LockState, build_key_names},
-    line::{LINE, LineBuffer},
+    line_discipline::{LINE_DISCIPLINE, LineDiscipline},
 };
 use crate::platform::{
     base_addresses::{BASE_ADDRESSES, init_base_addresses},
     globals::{BLK, BLK_SPI, CONSOLE, GPU, KEYBOARD, KEYBOARD_SPI},
-    uart::{UART0, UartWriter, uart_ensure_newline, uart_write},
+    uart::{UART0, UartWriter},
 };
-use crate::shell::PROMPT;
 
 /// Size of the kernel heap: 16 MiB, up from 1 MiB in Stage 11. A launch reads a whole ELF into a
 /// `Vec` (capped at `shell::launch`'s `MAX_PROGRAM_SIZE`, half of this), `fs/files.rs` snapshots
@@ -184,10 +180,9 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
 
     let init_keys = KeyState::new();
     let init_locks = LockState::new();
-    show_row(&mut console, 0, PROMPT, "");
+    let mut line_discipline = LineDiscipline::new();
+    shell::start_prompt(&mut line_discipline, &mut console);
     gpu_dev.flush();
-    uart_ensure_newline();
-    uart_write(PROMPT.as_bytes());
 
     // Hand every piece of state handle_keyboard_irq needs over to its static home.
     //
@@ -200,7 +195,7 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
         KEYBOARD = Some(keyboard);
         KEY_STATE = Some(init_keys);
         LOCK_STATE = Some(init_locks);
-        LINE = Some(LineBuffer::new());
+        LINE_DISCIPLINE = Some(line_discipline);
         VOL = Some(vol);
     }
     KEYBOARD_SPI.store(kb_spi, Ordering::Relaxed);

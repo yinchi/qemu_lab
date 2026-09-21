@@ -23,7 +23,7 @@ use crate::static_mut_ref;
 /// The mounted FAT filesystem -- kept alive for the program's entire remaining life, not just at
 /// boot, since a program name typed at the prompt (and every path a running program opens, see
 /// `files.rs`) needs looking up fresh every time. Its
-/// `root_dir()`/`open_entry()` results (`FatDir<'a, BlkIo>`) borrow from this, so unlike `LINE`/
+/// `root_dir()`/`open_entry()` results (`FatDir<'a, BlkIo>`) borrow from this, so unlike `LINE_DISCIPLINE`/
 /// `KEY_STATE` those are never themselves stored in a static -- only ever re-derived, cheaply,
 /// at each lookup (see `launch`).
 pub static mut VOL: Option<hadris_fat::sync::FatVolume<BlkIo>> = None;

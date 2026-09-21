@@ -1,10 +1,8 @@
-//! Stage 10's bare line-reading loop's buffer: append-only from the keyboard side, with
-//! Backspace popping the last character -- Stage 4's "echo line" model, not Stage 5's
-//! cursor-aware editing (see `ROADMAP.md`). This is deliberately the *only* place Backspace
-//! ever gets handled -- absorbed here, before Enter is ever reached, not forwarded as a raw
-//! control byte to anything else. Two callers feed it: the shell's own prompt
-//! (`shell::handle_keyboard_irq`) and a running program's `read(0)` (`stdin.rs`), which is how a
-//! finished line reaches a program's stdin with Backspace already applied.
+//! The text of the line being typed: append-only from the keyboard side, with Backspace popping the
+//! last character -- Stage 4's "echo line" model, not Stage 5's cursor-aware editing (see
+//! `ROADMAP.md`; Step 12 of `Stage12.md` adds the cursor). This is deliberately the *only* place Backspace
+//! ever gets handled -- absorbed here, before Enter is ever reached, not forwarded as a raw control
+//! byte to anything else. The line discipline (`line_discipline.rs`) owns one and is the only caller.
 //!
 //! Deliberately a separate module from `tokens.rs`, same reasoning as that module's own
 //! separation from `keymap.rs`: this is one particular interpretation of a `Token` stream (an
@@ -13,20 +11,6 @@
 use alloc::string::String;
 
 use super::tokens::{KEY_BACKSPACE, KEY_ENTER, Token};
-
-/// The line being typed, shared by the shell's prompt and a running program's `read(0)`
-/// (`stdin.rs`). Lives across IRQs the same way `KEY_STATE`/`LOCK_STATE` do, for the same reason:
-/// one keypress is one `handle_keyboard_irq` call, so the line has to persist somewhere between
-/// them.
-pub static mut LINE: Option<LineBuffer> = None;
-
-/// Which row the live prompt+line is currently on. A finished line is never redrawn or erased
-/// -- it's already showing correctly at this row from the live edits leading up to Enter -- so
-/// finishing a line only ever needs to *advance* this to a new row (scrolling first if already
-/// on the last one), not touch anything already on screen. Not an `Option` like `LINE`/
-/// `KEY_STATE`: `0` is already the correct starting value, the same one `kernel_main`'s first
-/// `show_row` call uses, so there's no real "uninitialized" state to model.
-pub static mut INPUT_ROW: usize = 0;
 
 /// What feeding one `Token` into the buffer did -- as `Option<LineEvent>` to include the
 /// possibility of no state change.
@@ -38,8 +22,7 @@ pub enum LineEvent {
 }
 
 /// A line-editing buffer that supports appending characters, handling Backspace, and finishing
-/// on Enter. Shared between the shell's prompt and a running program's `read(0)`, for programs
-/// that consume stdin in line-oriented mode (raw mode to be implemented in Stage 13).
+/// on Enter (raw mode, which bypasses it, arrives with Stage 13).
 pub struct LineBuffer {
     text: String,
 }
@@ -54,6 +37,11 @@ impl LineBuffer {
     /// The buffer's current content, for display.
     pub fn as_str(&self) -> &str {
         &self.text
+    }
+
+    /// Whether nothing has been typed on the current line.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
     }
 
     /// Feeds one token into the buffer, returning what happened, if anything.

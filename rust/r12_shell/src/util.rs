@@ -1,7 +1,7 @@
 //! General-purpose helpers with no natural home in a device- or state-specific module --
 //! currently just the pair of macros every `static mut Option<T>` in this crate
 //! (`platform/globals.rs`'s `BLK`/`GPU`/`CONSOLE`/`KEYBOARD`/`IDMAP`, `keyboard/keymap.rs`'s
-//! `KEY_STATE`/`LOCK_STATE`, `keyboard/line.rs`'s `LINE`, `fs/blkio.rs`'s `VOL`) is reached through.
+//! `KEY_STATE`/`LOCK_STATE`, `keyboard/line_discipline.rs`'s `LINE_DISCIPLINE`, `fs/blkio.rs`'s `VOL`) is reached through.
 
 /// Expands to `&'static mut T`, given the bare name of a `static mut Option<T>` -- going through
 /// `&raw mut` rather than naming the static directly in a `&mut` expression, the pattern the 2024

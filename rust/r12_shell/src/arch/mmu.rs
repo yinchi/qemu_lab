@@ -187,9 +187,7 @@ pub fn enable(gicd: usize, gicc: usize) -> Hardening {
     const TG0_4K: u64 = 0b00 << 14;
     const EPD1: u64 = 1 << 23;
     let parange = ID_AA64MMFR0_EL1.get() & 0xf;
-    TCR_EL1.set(
-        T0SZ | IRGN0_WB_WA | ORGN0_WB_WA | SH0_INNER | TG0_4K | EPD1 | (parange << 32),
-    );
+    TCR_EL1.set(T0SZ | IRGN0_WB_WA | ORGN0_WB_WA | SH0_INNER | TG0_4K | EPD1 | (parange << 32));
 
     // SAFETY: every mapping above covers exactly what this kernel accesses (MMIO, its own image);
     // the user window and the rest of RAM are deliberately left unmapped here instead of mapped and
@@ -211,7 +209,8 @@ pub fn enable(gicd: usize, gicc: usize) -> Hardening {
     // checks (the AArch64 ABI keeps SP 16-byte aligned; every stack this project sets up does).
     // Deliberately *not* enabled: SCTLR_EL1.A, which faults on every unaligned access, including
     // the plain unaligned loads Rust emits for `read_unaligned` (`elfparse.rs`).
-    let mut sctlr = SCTLR_EL1.get() | SCTLR_M | SCTLR_C | SCTLR_I | SCTLR_WXN | SCTLR_SA | SCTLR_SA0;
+    let mut sctlr =
+        SCTLR_EL1.get() | SCTLR_M | SCTLR_C | SCTLR_I | SCTLR_WXN | SCTLR_SA | SCTLR_SA0;
 
     // PAN, if the CPU has it (ID_AA64MMFR1_EL1.PAN, bits 23:20): with it set the kernel faults on
     // any access to a page EL0 may access, so a stray kernel dereference of a user pointer is a

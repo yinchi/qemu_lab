@@ -11,7 +11,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 2 | Console write path (streaming UTF-8, fewer flushes, segfault message) | done |
 | 2b | Unicode console (Unifont glyphs, wide cells) | done |
 | 3 | Turn the MMU on for real; user stack mapping and guard | done |
-| 4 | One line-discipline module | -- |
+| 4 | One line-discipline module | done |
 | 5 | Eval loop out of IRQ context (token queue) | -- |
 | 6 | Working directory and the shell-state frame stack | -- |
 | 7 | Lexer, `run_line`, bash wording | -- |
@@ -98,7 +98,7 @@ line. `keyboard/` may call `console` (echo); `console` never calls back.
 
 The Step descriptions below were written against r11's file names; `Source layout` above is the current map (for
 example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` is `fs/files.rs`, and Step 4's new
-`linedisc.rs` will sit in `keyboard/`).
+`line_discipline.rs` will sit in `keyboard/`).
 
 ---
 ## Step 0: scaffold `r12_shell` (done)
@@ -401,12 +401,31 @@ own code and into the kernel. The programs worked because with translation off e
   carries a warning that the MMU was never activated there, and its Stage 12 summary carries the matching note that this stage is
   where it is.
 
-### Step 4: one line-discipline module (`line.rs`, new `linedisc.rs`)
+### Step 4: one line-discipline module (`line.rs`, new `line_discipline.rs`) (done)
 - Replace the two duplicated implementations (`handle_keyboard_irq`'s draw/finish/UART-mirror logic and
   `stdin::read_line`) with one module owning: `LineBuffer` feeding, current input row (`INPUT_ROW`), echo/redraw,
   newline on finish, UART transcript. Both the prompt and `read(0)` call it. Behavior identical to r11; no
   new features yet (cursor movement/history come in Step 12 on this same module).
 - **Tests:** all existing r11 cases unchanged (prompt editing, Backspace, `cat` reading stdin, Ctrl+D EOF, scrolling).
+
+**As built.** `keyboard/line_discipline.rs`: `LineDiscipline` (the `LineBuffer`, the input row, the prefix and a `Mode`), one
+static `LINE_DISCIPLINE`, and three methods -- `begin(console, prefix, mode)` (a fresh row if the cursor is mid-line, else the
+cursor's own), `redraw(console)`, and `handle(token, console) -> LineOutcome` (`Ignored`, `Edited`, `Finished(text)`,
+`EndOfFile`). Finishing a line -- the UART transcript and the newline on the console -- happens inside `handle`; the caller
+flushes the display. `Mode::Prompt` ignores Ctrl+D; `Mode::Canonical` (`read(0)`) turns it into end-of-file on an empty line.
+`line.rs` keeps only `LineBuffer` (the `LINE` and `INPUT_ROW` statics are gone); `stdin::read_line` shrank to the polling loop
+and the outcome match; `shell::handle_keyboard_irq` lost its drawing and resync code, and `shell::start_prompt` (also used at
+boot) does `begin` + `redraw` + the UART prompt. The module doc records the rules the next stages depend on: it knows nothing
+about where tokens come from, is never called from interrupt context (so needs no lock once Step 5 lets IRQs through), never
+sees signal keys (Stage 20's producer takes those out before queueing), is one instance for the one console, and is a
+keyboard-side module that draws on the console. `Console::cursor()` is what it reads to find the row.
+Tests: `cases/step04_line_discipline.py` compares one scripted session (prompt Backspace, Backspace on an empty line, a blank
+line, Ctrl+D at the prompt, a line wider than the row, an unknown program, exit status, `cat`/`wc` reading stdin with
+Backspace and a non-empty Ctrl+D) with `golden/step04_r11.json`, captured from r11 by `mkgolden.py` and checked in so `just test`
+doesn't need the r11 directory; all twelve transcripts are identical. It also checks that after output longer than the
+screen the prompt is on the last row with output right above it. The one behavior that differs from r11 is the flush: `read_line`
+flushed the display for every event; it still does (a program reading a line is not a batch), while the shell flushes once per
+batch as before -- so the flush counts are unchanged. Naming: `discipline` is spelled out throughout (a `disc` reads as a floppy).
 
 ### Step 5: eval loop out of IRQ context (`main.rs`, `stdin.rs`, `process.rs`, `input.rs`)
 Today `handle_keyboard_irq` -> `launch` -> `run_program`, so the GIC interrupt stays unacknowledged for a program's
@@ -594,7 +613,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
 - **Tests:** `echo hello | cat`; `ls | wc -l`; 3-stage chain; `cat file | head -n 3`; a stage that fails or faults still
   cleans up its temp file and reports; pipe + redirect combos; no leftover files in `tmp/` (host check).
 
-### Step 12: line editing and history (`keyboard/line.rs`/`linedisc.rs`, `console/mod.rs`)
+### Step 12: line editing and history (`keyboard/line.rs`/`line_discipline.rs`, `console/mod.rs`)
 - Cursor-aware buffer (Stage 5's insert/remove at a position, adapted -- no CSI parsing, no ANSI redraw), driven by
   discrete keys: Left/Right/Home/End/Delete/Backspace and the readline basics Ctrl+A (start), Ctrl+E (end), Ctrl+U
   (kill to start), Ctrl+K (kill to end) -- exactly these; Ctrl+W/L/R, Tab completion, `!!`, and a history file are out of
@@ -837,7 +856,7 @@ font, GPU/console, keyboard, then enters the read-eval loop and never returns. K
 shell (kernel-resident, per the ROADMAP) consumes them; programs run with IRQs enabled; `read(0)` pops the same queue
 through the same line discipline. No shell code runs in IRQ context.
 **Kernel modules (new/changed):** `shell.rs` (run_line, builtins, scripts, pipelines), `lexer.rs`, `shell_state.rs`
-(frame stack), `path.rs`, `linedisc.rs` + `editor.rs` + `history.rs`, `tokenq.rs`, `utf8.rs`, `files.rs` (`resolve`, append,
+(frame stack), `path.rs`, `line_discipline.rs` + `editor.rs` + `history.rs`, `tokenq.rs`, `utf8.rs`, `files.rs` (`resolve`, append,
 mkdir/unlink/rename), `elf.rs` (fallible), explicit user stack + guard, `abi` crate shared with `user/`.
 **Syscalls (all with `abi` constants; Linux aarch64 numbers):** getcwd 17, mkdirat 34, unlinkat 35 (`AT_REMOVEDIR`),
 renameat 38, chmod 53, open 56 (+`O_APPEND`), close 57, getdents 61, read 63, write 64, exit 93; `chdir` (49) reserved,
@@ -936,7 +955,7 @@ Decided while planning; later Steps may refine these but shouldn't silently reve
 
 ## Files touched
 `rust/r12_shell/src/{main.rs,elf.rs,fd.rs,files.rs,syscall.rs,process.rs,stdin.rs,input.rs,argv.rs,line.rs,console.rs,vectors.s}`,
-new `shell_state.rs`, `shell.rs`, `lexer.rs`, `linedisc.rs`; `rust/r12_shell/test/run_tests.py`, `justfile`, `disk/` fixtures;
+new `shell_state.rs`, `shell.rs`, `lexer.rs`, `line_discipline.rs`; `rust/r12_shell/test/run_tests.py`, `justfile`, `disk/` fixtures;
 `rust/user/{userlib,abi}` and `rust/user/progs/src/bin/{pwd,mkdir,rm,mv}.rs` (core utils only);
 `rust/r12_shell/test/progs/` (test programs) and `rust/r12_shell/disk/tests/` (fixtures); `rust/docs/progs.md`;
 `r12_shell/test/README.md`; `.gitignore`; `ROADMAP.md` (Stage 12 summary + forward-connection edits); `Stage12.md` (new, full plan).

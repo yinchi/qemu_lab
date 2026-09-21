@@ -9,8 +9,8 @@
 //! no state of their own here.
 
 use crate::console::utf8::Utf8Decoder;
-use crate::exec::elf;
 use crate::console::{BG, FG};
+use crate::exec::elf;
 use crate::fs::files;
 use crate::keyboard::stdin;
 use crate::platform::base_addresses::{USER_BASE, USER_SIZE};

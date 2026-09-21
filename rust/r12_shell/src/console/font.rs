@@ -23,10 +23,13 @@ pub fn is_zero_width(c: char) -> bool {
 /// unassigned) or `c` is a control character (the console interprets the few it uses before
 /// asking for a glyph).
 pub fn glyph_for(c: char) -> &'static Glyph {
-    let found = if c.is_control() { None } else { unifont::get_glyph(c) };
-    found.unwrap_or_else(|| {
-        unifont::get_glyph(REPLACEMENT).expect("Unifont has a glyph for U+FFFD")
-    })
+    let found = if c.is_control() {
+        None
+    } else {
+        unifont::get_glyph(c)
+    };
+    found
+        .unwrap_or_else(|| unifont::get_glyph(REPLACEMENT).expect("Unifont has a glyph for U+FFFD"))
 }
 
 /// How many cells `c` takes when written: 0 (`is_zero_width`), 2 (a wide glyph), or 1. The four
@@ -74,7 +77,9 @@ mod tests {
 
     #[test]
     fn the_zero_width_set_takes_no_cell() {
-        for c in ['\u{200B}', '\u{200D}', '\u{200F}', '\u{2060}', '\u{FE0F}', '\u{FEFF}'] {
+        for c in [
+            '\u{200B}', '\u{200D}', '\u{200F}', '\u{2060}', '\u{FE0F}', '\u{FEFF}',
+        ] {
             assert!(is_zero_width(c), "{c:?}");
             assert_eq!(cell_width(c), 0);
         }
@@ -85,7 +90,15 @@ mod tests {
     #[test]
     fn characters_the_font_lacks_draw_the_replacement_glyph() {
         let replacement = glyph_for('\u{FFFD}');
-        for c in ['😀', '\u{10000}', '\u{10FFFF}', '\u{0}', '\u{1B}', '\u{7F}', '\u{85}'] {
+        for c in [
+            '😀',
+            '\u{10000}',
+            '\u{10FFFF}',
+            '\u{0}',
+            '\u{1B}',
+            '\u{7F}',
+            '\u{85}',
+        ] {
             assert_eq!(glyph_for(c), replacement, "{c:?}");
         }
     }

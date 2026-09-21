@@ -212,20 +212,41 @@ mod tests {
     #[test]
     fn filling_a_row_leaves_the_cursor_on_the_last_column_with_the_wrap_pending() {
         let (cur, scrolls) = type_text("abcde");
-        assert_eq!(cur, Cursor { row: 0, col: 4, wrap_pending: true });
+        assert_eq!(
+            cur,
+            Cursor {
+                row: 0,
+                col: 4,
+                wrap_pending: true
+            }
+        );
         assert_eq!(scrolls, 0);
     }
 
     #[test]
     fn the_next_glyph_wraps_first() {
         let (cur, _) = type_text("abcdef");
-        assert_eq!(cur, Cursor { row: 1, col: 1, wrap_pending: false });
+        assert_eq!(
+            cur,
+            Cursor {
+                row: 1,
+                col: 1,
+                wrap_pending: false
+            }
+        );
     }
 
     #[test]
     fn a_newline_after_a_full_row_leaves_no_blank_row() {
         let (cur, _) = type_text("abcde\nf");
-        assert_eq!(cur, Cursor { row: 1, col: 1, wrap_pending: false });
+        assert_eq!(
+            cur,
+            Cursor {
+                row: 1,
+                col: 1,
+                wrap_pending: false
+            }
+        );
     }
 
     #[test]
@@ -241,15 +262,36 @@ mod tests {
     #[test]
     fn a_wide_glyph_ending_in_the_last_column_sets_the_pending_wrap() {
         let (cur, _) = type_text("abcW");
-        assert_eq!(cur, Cursor { row: 0, col: 4, wrap_pending: true });
+        assert_eq!(
+            cur,
+            Cursor {
+                row: 0,
+                col: 4,
+                wrap_pending: true
+            }
+        );
     }
 
     #[test]
     fn a_wide_glyph_that_does_not_fit_wraps_whole() {
         let (cur, _) = type_text("abcdW");
-        assert_eq!(cur, Cursor { row: 1, col: 2, wrap_pending: false }); // W in cells 0-1 of row 1
+        assert_eq!(
+            cur,
+            Cursor {
+                row: 1,
+                col: 2,
+                wrap_pending: false
+            }
+        ); // W in cells 0-1 of row 1
         let (cur, _) = type_text("abcdeW"); // the same after a full row (wrap pending)
-        assert_eq!(cur, Cursor { row: 1, col: 2, wrap_pending: false });
+        assert_eq!(
+            cur,
+            Cursor {
+                row: 1,
+                col: 2,
+                wrap_pending: false
+            }
+        );
     }
 
     #[test]
@@ -286,7 +328,10 @@ mod tests {
     fn a_wide_glyph_is_two_cells() {
         let mut g = CellGrid::new(10, 3);
         assert_eq!(g.place(0, 2, 2), [None, None]);
-        assert_eq!([g.get(0, 1), g.get(0, 2), g.get(0, 3), g.get(0, 4)], [Narrow, WideLeft, WideRight, Narrow]);
+        assert_eq!(
+            [g.get(0, 1), g.get(0, 2), g.get(0, 3), g.get(0, 4)],
+            [Narrow, WideLeft, WideRight, Narrow]
+        );
     }
 
     #[test]

@@ -148,7 +148,18 @@ mod tests {
     #[test]
     fn valid_sequences_of_every_length() {
         // 2, 3 and 4 bytes, plus the extremes of each length.
-        for s in ["é", "€", "𐍈", "\u{80}", "\u{7FF}", "\u{800}", "\u{FFFF}", "\u{10000}", "\u{10FFFF}", "日本語"] {
+        for s in [
+            "é",
+            "€",
+            "𐍈",
+            "\u{80}",
+            "\u{7FF}",
+            "\u{800}",
+            "\u{FFFF}",
+            "\u{10000}",
+            "\u{10FFFF}",
+            "日本語",
+        ] {
             assert_eq!(decode(s.as_bytes()), s);
         }
     }
@@ -158,7 +169,11 @@ mod tests {
         let text = "aé€𐍈z日";
         let bytes = text.as_bytes();
         for cut in 0..=bytes.len() {
-            assert_eq!(decode_chunks(&[&bytes[..cut], &bytes[cut..]]), text, "cut at {cut}");
+            assert_eq!(
+                decode_chunks(&[&bytes[..cut], &bytes[cut..]]),
+                text,
+                "cut at {cut}"
+            );
         }
         // And one byte at a time.
         let ones: alloc::vec::Vec<&[u8]> = bytes.chunks(1).collect();
@@ -169,7 +184,10 @@ mod tests {
     fn stray_continuation_and_invalid_bytes_are_one_replacement_each() {
         assert_eq!(decode(&[0x80]), "\u{FFFD}");
         assert_eq!(decode(&[0x82, b'a']), "\u{FFFD}a");
-        assert_eq!(decode(&[0xC0, 0xC1, 0xF5, 0xFF]), "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}");
+        assert_eq!(
+            decode(&[0xC0, 0xC1, 0xF5, 0xFF]),
+            "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"
+        );
     }
 
     #[test]
@@ -177,7 +195,10 @@ mod tests {
         assert_eq!(decode(&[0xC0, 0x80]), "\u{FFFD}\u{FFFD}"); // overlong NUL
         assert_eq!(decode(&[0xE0, 0x80, 0x80]), "\u{FFFD}\u{FFFD}\u{FFFD}"); // overlong three-byte
         assert_eq!(decode(&[0xED, 0xA0, 0x80]), "\u{FFFD}\u{FFFD}\u{FFFD}"); // U+D800
-        assert_eq!(decode(&[0xF4, 0x90, 0x80, 0x80]), "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"); // U+110000
+        assert_eq!(
+            decode(&[0xF4, 0x90, 0x80, 0x80]),
+            "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"
+        ); // U+110000
     }
 
     #[test]

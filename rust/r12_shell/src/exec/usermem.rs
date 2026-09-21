@@ -52,7 +52,9 @@ impl UserMemory {
         let mut merged: Vec<Region> = Vec::with_capacity(self.regions.len());
         for r in self.regions.drain(..) {
             match merged.last_mut() {
-                Some(last) if last.end == r.start && last.writable == r.writable => last.end = r.end,
+                Some(last) if last.end == r.start && last.writable == r.writable => {
+                    last.end = r.end
+                }
                 _ => merged.push(r),
             }
         }
@@ -140,7 +142,11 @@ mod tests {
         m.add(BASE, BASE + 0x2000, true);
         assert_eq!(
             m.regions(),
-            &[Region { start: BASE, end: BASE + 0x3000, writable: true }]
+            &[Region {
+                start: BASE,
+                end: BASE + 0x3000,
+                writable: true
+            }]
         );
     }
 

@@ -169,7 +169,7 @@ pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, Launc
 /// The program runs with every DAIF bit masked -- no interrupt of any kind reaches it while
 /// it's executing at EL0. This isn't a performance choice: a keyboard IRQ landing mid-program
 /// would re-enter `handle_keyboard_irq` while this very call is still on the stack, and that
-/// function's own line-editing path (`LINE`/`INPUT_ROW`/`launch`) isn't reentrant -- a second
+/// function's own line-editing path (`LINE_DISCIPLINE`/`launch`) isn't reentrant -- a second
 /// `run_program` call from the nested invocation would remap the *same* fixed user window this
 /// one is currently executing out of, and overwrite the single-slot `KERNEL_CTX` checkpoint
 /// (`arch/context.s`) this call's own `enter_el0` just wrote. Masking DAIF here closes that off
