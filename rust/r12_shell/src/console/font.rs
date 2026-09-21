@@ -5,14 +5,20 @@
 //! 16 rows of 8 binary pixels = each glyph is exactly 16 bytes, each representing one row of 8
 //! pixels.
 
+/// The width of each glyph in pixels.
 pub const GLYPH_WIDTH: usize = 8;
+/// The height of each glyph in pixels.
 pub const GLYPH_HEIGHT: usize = 16;
-const BYTES_PER_GLYPH: usize = GLYPH_HEIGHT; // 1 byte/row at 8px wide, no padding
+/// The number of bytes used to represent each glyph.
+/// Each pixel is a single bit, and each row of 8 pixels is packed into one byte.
+const BYTES_PER_GLYPH: usize = GLYPH_HEIGHT;
+/// The total number of glyphs in the font.
+const GLYPH_COUNT: usize = 256;
 
 /// The font, read off the block device once at boot. `Console`'s `Font` borrows this, so it
 /// needs to be `'static` rather than a `kernel_main`-local array -- see Stage 6's copy of this
 /// file, which could get away with a local since nothing there needed to outlive `kernel_main`.
-pub static mut FONT_DATA: [u8; 4096] = [0; 4096];
+pub static mut FONT_DATA: [u8; GLYPH_COUNT * BYTES_PER_GLYPH] = [0; GLYPH_COUNT * BYTES_PER_GLYPH];
 
 pub struct Font<'a> {
     data: &'a [u8],
@@ -24,7 +30,7 @@ impl<'a> Font<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         assert_eq!(
             data.len(),
-            256 * BYTES_PER_GLYPH,
+            GLYPH_COUNT * BYTES_PER_GLYPH,
             "font data is the wrong size"
         );
         Self { data }

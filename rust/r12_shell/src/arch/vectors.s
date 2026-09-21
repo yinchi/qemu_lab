@@ -1,7 +1,7 @@
 /* AArch64 exception vector table: 16 entries, 0x80 bytes apart, 0x800 total.
    Row = where the exception came from, column = exception type. Three entries do real work:
    "Current EL, SPx, IRQ" (irq_el1h, offset 0x280, a device interrupt while the kernel itself
-   runs), and the two "Lower EL, AArch64" entries this stage populated -- sync_el0_64 (syscalls
+   runs), and the two "Lower EL, AArch64" entries Stage 9 populated -- sync_el0_64 (syscalls
    and segfaults from a running EL0 program) and irq_el0_64 (a device interrupt while that
    program runs). Every other entry still traps to unexpected_exception() so a bug is visible
    instead of silently corrupting execution. */
@@ -16,12 +16,9 @@ the given label. */
 
 /*
 SUB: subtract
-STR: store register
-STP: store pair
-LDR: load register
-LDP: load pair
-MRS: move general <- system register
-MSR: move system <- general register
+STR: store register    STP: store pair
+LDR: load register     LDP: load pair
+MRS: move general <- system register    MSR: move system <- general register
 */
 
 /* Save all general-purpose registers x0-x29 using `stp`, which stores two registers at a
@@ -33,8 +30,14 @@ only one left).
 Total: 31 registers saved to the stack, plus 2 more for ELR_EL1 and SPSR_EL1, for a total of
 33 * 8 = 264 bytes.  We round up to 272 bytes to maintain a 16-byte stack alignment.
 
-Named `kernel_entry` by convention, even though we don't actually have kernel/userspace separation
-yet.
+Called at the beginning of every exception going to EL1. Every exception ends one of three ways:
+
+- `kernel_exit`, where `eret` restores the saved context and returns to the point of interruption
+  (EL0 or EL1 depending on the exception).
+- `resume_kernel` (a program's exit or fault): restores only SP and the callee-saved registers that
+  `enter_el0` saved (see `arch/context.s`) and continues in `run_program`, abandoning this frame.
+- `unexpected_exception`, which eventually calls `hang()` via the Rust panic handler, staying in
+  EL1.
 */
 .macro kernel_entry
 	sub	sp, sp, #272

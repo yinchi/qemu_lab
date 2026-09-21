@@ -12,15 +12,11 @@
 //! Unlike the block and keyboard devices, *not* interrupt-based: only blocking functions are
 //! exposed in the VirtIOGpu driver, so there's no interrupts to wait for.
 
-use core::ptr::NonNull;
-
 use virtio_drivers::device::gpu::VirtIOGpu;
-use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
-use virtio_drivers::transport::{DeviceType, Transport};
+use virtio_drivers::transport::DeviceType;
+use virtio_drivers::transport::mmio::MmioTransport;
 
-use super::hal::VirtioHalImpl;
-
-const VIRTIO_MMIO_SIZE: usize = 0x200;
+use super::{find_mmio_transport, hal::VirtioHalImpl};
 
 /// The device's pixel buffer: a BGRX8888 surface (see `console::framebuffer`), `height` rows of
 /// `stride` bytes.
@@ -43,25 +39,11 @@ pub struct Gpu {
 }
 
 impl Gpu {
+    /// Finds the GPU among the discovered `virtio,mmio` slots. Polled, so its IRQ number is unused.
     pub fn find(mmio_slots: impl Iterator<Item = (usize, u32)>) -> Option<Self> {
-        for (base, _irq) in mmio_slots {
-            let Some(header) = NonNull::new(base as *mut VirtIOHeader) else {
-                continue;
-            };
-            // SAFETY: `base` came from a `virtio,mmio` node's `reg` property (see blk.rs's
-            // identical reasoning).
-            let transport = match unsafe { MmioTransport::new(header, VIRTIO_MMIO_SIZE) } {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if transport.device_type() != DeviceType::GPU {
-                continue;
-            }
-            if let Ok(inner) = VirtIOGpu::new(transport) {
-                return Some(Self { inner });
-            }
-        }
-        None
+        let (transport, _irq) = find_mmio_transport(mmio_slots, DeviceType::GPU)?;
+        let inner = VirtIOGpu::new(transport).ok()?;
+        Some(Self { inner })
     }
 
     /// Negotiates this module's fixed resolution and returns the device's DMA-backed pixel buffer

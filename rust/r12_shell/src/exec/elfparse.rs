@@ -1,5 +1,5 @@
 //! The pure half of the ELF loader: no side-effects or kernel involvement.
-//! 
+//!
 //! Validates a simple, statically-linked AArch64 executable and
 //! says which segments to load where, without touching memory or the page table (that's `elf.rs`).
 //! Kept free of kernel dependencies so it can be unit-tested on the host (`hosttests/`).
@@ -215,17 +215,29 @@ pub fn parse(elf: &[u8], window_start: usize, window_end: usize) -> Result<Parse
         if vaddr < window_start || end > window_end {
             return Err(ElfError::SegmentOutsideWindow);
         }
-        if offset.checked_add(filesz).is_none_or(|file_end| file_end > elf.len()) {
+        if offset
+            .checked_add(filesz)
+            .is_none_or(|file_end| file_end > elf.len())
+        {
             return Err(ElfError::SegmentTruncated);
         }
-        segments.push(Segment { vaddr, offset, filesz, memsz, flags: phdr.p_flags });
+        segments.push(Segment {
+            vaddr,
+            offset,
+            filesz,
+            memsz,
+            flags: phdr.p_flags,
+        });
     }
 
     if segments.is_empty() {
         return Err(ElfError::NoLoadSegment);
     }
     let entry = usize::try_from(header.e_entry).map_err(|_| ElfError::BadEntry)?;
-    if !segments.iter().any(|s| entry >= s.vaddr && entry < s.vaddr + s.memsz) {
+    if !segments
+        .iter()
+        .any(|s| entry >= s.vaddr && entry < s.vaddr + s.memsz)
+    {
         return Err(ElfError::BadEntry);
     }
 
@@ -245,7 +257,12 @@ mod tests {
     /// A well-formed one-segment executable: 64-byte header, one 56-byte program header, then 16
     /// bytes of "code", loaded at `START` with the entry at its start.
     fn good() -> Vec<u8> {
-        build(START as u64, 64, &[(PT_LOAD, PF_X, 120, START as u64, 16, 16)], 136)
+        build(
+            START as u64,
+            64,
+            &[(PT_LOAD, PF_X, 120, START as u64, 16, 16)],
+            136,
+        )
     }
 
     fn build(entry: u64, phoff: u64, phdrs: &[Ph], len: usize) -> Vec<u8> {
@@ -284,7 +301,13 @@ mod tests {
         assert_eq!(p.entry, START);
         assert_eq!(
             p.segments,
-            [Segment { vaddr: START, offset: 120, filesz: 16, memsz: 16, flags: PF_X }]
+            [Segment {
+                vaddr: START,
+                offset: 120,
+                filesz: 16,
+                memsz: 16,
+                flags: PF_X
+            }]
         );
     }
 
@@ -297,7 +320,7 @@ mod tests {
                 (PT_LOAD, PF_X, 0, START as u64, 200, 200),
                 (6 /* PT_PHDR */, 0, 0, 0, 0, 0),
                 (PT_LOAD, PF_W, 200, (START + 0x1000) as u64, 8, 0x4000), // .bss tail
-                (PT_LOAD, 0, 0, (START + 0x9000) as u64, 0, 0),          // empty: skipped
+                (PT_LOAD, 0, 0, (START + 0x9000) as u64, 0, 0),           // empty: skipped
             ],
             300,
         );
@@ -348,7 +371,11 @@ mod tests {
         for phoff in [136u64, 1 << 40, u64::MAX, u64::MAX - 20] {
             let mut b = good();
             b[32..40].copy_from_slice(&phoff.to_le_bytes());
-            assert_eq!(parse_good(&b), Err(ElfError::BadProgramHeaders), "phoff {phoff:#x}");
+            assert_eq!(
+                parse_good(&b),
+                Err(ElfError::BadProgramHeaders),
+                "phoff {phoff:#x}"
+            );
         }
         // Entries smaller than the fields we read.
         let mut b = good();
@@ -363,15 +390,20 @@ mod tests {
     #[test]
     fn refuses_segments_outside_the_window() {
         let cases: [(u64, u64, u64); 6] = [
-            (0x5000_0000, 16, 16),                 // above the window
-            (0x4000_0000, 16, 16),                 // below it (the kernel's own memory!)
-            (0, 16, 16),                           // null
-            (START as u64 + 0x1f_fff8, 16, 16),    // straddles the end
-            (START as u64, 16, 0x30_0000),         // bigger than the whole window
-            (u64::MAX - 8, 16, 16),                // vaddr + memsz wraps
+            (0x5000_0000, 16, 16),              // above the window
+            (0x4000_0000, 16, 16),              // below it (the kernel's own memory!)
+            (0, 16, 16),                        // null
+            (START as u64 + 0x1f_fff8, 16, 16), // straddles the end
+            (START as u64, 16, 0x30_0000),      // bigger than the whole window
+            (u64::MAX - 8, 16, 16),             // vaddr + memsz wraps
         ];
         for (vaddr, filesz, memsz) in cases {
-            let b = build(START as u64, 64, &[(PT_LOAD, PF_X, 120, vaddr, filesz, memsz)], 136);
+            let b = build(
+                START as u64,
+                64,
+                &[(PT_LOAD, PF_X, 120, vaddr, filesz, memsz)],
+                136,
+            );
             assert_eq!(
                 parse_good(&b),
                 Err(ElfError::SegmentOutsideWindow),
@@ -382,11 +414,25 @@ mod tests {
 
     #[test]
     fn refuses_segment_file_ranges_beyond_the_file() {
-        for (off, filesz) in [(120u64, 17u64), (137, 0 + 1), (u64::MAX, 1), (100, u64::MAX), (1 << 40, 16)] {
-            let b = build(START as u64, 64, &[(PT_LOAD, PF_X, off, START as u64, filesz, filesz.max(16))], 136);
+        for (off, filesz) in [
+            (120u64, 17u64),
+            (137, 0 + 1),
+            (u64::MAX, 1),
+            (100, u64::MAX),
+            (1 << 40, 16),
+        ] {
+            let b = build(
+                START as u64,
+                64,
+                &[(PT_LOAD, PF_X, off, START as u64, filesz, filesz.max(16))],
+                136,
+            );
             let r = parse_good(&b);
             assert!(
-                matches!(r, Err(ElfError::SegmentTruncated) | Err(ElfError::SegmentOutsideWindow)),
+                matches!(
+                    r,
+                    Err(ElfError::SegmentTruncated) | Err(ElfError::SegmentOutsideWindow)
+                ),
                 "off {off:#x} filesz {filesz:#x}: {r:?}"
             );
         }
@@ -394,7 +440,12 @@ mod tests {
 
     #[test]
     fn refuses_memsz_smaller_than_filesz() {
-        let b = build(START as u64, 64, &[(PT_LOAD, PF_X, 120, START as u64, 16, 8)], 136);
+        let b = build(
+            START as u64,
+            64,
+            &[(PT_LOAD, PF_X, 120, START as u64, 16, 8)],
+            136,
+        );
         assert_eq!(parse_good(&b), Err(ElfError::BadSegmentSize));
     }
 
@@ -404,8 +455,19 @@ mod tests {
         assert_eq!(parse_good(&b), Err(ElfError::NoLoadSegment));
         let b = build(START as u64, 64, &[], 200);
         assert_eq!(parse_good(&b), Err(ElfError::NoLoadSegment));
-        for entry in [0u64, START as u64 - 4, START as u64 + 16, 0x5000_0000, u64::MAX] {
-            let b = build(entry, 64, &[(PT_LOAD, PF_X, 120, START as u64, 16, 16)], 136);
+        for entry in [
+            0u64,
+            START as u64 - 4,
+            START as u64 + 16,
+            0x5000_0000,
+            u64::MAX,
+        ] {
+            let b = build(
+                entry,
+                64,
+                &[(PT_LOAD, PF_X, 120, START as u64, 16, 16)],
+                136,
+            );
             assert_eq!(parse_good(&b), Err(ElfError::BadEntry), "entry {entry:#x}");
         }
     }

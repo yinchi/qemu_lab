@@ -51,30 +51,36 @@ the full US layout, so every shell character can be typed through `sendkey`.
 r11's flat 28-file layout became a hierarchy after Step 1, before Step 2 adds more modules. The rule is that a
 module uses ones at or below its own level: `arch`/`platform` (the CPU and the board) -> `drivers` (device
 protocols) -> the services built on them, `fs`, `console`, `keyboard` -> `exec` (programs) -> `syscall` -> `shell`.
-Files use the `foo.rs` + `foo/bar.rs` style (no `mod.rs`), and a parent file may hold real code (`console.rs` is the
-console; `syscall.rs` is the dispatcher; `shell.rs` is the read-eval loop). Pure modules (P) stay next to their
-subsystem and are pulled into `hosttests/` by path.
+**Convention:** every module is a directory, and its `mod.rs` is the module's main file, the way `__init__.py` is
+in Python -- the module's own definitions (if it has any) plus its `pub mod` lines, so a module lives in one place
+and its main file is recognizable by name. The children are the other files in the directory. (`console/mod.rs` is the
+console; `syscall/mod.rs` is the dispatcher; `shell/mod.rs` is the read-eval loop.) Pure modules (P) stay next to
+their subsystem and are pulled into `hosttests/` by path.
 
 ```
 src/
 ├── main.rs            crate root: kernel_main, IRQ dispatch (irq_handler), panic handler, heap
 ├── util.rs            static_mut_ref!/static_ref! macros                                  (was utils.rs)
-├── arch.rs + arch/    boot.s, vectors.s, context.s (was process.s), mmu.rs, gic.rs (gic_setup/gic_enable, from main.rs)
-├── platform.rs + platform/
-│   ├── base_addresses.rs   DTB parsing -> device addresses, user window constants
+├── arch/              mod.rs; boot.s, vectors.s, context.s (was process.s); mmu.rs; gic.rs (gic_setup/gic_enable, from main.rs)
+├── platform/          mod.rs
+│   ├── base_addresses.rs   the platform's address map: DTB-discovered addresses plus fixed constants (user window included)
 │   ├── uart.rs             PL011 driver, UART0, and the transcript mirror (uart_write/uart_ensure_newline)
 │   └── globals.rs          the kernel's global device statics                              (was devices.rs)
-├── drivers.rs + drivers/virtio.rs + drivers/virtio/
-│   ├── hal.rs (was virtio_hal.rs)   blk.rs   gpu.rs (returns a FramebufferInfo)   input.rs (was keyboard.rs: raw events)
-├── fs.rs + fs/        fs.rs: find_entry[_checked], read_file[_checked]
-│   ├── blkio.rs (was fat_io.rs; also the VOL static)   files.rs (open-file table, lookup; owns MAX_OPEN_FILES)
-├── console.rs + console/   console.rs: Console, show_row, FG/BG
-│   ├── framebuffer.rs (the Framebuffer struct, out of console.rs)   font.rs   cp437.rs
-├── keyboard.rs + keyboard/
-│   ├── keymap.rs   tokens.rs   events.rs (was input.rs)   line.rs (LineBuffer, plus the LINE/INPUT_ROW statics)   stdin.rs
-├── exec.rs + exec/    argstack.rs (P)   elfparse.rs (P)   elf.rs   process.rs
-├── syscall.rs + syscall/   syscall.rs: dispatch and the fault path;   fd.rs: the fd table
-└── shell.rs + shell/  shell.rs: PROMPT and handle_keyboard_irq (the loop, for now);   launch.rs (find_program, launch, report);   argv.rs
+├── drivers/           mod.rs
+│   └── virtio/        mod.rs: find_mmio_transport (shared slot probing)
+│       └── hal.rs (was virtio_hal.rs)   blk.rs   gpu.rs (returns a FramebufferInfo)   input.rs (was keyboard.rs: raw events)
+├── fs/                mod.rs: find_entry_checked, read_file_checked, read_file_or_panic
+│   └── blkio.rs (was fat_io.rs; also the VOL static)   files.rs (open-file table, lookup, resolve; owns MAX_OPEN_FILES)
+├── console/           mod.rs: Console, show_row, FG/BG
+│   └── framebuffer.rs (the Framebuffer struct, out of console.rs)   font.rs   cp437.rs
+├── keyboard/          mod.rs
+│   └── keymap.rs   tokens.rs   events.rs (was input.rs)   line.rs (LineBuffer, plus the LINE/INPUT_ROW statics)   stdin.rs
+├── exec/              mod.rs
+│   └── argplan.rs (P)   elfparse.rs (P)   elf.rs   process.rs
+├── syscall/           mod.rs: dispatch and the fault path
+│   └── fd.rs          the fd table
+└── shell/             mod.rs: PROMPT and handle_keyboard_irq (the loop, for now)
+    └── launch.rs (find_program, launch, report)   argv.rs
 ```
 
 Cycles found and removed by the move: `fd` <-> `files` (the open-file limit now lives in `fs::files`, and `fd` sizes its
@@ -149,7 +155,7 @@ example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` 
   program header table, every segment against the user window and the file, entry point inside a segment -- before
   `elf.rs` copies or maps anything; both are `Result`-based (`ElfError`). The pure half has 10 host tests
   (`just test-host`), including "every truncation of a valid ELF is refused" and wrap-around offsets.
-- `argstack.rs` (pure, host-tested) plans the argv layout; `process.rs` has `push_cstr_array` (writes it) and the
+- `argplan.rs` (pure, host-tested) plans the argv layout; `process.rs` has `push_cstr_array` (writes it) and the
   `prepare`/`run` split (`run_program` = both). **`argv[argc]` is now `NULL`** (the C convention; Stage 10's array
   had no terminator), and an argument list over `ARG_MAX` (128 KiB) is refused up front (`E2BIG`, checked before the
   load) instead of running into the program's memory.
@@ -158,8 +164,10 @@ example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` 
   wording) and `abi::fs` (`O_*` flags, the `getdents` record, FAT attribute bits). The kernel has no `errno.rs` of its
   own any more: it imports `abi::errno::...` directly. `userlib` re-exports the syscall/`fs` names flat, so programs
   still write `userlib::SYS_WRITE`. Each module's tests pin every value r09-r11's own copies use.
-- `find_entry` no longer panics on a directory read error: `find_entry_checked` returns `Result<Option<_>>`
-  (`EIO`), used by everything at run time; boot-time lookups keep the `expect`. `files::lookup(path)` finds an
+- Directory lookups no longer panic on a read error: `find_entry_checked` returns `Result<Option<_>>` (`EIO` for an
+  unreadable directory, `None` for a miss) and is the only lookup function. Boot-time callers (`kernel_main`,
+  `read_font`) `expect` each case separately, so an I/O failure and a missing file give different messages.
+  `files::lookup(path)` finds an
   entry without opening it, and `launch` is built on it (`bin/<name>`, `bin/<name>.exe`, or the path as typed).
 - `launch` refuses a directory (`Is a directory`), a file over `MAX_PROGRAM_SIZE` (8 MiB, half the heap),
   a missing exec bit (`not executable`, wording unchanged until Step 7) and anything `elf::load` rejects
@@ -167,7 +175,7 @@ example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` 
 - **Known quirk, resolved in Step 6:** with no working directory yet, every path -- a command word containing `/`,
   and every path a program opens -- is resolved from the disk's root, so `tests/probe.exe` and `/tests/probe.exe`
   are the same file and `.`/`..` match nothing (the same holds in Stage 11's `open`). Step 6's working directory and
-  single path resolver make a path without a leading `/` relative to the working directory and handle `.`/`..`; its
+  `abspath` make a path without a leading `/` relative to the working directory and handle `.`/`..`; its
   tests cover the change. (Bare names still search only `bin/`, by design, until a later stage adds `$PATH`.)
 - `fd::MAX_OPEN_FILES` (13) is the single limit for `files.rs` and the fd table; `reset_for_launch` no longer calls
   `close_all` (`end_launch` already has).
@@ -188,6 +196,14 @@ example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` 
   kernel flushes the GPU once per write syscall (not per fragment), UART mirroring unchanged. A `testhooks` cargo
   feature (enabled by `just test`, off for `just run`) keeps a GPU-flush counter printed on the UART at program exit,
   so the flush-count test (T2.5) is deterministic.
+- **Show the segmentation fault on the console** (raised in the Step 1b review). Today the fault handler
+  (`syscall/mod.rs`) writes `Segmentation fault (address ..., ESR_EL1 ...)` to the UART only, so the console shows just
+  `exit 139`. Its reason for that ("writing through `Console` would move the cursor without `INPUT_ROW` being
+  resynced") no longer holds: `handle_keyboard_irq` resyncs `INPUT_ROW` from the console cursor after `launch`
+  returns, whoever wrote. So extract the console arm of `FileDescriptor::write` into a helper (`console_write(bytes)`
+  in `syscall/fd.rs`, mirroring to the UART itself) and have the fault path call it after starting a fresh line if the
+  cursor is mid-line, as `report` does; then drop the stale comment. The serial transcript is unchanged, so the
+  `crash` case in `core_utils` still passes; add a screendump check that the message is on the display.
 - **Tests:** `cat` of a binary fixture: serial transcript matches expectations byte-for-byte; a UTF-8 fixture larger
   than 4096 bytes with a multibyte char on the boundary; timing sanity on a long `write!` loop (no per-fragment flush).
 
@@ -243,10 +259,18 @@ has a "first thing to unmask" hazard). This step removes that structure.
     every redirect (Step 8), including on builtins. (This is the "stack of stdio triples" of the original design note.)
   - Builtin/shell diagnostics go through `shell_err(msg)`, which writes via the top frame's `stdio[2]` binding
     (default = console + UART mirror, exactly what `report` does today), so they're redirectable like any program's stderr.
-- **One path resolver** `resolve(path)` (this removes Step 1's root-relative quirk -- see its as-built notes) used by `open`, `chmod`, `launch`, `cd`: join against top frame's cwd unless
-  absolute, lexically normalize `.`/`..` (`..` at root stays `/`; a component over 255 bytes or a path over 4096 ->
-  `ENAMETOOLONG`), then walk. `launch` keeps its bin/ search order
-  (bare name, then `name.exe`) but uses this walk (no more hand-rolled `find_entry` + `expect`).
+- **Path handling in two functions** (this removes Step 1's root-relative quirk -- see its as-built notes), used by
+  `open`, `chmod`, `launch` and `cd`:
+  - `abspath(cwd, path)` in `fs/path.rs` (P): pure and lexical, no filesystem access. Joins a relative path onto
+    the top frame's cwd, drops `.` and empty components, applies `..` (`..` at the root stays `/`) and enforces the
+    limits (a component over 255 bytes or a path over 4096 -> `ENAMETOOLONG`). Named after Python's
+    `os.path.abspath`, not `canonicalize`/`realpath`, which in POSIX and Rust also require the path to exist and
+    resolve symlinks. Host-tested.
+  - `resolve(components)` in `fs/files.rs` (already there since Step 1b): walks a slice of directory components on the
+    volume and returns the directory (`ENOENT`, `ENOTDIR`, `EIO`).
+
+  Callers do `resolve(parents)` on the components of `abspath(cwd, path)`. `launch` keeps its bin/ search order
+  (bare name, then `name.exe`) but goes through the same functions (no more hand-rolled `find_entry` + `expect`).
 - `fd::reset_for_launch()` fills slots 0-2 from the top frame's `stdio`. **Handle ownership:** a `File(handle)` binding
   is a *non-owning reference*; the `with_stdio` guard that opened the file owns it and closes it when it restores (so
   `with_scope`'s copied triple, and `Dup` copies, never own anything, and `pop()` closes nothing). Shell-owned handles
@@ -293,7 +317,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
   prompt survives, every r11 command still works via the new path.
 
 ### Step 8: redirection (`shell.rs`, `fd.rs`, `files.rs`)
-- `cmd > f`: shell opens `f` for write (via the resolver; creates/truncates, same limits as `open`),
+- `cmd > f`: shell opens `f` for write (via `abspath` and `resolve`; creates/truncates, same limits as `open`),
   `with_stdio`: bind stdio[1] to the handle, run, restore (not `push_copy`, which would discard state changes a
   redirected builtin makes). `cmd < f` symmetric on stdio[0] (reader). `cmd > f < g`
   both. Failure to open (missing input, read-only output, directory) reports an error and doesn't launch.
@@ -387,7 +411,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
 - **Tests:** `echo hello | cat`; `ls | wc -l`; 3-stage chain; `cat file | head -n 3`; a stage that fails or faults still
   cleans up its temp file and reports; pipe + redirect combos; no leftover files in `tmp/` (host check).
 
-### Step 12: line editing and history (`line.rs`/`linedisc.rs`, `console.rs`)
+### Step 12: line editing and history (`keyboard/line.rs`/`linedisc.rs`, `console/mod.rs`)
 - Cursor-aware buffer (Stage 5's insert/remove at a position, adapted -- no CSI parsing, no ANSI redraw), driven by
   discrete keys: Left/Right/Home/End/Delete/Backspace and the readline basics Ctrl+A (start), Ctrl+E (end), Ctrl+U
   (kill to start), Ctrl+K (kill to end) -- exactly these; Ctrl+W/L/R, Tab completion, `!!`, and a history file are out of
@@ -446,7 +470,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
 ### Infrastructure (built in Step 0, extended as needed)
 - **Two layers.** (1) `just test-host`: pure logic tested on the host with plain `cargo test` -- possible because the
   logic modules are written `no_std` + `alloc` with no kernel dependencies and are pulled into a tiny host crate
-  (`r12_shell/hosttests/`, `#[path = "../../src/<mod>.rs"]`): `path.rs` (resolver), `lexer.rs`/parser, `editor.rs`
+  (`r12_shell/hosttests/`, `#[path = "../../src/<mod>.rs"]`): `path.rs` (`abspath`), `lexer.rs`/parser, `editor.rs`
   (cursor-aware line buffer, no console), `history.rs`, `utf8.rs` (streaming decoder), the token queue ring, and
   `push_cstr_array`'s layout math. (2) `just test-qemu`: headless QEMU driven by the sendkey harness. `just test` runs both.
 - **Harness additions** (`test/run_tests.py`, from r11's `Session`): fail immediately if the serial log ever shows
@@ -531,7 +555,7 @@ transcript equality with r11. T5.7 host: token ring (FIFO order, wraparound, ove
 `cd /bin/../fonts` -> `/fonts`; `cd ./bin/.` -> `/bin`. T6.2 `cd nosuch` -> error, cwd unchanged; `cd notes.txt` (a
 file) -> `Not a directory`, cwd unchanged. T6.3 after `cd bin`, `ls` lists bin; `cat ../notes.txt` works;
 `chmod -x cat.exe`/`+x` operate relative; open from a program is cwd-relative. T6.4 `probe getcwd` with a too-small
-buffer returns an error (no overflow). T6.5 host: resolver table (absolute/relative, `.`/`..`, repeated `/`,
+buffer returns an error (no overflow). T6.5 host: `abspath` table (absolute/relative, `.`/`..`, repeated `/`,
 trailing `/`, `..` past root, empty string). T6.6 host: frame stack (push_copy/pop restore cwd and stdio; pop of the
 base frame is refused; shell-owned handles listed for closing); `with_stdio` restores only stdio and a cwd change made
 inside it persists; nested `with_stdio` and `with_scope` interleavings restore correctly; early-return paths unbalance nothing.
@@ -615,7 +639,7 @@ font, GPU/console, keyboard, then enters the read-eval loop and never returns. K
 shell (kernel-resident, per the ROADMAP) consumes them; programs run with IRQs enabled; `read(0)` pops the same queue
 through the same line discipline. No shell code runs in IRQ context.
 **Kernel modules (new/changed):** `shell.rs` (run_line, builtins, scripts, pipelines), `lexer.rs`, `shell_state.rs`
-(frame stack), `path.rs`, `linedisc.rs` + `editor.rs` + `history.rs`, `tokenq.rs`, `utf8.rs`, `files.rs` (resolver, append,
+(frame stack), `path.rs`, `linedisc.rs` + `editor.rs` + `history.rs`, `tokenq.rs`, `utf8.rs`, `files.rs` (`resolve`, append,
 mkdir/unlink/rename), `elf.rs` (fallible), explicit user stack + guard, `abi` crate shared with `user/`.
 **Syscalls (all with `abi` constants; Linux aarch64 numbers):** getcwd 17, mkdirat 34, unlinkat 35 (`AT_REMOVEDIR`),
 renameat 38, chmod 53, open 56 (+`O_APPEND`), close 57, getdents 61, read 63, write 64, exit 93; `chdir` (49) reserved,
@@ -660,7 +684,7 @@ stages (the `exit N` line stands in for `$?`); `cd` with no operand goes to `/` 
   `__data_start..__kernel_end` mapping), no runtime growth.
 - **Allocator behavior to design around:** a `Vec` doubling needs old+new alive at once (peak ~1.5-2x), the
   free-list allocator fragments, and the default allocation failure is a panic -- so pipe buffers use
-  `try_reserve` and a cap (e.g. 8 MiB), and reading a whole ELF (`read_file_to_vec`) stays fine at 16 MiB.
+  `try_reserve` and a cap (e.g. 8 MiB), and reading a whole ELF (`read_file_checked`) stays fine at 16 MiB.
 - **Comparison:** `disk.img` is 16 MiB, so a temp-file pipe is bounded by roughly the same size (and by the FAT free
   space), just with EIO instead of a cap error. A 16 MiB heap therefore gives equal capacity to the temp-file
   design, faster and without cleanup, while also benefiting large ELFs and directory snapshots.

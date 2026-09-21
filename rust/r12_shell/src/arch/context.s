@@ -28,7 +28,9 @@ function.
 Once exit()/a caught fault (syscall.rs) calls resume_kernel, execution returns here -- not via
 `eret`'s own continuation (that genuinely never returns), but via resume_kernel restoring every
 register saved below and branching directly to the local label, at which point this function does
-an entirely ordinary `ret`, using the x30 that was live when enter_el0 was first called. */
+an entirely ordinary `ret`, using the x30 that was live when enter_el0 was first called. x0 is
+left as resume_kernel's argument -- the program's exit status -- so to the caller it is simply
+enter_el0's return value (a longjmp value, in setjmp/longjmp terms). */
 .global enter_el0
 enter_el0:
 
@@ -65,7 +67,8 @@ that label. x30 is restored as part of this, so enter_el0's own subsequent `ret`
 to run_program's call site once resumed.
 
 Called from sync_el0_handler (syscall.rs) for `exit` and for a caught segfault alike -- never
-returns itself. */
+returns itself. Takes the exit status in w0 and leaves x0 alone (only x9-x11 and the registers being
+restored are touched), so it reaches enter_el0's `ret` as the return value. */
 .global resume_kernel
 resume_kernel:
 

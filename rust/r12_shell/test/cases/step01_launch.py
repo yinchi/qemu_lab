@@ -58,7 +58,7 @@ def run(ctx):
 
     # --- syscall error values ---
     check("probe without a subcommand", s.run("tests/probe.exe"),
-          "tests/probe.exe\nusage: probe sys-unknown|bad-ptr|fds|args ...\nexit 2\n")
+          "tests/probe.exe\nusage: probe sys-unknown|bad-ptr|fds|args|exit ...\nexit 2\n")
     check("unknown syscall is ENOSYS", s.run("tests/probe.exe sys-unknown"),
           "tests/probe.exe sys-unknown\nunknown syscall: -38\n")
     check("bad pointers are EFAULT", s.run("tests/probe.exe bad-ptr"),
@@ -71,6 +71,15 @@ def run(ctx):
           "open, path is not UTF-8: -22\n"
           "chmod, bad pointer: -14\n"
           "getdents on a closed fd: -9\n")
+
+    # --- exit status: passed back from the exit syscall to the launcher, masked to 8 bits ---
+    check("exit status 7", s.run("tests/probe.exe exit 7"), "tests/probe.exe exit 7\nexit 7\n")
+    check("exit status 255", s.run("tests/probe.exe exit 255"), "tests/probe.exe exit 255\nexit 255\n")
+    check("exit status is masked to 8 bits (300 -> 44)", s.run("tests/probe.exe exit 300"),
+          "tests/probe.exe exit 300\nexit 44\n")
+    check("exit status 256 masks to 0: success, nothing reported", s.run("tests/probe.exe exit 256"),
+          "tests/probe.exe exit 256\n")
+    check("exit status 0 after a nonzero one is not stale", s.run("true"), "true\n")
 
     # --- the fd limit: 16 slots, 3 standard, so exactly 13 opens, and closing frees them ---
     check("fd limit is exactly 13 opens", s.run("tests/probe.exe fds"),

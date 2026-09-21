@@ -52,8 +52,9 @@ pub fn reset_for_launch() {
     table[2] = Some(FileDescriptor::Console);
 }
 
-/// Closes whatever the program that just ended left open, committing any file it was still
-/// writing -- called right after it exits or faults, not left to the next `reset_for_launch`.
+/// Closes whatever the program that just ended left open, which finishes any file it was still
+/// writing (a written file is only complete on disk once it's closed).
+/// Cleanup, not a save: nothing the program held only in memory is written out.
 pub fn end_launch() {
     files::close_all();
 }

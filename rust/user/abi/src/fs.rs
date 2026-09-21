@@ -1,11 +1,13 @@
 //! The fixed layouts and flags around files: `open`'s flags, the record `getdents` fills in, and the
 //! FAT attribute bits as they appear in that record and in `chmod`'s masks.
 
-// --- open(2) flags ---------------------------------------------------------------------------
+// --- open() flags ---------------------------------------------------------------------------
 
-/// Read-only. Also opens a directory, for `getdents`.
+/// Read-only flag for the `flags` argument of the `SYS_OPEN` syscall. Also opens a directory, for
+/// `getdents`.
 pub const O_RDONLY: usize = 0;
-/// Write. Creates the file if it doesn't exist, and always starts it empty.
+/// Write-only flag for the `flags` argument of the `SYS_OPEN` syscall. Creates the file if it
+/// doesn't exist, and always starts it empty.
 pub const O_WRONLY: usize = 1;
 
 // --- Directory records (getdents) --------------------------------------------------------------
@@ -18,12 +20,13 @@ pub const DIRENT_SIZE: usize = 4 + 1 + 1 + NAME_MAX;
 
 // --- FAT attribute bits ------------------------------------------------------------------------
 
+/// Fat attribute: read-only.
 pub const ATTR_READ_ONLY: u8 = 0x01;
-/// The volume-label pseudo-entry; not a real file, never listed.
+/// Fat attribute: the volume-label pseudo-entry; not a real file, never listed.
 pub const ATTR_VOLUME_LABEL: u8 = 0x08;
+/// Fat attribute: directory.
 pub const ATTR_DIRECTORY: u8 = 0x10;
-/// This project's own "executable" convention, not a standard FAT bit -- the DOS `SYSTEM`-adjacent
-/// reserved bit `0x40`, claimed in `ROADMAP.md`'s Stage 8.
+/// Fat attribute: executable. Not standard in FAT, uses a reserved bit (i.e. no existing meaning).
 pub const ATTR_EXEC: u8 = 0x40;
 
 #[cfg(test)]

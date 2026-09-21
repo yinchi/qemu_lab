@@ -21,18 +21,22 @@ use crate::static_mut_ref;
 /// there before would otherwise still be visible to the CPU.
 ///
 /// # Errors
-/// Anything that isn't a simple, statically-linked AArch64 executable whose segments fit inside
-/// the user window (see `ElfError`). Nothing is copied or mapped in that case, except for
-/// `MapFailed`, which can only surface after earlier segments were already mapped.
+/// Returns an `Err(ElfError)` if the ELF is invalid or cannot be mapped. Nothing is copied or
+/// mapped in that case, except for `ElfError::MapFailed`, which can only surface after earlier
+/// segments were already mapped.
 pub fn load(elf_bytes: &[u8]) -> Result<usize, ElfError> {
     let parsed = elfparse::parse(elf_bytes, USER_BASE, USER_BASE + USER_SIZE)?;
 
     let mut result = Ok(parsed.entry);
     for seg in &parsed.segments {
-        // Copy the segment's file bytes, then zero the rest of `memsz` -- the tail is `.bss`-like
-        // data the file doesn't store since it's all zero.
+        // Destination address for this segment within the user window.
         let dst = seg.vaddr as *mut u8;
+
+        // Source bytes for this segment within the ELF file.
         let src = &elf_bytes[seg.offset..seg.offset + seg.filesz];
+
+        // Copy the segment's file bytes, then zero the rest of the segment's memory.
+        //
         // SAFETY: `parse` checked that `vaddr..vaddr+memsz` lies inside the user window and the
         // source range inside `elf_bytes`; nothing else is using the window while a program is
         // being loaded.
@@ -57,6 +61,8 @@ pub fn load(elf_bytes: &[u8]) -> Result<usize, ElfError> {
             attrs |= El1Attributes::UXN;
         }
 
+        // Add a mapping for this segment in the page table.
+
         let region = MemoryRegion::new(seg.vaddr, seg.vaddr + seg.memsz);
         // SAFETY: sole accessor of IDMAP at any given time -- this project runs single-threaded,
         // and nothing else touches the page table while a program is being loaded.
@@ -67,13 +73,17 @@ pub fn load(elf_bytes: &[u8]) -> Result<usize, ElfError> {
         }
     }
 
-    // A broad invalidate (every EL1&0 TLB entry, not just this window's pages) rather than a
-    // precise per-page one: this runs once per program load, not on any hot path, so simplicity --
-    // guaranteed correct regardless of exactly which pages changed -- outweighs the cost of
-    // over-invalidating a few entries that didn't need it. Done on the failure path too, since a
-    // failed load may have changed some mappings first.
+    // Invalidate the translation lookaside buffer (TLB) for all EL1&0 entries, ensuring that any
+    // changes to the page table are recognized by the CPU. This is a broad invalidate rather than
+    // a precise per-page one, which is acceptable since this runs once per program load and not on
+    // any hot path.
     unsafe {
-        core::arch::asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb");
+        core::arch::asm!(
+            "dsb ishst",      // data synchronization barrier (inner shareable, stores only)
+            "tlbi vmalle1is", // invalidate all EL1&0 TLB entries (inner shareable)
+            "dsb ish",        // data synchronization barrier (inner shareable, all)
+            "isb"             // instruction synchronization barrier
+        );
     }
 
     result

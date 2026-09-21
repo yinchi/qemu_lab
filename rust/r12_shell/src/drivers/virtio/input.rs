@@ -10,16 +10,12 @@
 //! `irq_handler` drains events via `poll()` each time this device's SPI fires, rather than
 //! looping on `poll()` itself.
 
-use core::ptr::NonNull;
-
 pub use virtio_drivers::device::input::InputEvent;
 use virtio_drivers::device::input::VirtIOInput;
-use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
-use virtio_drivers::transport::{DeviceType, Transport};
+use virtio_drivers::transport::DeviceType;
+use virtio_drivers::transport::mmio::MmioTransport;
 
-use super::hal::VirtioHalImpl;
-
-const VIRTIO_MMIO_SIZE: usize = 0x200;
+use super::{find_mmio_transport, hal::VirtioHalImpl};
 
 /// `EV_KEY`, the `event_type` used for every key press/release/repeat (evdev's
 /// `input-event-codes.h`). This is the only event type a `virtio-keyboard-device` ever sends.
@@ -35,24 +31,9 @@ impl Keyboard {
     /// Tries every discovered `virtio,mmio` slot in turn and returns a `Keyboard` (and its SPI
     /// number) for the first one that turns out to be an input device.
     pub fn find(mmio_slots: impl Iterator<Item = (usize, u32)>) -> Option<(Self, u32)> {
-        for (base, irq) in mmio_slots {
-            let Some(header) = NonNull::new(base as *mut VirtIOHeader) else {
-                continue;
-            };
-            // SAFETY: `base` came from a `virtio,mmio` node's `reg` property (see blk.rs's
-            // identical reasoning).
-            let transport = match unsafe { MmioTransport::new(header, VIRTIO_MMIO_SIZE) } {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if transport.device_type() != DeviceType::Input {
-                continue;
-            }
-            if let Ok(inner) = VirtIOInput::new(transport) {
-                return Some((Self { inner }, irq));
-            }
-        }
-        None
+        let (transport, irq) = find_mmio_transport(mmio_slots, DeviceType::Input)?;
+        let inner = VirtIOInput::new(transport).ok()?;
+        Some((Self { inner }, irq))
     }
 
     /// Returns the next pending input event, if any -- non-blocking. Called from `irq_handler`

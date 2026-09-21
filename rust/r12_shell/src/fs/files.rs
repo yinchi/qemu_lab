@@ -4,7 +4,7 @@
 //!
 //! Paths are absolute or root-relative -- `bin/cat.exe` and `/bin/cat.exe` mean the same thing,
 //! since there is no working directory until Stage 12's shell introduces one. Components are
-//! matched exactly (case-sensitively, same as `find_entry`); `.`/`..` aren't special, so they
+//! matched exactly (case-sensitively, same as `find_entry_checked`); `.`/`..` aren't special, so they
 //! simply fail to match anything.
 //!
 //! Writes are deliberately narrow, matching what `cp` needs: opening for write creates the file
@@ -30,11 +30,9 @@ use abi::fs::{ATTR_EXEC, ATTR_READ_ONLY, ATTR_VOLUME_LABEL, DIRENT_SIZE, NAME_MA
 const CHMOD_BITS: u8 = ATTR_EXEC | ATTR_READ_ONLY;
 
 /// How many files/directories may be open at once, across every fd a program holds. The fd table
-/// (`syscall/fd.rs`) has this many slots above the three standard ones, so `open` fails with
-/// `EMFILE` at exactly this many, whichever table would have run out first. Defined here, the
-/// lower layer, so the dependency runs from `fd` to `files` and not both ways.
+/// (`syscall/fd.rs`) is sized from this (it adds the three standard fds), so `open` fails with
+/// `EMFILE` at exactly this many, whichever table would have run out first.
 pub const MAX_OPEN_FILES: usize = 13;
-const MAX_OPEN: usize = MAX_OPEN_FILES;
 
 type Dir = FatDir<'static, BlkIo>;
 
@@ -62,24 +60,28 @@ enum OpenFile {
 ///
 /// SAFETY (every access, via `table`): single core, and every syscall runs with IRQs masked, so
 /// nothing else can touch this while a call is in progress.
-static mut OPEN_FILES: [Option<OpenFile>; MAX_OPEN] = [const { None }; MAX_OPEN];
+static mut OPEN_FILES: [Option<OpenFile>; MAX_OPEN_FILES] = [const { None }; MAX_OPEN_FILES];
 
-fn table() -> &'static mut [Option<OpenFile>; MAX_OPEN] {
+/// Accessor for `OPEN_FILES`.
+fn table() -> &'static mut [Option<OpenFile>; MAX_OPEN_FILES] {
     // SAFETY: see OPEN_FILES.
     unsafe { &mut *(&raw mut OPEN_FILES) }
 }
 
+/// Accessor for the FAT volume, `VOL`.
 fn vol() -> &'static FatVolume<BlkIo> {
     // SAFETY: VOL is populated before any program can run (kernel_main) and never cleared.
     unsafe { static_ref!(VOL) }
 }
 
+/// Splits a path into its components, ignoring empty components caused by consecutive slashes.
 fn components(path: &str) -> Vec<&str> {
     path.split('/').filter(|c| !c.is_empty()).collect()
 }
 
-/// Walks `dirs` down from the root, one directory per component.
-fn walk(dirs: &[&str]) -> Result<Dir, isize> {
+/// Resolve a directory from the root, given a slice of path components: each one must name a
+/// directory inside the previous. An empty slice resolves to the root itself.
+fn resolve(dirs: &[&str]) -> Result<Dir, isize> {
     let mut dir = vol().root_dir();
     for name in dirs {
         let entry = find_entry_checked(&dir, name)?.ok_or(ENOENT)?;
@@ -96,7 +98,7 @@ fn walk(dirs: &[&str]) -> Result<Dir, isize> {
 pub fn lookup(path: &str) -> Result<hadris_fat::sync::FileEntry, isize> {
     let comps = components(path);
     let (leaf, parents) = comps.split_last().ok_or(EISDIR)?;
-    let parent = walk(parents)?;
+    let parent = resolve(parents)?;
     find_entry_checked(&parent, leaf)?.ok_or(ENOENT)
 }
 
@@ -131,7 +133,7 @@ fn open_read(path: &str) -> Result<OpenFile, isize> {
             next: 0,
         });
     };
-    let parent = walk(parents)?;
+    let parent = resolve(parents)?;
     let entry = find_entry_checked(&parent, leaf)?.ok_or(ENOENT)?;
     if entry.is_directory() {
         let dir = parent.open_entry(&entry).map_err(|_| EIO)?;
@@ -150,7 +152,7 @@ fn open_read(path: &str) -> Result<OpenFile, isize> {
 fn open_write(path: &str) -> Result<OpenFile, isize> {
     let comps = components(path);
     let (leaf, parents) = comps.split_last().ok_or(EISDIR)?;
-    let parent = walk(parents)?;
+    let parent = resolve(parents)?;
     let entry = match find_entry_checked(&parent, leaf)? {
         Some(entry) => {
             if entry.is_directory() {
@@ -243,7 +245,7 @@ pub fn getdents(handle: usize, buf: &mut [u8]) -> isize {
     off as isize
 }
 
-/// Closes `handle`. For a writer this is also what commits the file's final size to disk.
+/// Closes `handle`. For a writer, this is also what commits the file's final size to disk.
 pub fn close(handle: usize) -> isize {
     match table()[handle].take() {
         Some(OpenFile::Writer(writer)) => match writer.finish() {
@@ -258,7 +260,7 @@ pub fn close(handle: usize) -> isize {
 /// Closes every open handle -- called between launches so a program that exits (or faults)
 /// without closing its files still gets them committed, and can't leak handles to the next one.
 pub fn close_all() {
-    for handle in 0..MAX_OPEN {
+    for handle in 0..MAX_OPEN_FILES {
         let _ = close(handle);
     }
 }
@@ -274,7 +276,9 @@ pub fn chmod(path: &str, set: u8, clear: u8) -> isize {
     let Some((leaf, parents)) = comps.split_last() else {
         return EINVAL; // the root directory has no attribute byte
     };
-    let entry = match walk(parents).and_then(|parent| find_entry_checked(&parent, leaf)?.ok_or(ENOENT)) {
+    let entry = match resolve(parents)
+        .and_then(|parent| find_entry_checked(&parent, leaf)?.ok_or(ENOENT))
+    {
         Ok(entry) => entry,
         Err(e) => return e,
     };

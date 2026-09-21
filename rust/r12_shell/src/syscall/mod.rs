@@ -62,15 +62,15 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                 SYS_GETDENTS => regs.x[0] = fd::getdents(a0, a1, a2) as u64,
                 SYS_CHMOD => regs.x[0] = fd::chmod(a0, a1, a2, a3) as u64,
                 SYS_EXIT => {
-                    process::set_exit_code(a0 as i32);
                     // Never returns to kernel_exit's normal eret-back-to-EL0
                     // path -- resume_kernel (arch/context.s) restores the register
                     // set enter_el0 checkpointed and jumps straight back into
-                    // run_program's call site instead.
+                    // run_program's call site instead, handing it the exit status.
+                    // Only the low 8 bits are a status, as in POSIX (`WEXITSTATUS`): 0-255.
                     // SAFETY: only reachable once run_program has actually
                     // called enter_el0 (context.s's KERNEL_CTX holds a real
                     // checkpoint, not its zeroed initial state).
-                    unsafe { process::resume_kernel() }
+                    unsafe { process::resume_kernel((a0 & 0xff) as i32) }
                 }
                 _ => regs.x[0] = ENOSYS as u64, // no such syscall
             }
@@ -91,11 +91,10 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                 alloc::format!("Segmentation fault (address {far:#x}, ESR_EL1 {esr:#x})\n")
                     .as_bytes(),
             );
-            process::set_exit_code(process::EXIT_FAULT);
             // SAFETY: only reachable once run_program has actually called
             // enter_el0 (context.s's KERNEL_CTX holds a real checkpoint, not
             // its zeroed initial state).
-            unsafe { process::resume_kernel() }
+            unsafe { process::resume_kernel(process::EXIT_FAULT) }
         }
         _ => {
             // Anything else (FP exceptions, alignment faults, etc.) --

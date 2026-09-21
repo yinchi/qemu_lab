@@ -26,21 +26,29 @@ use abi::fs::ATTR_EXEC;
 use arm_gic::{IntId, InterruptGroup, gicv2::GicV2};
 use linked_list_allocator::LockedHeap;
 
-use crate::arch::gic::{gic_enable, gic_setup};
-use crate::arch::mmu;
-use crate::console::font::{FONT_DATA, Font};
-use crate::console::{BG, Console, show_row};
-use crate::drivers::virtio::blk::Blk;
-use crate::drivers::virtio::gpu::Gpu;
-use crate::drivers::virtio::input::Keyboard;
-use crate::fs::blkio::{BlkIo, VOL};
-use crate::fs::{find_entry, read_file_to_vec};
-use crate::keyboard::keymap::{KEY_NAMES, KEY_STATE, LOCK_STATE, build_key_names};
-use crate::keyboard::keymap::{KeyState, LockState};
-use crate::keyboard::line::{LINE, LineBuffer};
-use crate::platform::base_addresses::{BASE_ADDRESSES, init_base_addresses};
-use crate::platform::globals::{BLK, BLK_SPI, CONSOLE, GPU, KEYBOARD, KEYBOARD_SPI};
-use crate::platform::uart::{UART0, UartWriter, uart_ensure_newline, uart_write};
+use crate::arch::{
+    gic::{gic_enable, gic_setup},
+    mmu,
+};
+use crate::console::{
+    BG, Console,
+    font::{FONT_DATA, Font},
+    show_row,
+};
+use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
+use crate::fs::{
+    blkio::{BlkIo, VOL},
+    find_entry_checked, read_file_or_panic,
+};
+use crate::keyboard::{
+    keymap::{KEY_NAMES, KEY_STATE, KeyState, LOCK_STATE, LockState, build_key_names},
+    line::{LINE, LineBuffer},
+};
+use crate::platform::{
+    base_addresses::{BASE_ADDRESSES, init_base_addresses},
+    globals::{BLK, BLK_SPI, CONSOLE, GPU, KEYBOARD, KEYBOARD_SPI},
+    uart::{UART0, UartWriter, uart_ensure_newline, uart_write},
+};
 use crate::shell::PROMPT;
 
 /// Size of the kernel heap: 16 MiB, up from 1 MiB in Stage 11. A launch reads a whole ELF into a
@@ -66,13 +74,16 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 #[allow(clippy::deref_addrof)]
 unsafe fn read_font(vol: &hadris_fat::sync::FatVolume<BlkIo>) -> &'static [u8; 4096] {
     let root = vol.root_dir();
-    let fonts_dir_entry = find_entry(&root, "fonts").expect("fonts/ not found on the disk image");
+    let fonts_dir_entry = find_entry_checked(&root, "fonts")
+        .expect("failed to read the root directory")
+        .expect("/fonts/ not found on the disk image");
     let fonts_dir = root
         .open_entry(&fonts_dir_entry)
         .expect("failed to open fonts directory");
-    let font_entry =
-        find_entry(&fonts_dir, "spleen.raw").expect("fonts/spleen.raw not found on the disk image");
-    let font_bytes = read_file_to_vec(vol, &font_entry);
+    let font_entry = find_entry_checked(&fonts_dir, "spleen.raw")
+        .expect("failed to read /fonts/")
+        .expect("/fonts/spleen.raw not found on the disk image");
+    let font_bytes = read_file_or_panic(vol, &font_entry);
     unsafe {
         (&raw mut FONT_DATA as *mut u8).copy_from_nonoverlapping(font_bytes.as_ptr(), 4096);
         // `FONT_DATA` isn't an `Option`, so `static_mut_ref!`/`static_ref!` (see `util.rs`)
@@ -148,7 +159,9 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
     // each time.
     {
         let root = vol.root_dir();
-        let bin_dir_entry = find_entry(&root, "bin").expect("bin/ not found on the disk image");
+        let bin_dir_entry = find_entry_checked(&root, "bin")
+            .expect("failed to read the root directory")
+            .expect("/bin/ not found on the disk image");
         let bin_dir = root
             .open_entry(&bin_dir_entry)
             .expect("failed to open bin directory");

@@ -8,12 +8,11 @@
 //! continuation.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, Ordering};
 
 use aarch64_cpu::registers::{DAIF, ELR_EL1, SP_EL0, SPSR_EL1, Writeable};
 
 use super::elfparse::ElfError;
-use super::{argstack, elf};
+use super::{argplan, elf};
 use crate::platform::base_addresses::{USER_BASE, USER_SIZE};
 use crate::syscall::fd;
 use abi::errno::{E2BIG, ENOEXEC};
@@ -31,37 +30,29 @@ unsafe extern "C" {
     fn enter_el0();
 
     /// Restores the register set `enter_el0` saved and jumps back into it
-    /// directly. Called from `sync_el0_handler` (`syscall.rs`) for `exit`
-    /// and for a caught segfault alike; never returns itself.
+    /// directly, making `enter_el0` appear to return `code` -- the program's
+    /// exit status, travelling in `x0` like a `longjmp` value. Called from
+    /// `sync_el0_handler` (`syscall.rs`) for `exit` and for a caught segfault
+    /// alike; never returns itself.
     ///
     /// # Safety
     /// Must only be called from within the `sync_el0_64` handler, after
     /// `run_program` has actually started a program (so `arch/context.s`'s
     /// `KERNEL_CTX` holds a real checkpoint, not its zeroed initial
     /// state).
-    pub fn resume_kernel() -> !;
+    pub fn resume_kernel(code: i32) -> !;
 }
-
-/// The exit status of the program most recently run: what it passed to `exit`, or `EXIT_FAULT` if
-/// it was killed by a fault instead. `run_program` reads it back once the program is over.
-static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
 
 /// The status reported for a program stopped by a fault (`128 + SIGSEGV`, the shell convention),
 /// since it never got to pass one to `exit` itself.
 pub const EXIT_FAULT: i32 = 139;
-
-/// Records the exit status for `run_program` to return -- called by the `exit` syscall and the
-/// fault path in `syscall.rs`, just before they `resume_kernel`.
-pub fn set_exit_code(code: i32) {
-    EXIT_CODE.store(code, Ordering::Relaxed);
-}
 
 /// The most stack a program's initial `argv` (strings plus pointer array) may take -- far more than
 /// a typed line can ever produce, and a small fraction of the 2 MiB user window, so an absurd
 /// argument list is refused up front instead of running into the program's own memory.
 pub const ARG_MAX: usize = 128 * 1024;
 
-/// Why a program couldn't be started.
+/// Enumerates the possible reasons why a program couldn't be started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchError {
     /// The file isn't a loadable executable (see `elfparse::ElfError` for exactly why).
@@ -89,27 +80,32 @@ impl From<ElfError> for LaunchError {
 /// A program that's loaded and ready to enter: everything `run` needs. Splitting load-and-set-up
 /// (`prepare`) from entering (`run`) means a later stage that starts a program from inside another
 /// (Stage 19's second resident slot) can reuse the first half unchanged.
-pub struct Prepared {
+pub struct PreparedProgram {
+    /// The entry point of the program.
     entry: usize,
+    /// The initial stack pointer of the program.
     sp: usize,
+    /// The argument count.
     argc: usize,
+    /// The argument vector (array of pointers to NUL-terminated strings).
     argv: usize,
 }
 
 /// Writes `items` onto the stack below `sp` as NUL-terminated C strings plus a `NULL`-terminated
-/// array of pointers to them (see `argstack.rs` for the layout), and returns the array's address --
-/// which is also the new stack pointer. `None` if it wouldn't fit above `floor`.
-///
-/// The kernel is doing address bookkeeping on the *target* memory here: each pointer is written as
-/// that string's user-stack address, not the kernel-side address the string was copied from -- an
-/// easy, silent mistake that would only surface when the program dereferences `argv[1]`. `SP_EL0`
-/// itself isn't touched: the write happens first, at addresses *above* where it will end up.
+/// array of pointers to them (see `argplan.rs` for the layout), and returns the array's address --
+/// which is also the new stack pointer. `None` if `plan(&lens)` determines the items wouldn't
+/// fit above `floor`.
 ///
 /// SAFETY: `sp`/`floor` must lie inside the user window that `elf::load` just mapped, and nothing
 /// may be running in it.
 unsafe fn push_cstr_array(sp: usize, floor: usize, items: &[&str]) -> Option<usize> {
+    // Collect the lengths of all items to plan the stack layout.
     let lens: Vec<usize> = items.iter().map(|s| s.len()).collect();
-    let plan = argstack::plan(sp, floor, &lens)?;
+
+    // Plan the stack layout for the argument strings and the array of pointers.
+    let plan = argplan::plan(sp, floor, &lens)?;
+
+    // Copy each argument string into its planned location on the stack.
     for (item, &addr) in items.iter().zip(&plan.strings) {
         // SAFETY: `plan` keeps every string and the array within `floor..sp`.
         unsafe {
@@ -117,46 +113,53 @@ unsafe fn push_cstr_array(sp: usize, floor: usize, items: &[&str]) -> Option<usi
             *((addr + item.len()) as *mut u8) = 0;
         }
     }
+
+    // Write the array of pointers to the argument strings onto the stack.
     let array = plan.array as *mut usize;
     for (i, &addr) in plan.strings.iter().enumerate() {
         // SAFETY: the array's `len + 1` slots were carved out of the window by `plan`.
         unsafe { *array.add(i) = addr };
     }
+
+    // Write the terminating `NULL` pointer for the array of argument strings.
     // SAFETY: as above -- the terminating `NULL` slot.
     unsafe { *array.add(plan.strings.len()) = 0 };
+
+    // Return the address of the array of argument string pointers (the new stack pointer).
     Some(plan.array)
 }
 
-/// Loads `elf_bytes` and sets a fresh launch up: the fd table (`fd::reset_for_launch`), the exit
-/// status, and the initial stack holding `args` as its `argv` (`args[0]` is the program's own name,
-/// same C convention; `argv[argc]` is `NULL`). Nothing is touched if the program can't be started:
-/// the argument list is checked against `ARG_MAX` first, and `elf::load` validates the whole file
-/// before copying or mapping anything.
-///
-/// The argc/argv stack setup (see `ROADMAP.md`'s Stage 10 section): starting from `stack_top` and
-/// working *downward*, `push_cstr_array` writes each argument string and then the pointer array,
-/// 16-byte-aligned since it becomes the program's own incoming `SP_EL0` -- a real AAPCS64 call
-/// boundary, `main(argc, argv)` receiving it via `x0`/`x1`. With `args` empty this degrades to just
-/// the `NULL` slot.
-pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<Prepared, LaunchError> {
+/// Loads `elf_bytes` and sets a fresh launch up, including the file descriptor table, exit status,
+/// and initial stack with `args` as its `argv`. Returns a `PreparedProgram` on success.
+pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, LaunchError> {
+    // Set up the initial stack boundaries.
     let stack_top = USER_BASE + USER_SIZE;
     let floor = stack_top - ARG_MAX;
 
     // Dry run first: an argument list that can't fit must not cost a load.
     let lens: Vec<usize> = args.iter().map(|s| s.len()).collect();
-    argstack::plan(stack_top, floor, &lens).ok_or(LaunchError::ArgsTooBig)?;
+    argplan::plan(stack_top, floor, &lens).ok_or(LaunchError::ArgsTooBig)?;
 
+    // Load the ELF binary into memory and prepare the file descriptor table for the new program.
     let entry = elf::load(elf_bytes)?;
-    fd::reset_for_launch();
-    set_exit_code(0);
 
+    // Reset the file descriptor table for the new program.
+    fd::reset_for_launch();
+
+    // Prepare the initial stack with the argument strings and array of pointers.
+    //
     // SAFETY: `stack_top` and `floor` are inside the user window `elf::load` just mapped; the
     // destination is otherwise-unused stack memory nothing touches until the program itself runs.
     let argv = unsafe { push_cstr_array(stack_top, floor, args) }.ok_or(LaunchError::ArgsTooBig)?;
-    Ok(Prepared { entry, sp: argv, argc: args.len(), argv })
+    Ok(PreparedProgram {
+        entry,
+        sp: argv,
+        argc: args.len(),
+        argv,
+    })
 }
 
-/// Runs a `prepare`d program at EL0 to completion and returns its exit status -- `enter_el0`/
+/// Runs a `PreparedProgram` (from `prepare`) at EL0 to completion and returns its exit status -- `enter_el0`/
 /// `resume_kernel` (`arch/context.s`) are what make an ordinary Rust function call correctly "pause"
 /// for however long the EL0 program runs, however it ends.
 ///
@@ -172,7 +175,7 @@ pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<Prepared, LaunchError>
 /// need the IRQ this masks. What's lost is only keystrokes typed while a program *isn't*
 /// reading -- they queue up in the device -- and there is no Ctrl+C either way. (`Stage12.md`'s
 /// Step 5 removes this structure: the eval loop leaves IRQ context, so the mask isn't needed.)
-pub fn run(program: Prepared) -> i32 {
+pub fn run(program: PreparedProgram) -> i32 {
     // M[3:0] = bits 3:0 = 0b0000 (EL0t). DAIF bits 9:6 are all *set* here (masked), not
     // cleared -- see this function's doc comment on why interrupts stay masked for a program's
     // entire time at EL0.
@@ -187,36 +190,31 @@ pub fn run(program: Prepared) -> i32 {
     // there. Inline asm (rather than a plain `enter_el0()` call) specifically so x0/x1 are set
     // in the same instruction sequence that calls it, with nothing of Rust's own codegen
     // between the two free to reuse those (ordinarily caller-saved) registers first.
+    //
+    // On the way out, `x0` carries the program's exit status: `resume_kernel(code)` leaves it
+    // there and `enter_el0`'s `ret` returns it, like any function's return value. Only the low 32
+    // bits are meaningful (AAPCS64 says nothing about the upper half of a 32-bit value).
+    let status: usize;
     unsafe {
         core::arch::asm!(
             "bl {enter}",
-            in("x0") program.argc,
+            inout("x0") program.argc => status,
             in("x1") program.argv,
             enter = sym enter_el0,
             clobber_abi("C"),
         );
     }
 
-    // Commit whatever files the program left open while interrupts are still masked, like every
-    // other filesystem access made during a launch -- unmasked below, a stale block-device IRQ
-    // (pending since the program's own masked reads, never acknowledged) would be taken in the
-    // middle of these writes.
+    // Close every file the program left open, which finishes any writes still in progress.
+    // Done while interrupts are still masked, like every other filesystem access made during a
+    // launch.
     fd::end_launch();
 
-    // The program has exited (SYS_EXIT) or faulted -- either way, resume_kernel (arch/context.s)
-    // jumped back into enter_el0's own return point via a raw branch, not an eret, so it never
-    // restored DAIF the way returning from an exception normally would. This is a separate
-    // concern from SPSR_EL1's masking above (that's about EL0's own execution; this is about
-    // *this kernel's* state once back in an ordinary EL1 call chain, which needs DAIF unmasked
-    // to keep handling keyboard IRQs at all): taking the syscall/fault exception that got us
-    // here already masked it architecturally (entering EL1 always does, regardless of what
-    // SPSR_EL1 said for EL0), and left alone, the shell would go deaf to every further keystroke
-    // after the very first program ever runs.
-    // Re-clear it explicitly, same as kernel_main's own one-time "DAIF stays unmasked from here
-    // on".
+    // Ensure that interrupts are unmasked for the kernel after the program has finished,
+    // even if the program crashed or exited abnormally.
     DAIF.write(DAIF::I::CLEAR);
 
-    EXIT_CODE.load(Ordering::Relaxed)
+    status as i32
 }
 
 /// Loads and runs `elf_bytes` with `args` as its `argv`, returning its exit status -- `prepare`

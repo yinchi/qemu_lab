@@ -12,8 +12,21 @@ use fdt::Fdt;
 
 /// Hard-coded UART0 base address, since it needs to be usable even if discovery fails
 pub const UART0_BASE: usize = 0x0900_0000;
+/// Size of the UART0 memory-mapped I/O region.
+pub const UART0_SIZE: usize = 0x1000;
 
-/// Maximum number of `virtio,mmio` (memory-mapped I/O) slots this platform exposes.
+/// Size of the GIC Distributor memory-mapped I/O region.
+pub const GICD_SIZE: usize = 0x10000;
+/// Size of the GIC CPU Interface memory-mapped I/O region.
+pub const GICC_SIZE: usize = 0x10000;
+
+// The FDT (Flattened Device Tree) reports each virtio device (slot) separately, but we map them as
+// one block instead, which works because the slots are contiguous in physical memory: 32 slots of
+// 512 bytes each, 16 KiB, or four 4 KiB pages. Hard-coding the window keeps `arch/mmu.rs` to a
+// single mapping. Empty slots are still valid MMIO addresses; they just read back a device ID of
+// 0, which is how probing skips them.
+
+/// Base address of the first `virtio,mmio` slot.
 pub const VIRTIO_MMIO_BASE: usize = 0x0A00_0000;
 /// Number of `virtio,mmio` slots this platform exposes.
 pub const MAX_VIRTIO_MMIO_SLOTS: usize = 32;
@@ -22,7 +35,6 @@ pub const VIRTIO_MMIO_SIZE: usize = MAX_VIRTIO_MMIO_SLOTS * 0x200;
 
 /// Start of the fixed EL0-accessible user window in virtual memory.
 pub const USER_BASE: usize = 0x4400_0000;
-
 /// Size of the fixed EL0-accessible user window.
 pub const USER_SIZE: usize = 0x0020_0000; // 2 MiB
 

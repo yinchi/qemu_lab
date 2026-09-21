@@ -6,7 +6,7 @@
 
 extern crate alloc;
 
-#[path = "../../src/exec/argstack.rs"]
-pub mod argstack;
+#[path = "../../src/exec/argplan.rs"]
+pub mod argplan;
 #[path = "../../src/exec/elfparse.rs"]
 pub mod elfparse;

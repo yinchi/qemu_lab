@@ -28,9 +28,8 @@ pub static mut LINE: Option<LineBuffer> = None;
 /// `show_row` call uses, so there's no real "uninitialized" state to model.
 pub static mut INPUT_ROW: usize = 0;
 
-/// What feeding one `Token` into the buffer did, if anything -- `None` for a token this buffer
-/// doesn't act on (a Ctrl/Alt-held shortcut, a control character, or a key with no character at
-/// all).
+/// What feeding one `Token` into the buffer did -- as `Option<LineEvent>` to include the
+/// possibility of no state change.
 pub enum LineEvent {
     /// The buffer's visible content changed (an append or a pop) -- redraw it.
     Changed,
@@ -38,6 +37,9 @@ pub enum LineEvent {
     Finished(String),
 }
 
+/// A line-editing buffer that supports appending characters, handling Backspace, and finishing
+/// on Enter. Shared between the shell's prompt and a running program's `read(0)`, for programs
+/// that consume stdin in line-oriented mode (raw mode to be implemented in Stage 13).
 pub struct LineBuffer {
     text: String,
 }

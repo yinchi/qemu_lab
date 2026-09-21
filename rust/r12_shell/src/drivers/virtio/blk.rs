@@ -7,18 +7,12 @@
 //! `ack_interrupt()`, so a genuine IRQ-driven transfer is possible here -- unlike `virtio-gpu`
 //! (see `gpu.rs`'s doc comment), which only exposes synchronous, internally-polling calls.
 
-use core::ptr::NonNull;
-
 use virtio_drivers::Error;
 use virtio_drivers::device::blk::{BlkReq, BlkResp, VirtIOBlk};
-use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
-use virtio_drivers::transport::{DeviceType, Transport};
+use virtio_drivers::transport::DeviceType;
+use virtio_drivers::transport::mmio::MmioTransport;
 
-use super::hal::VirtioHalImpl;
-
-/// One `virtio,mmio` slot's region size, per the device tree (`reg = <... 0x200>` on every
-/// slot).
-const VIRTIO_MMIO_SIZE: usize = 0x200;
+use super::{find_mmio_transport, hal::VirtioHalImpl};
 
 /// Wrapper around a VirtIO block device, providing IRQ-driven read and write operations.
 pub struct Blk {
@@ -29,39 +23,12 @@ impl Blk {
     /// Tries every discovered `virtio,mmio` slot in turn and returns a `Blk` (and its SPI
     /// number) for the first one that turns out to be a block device.
     pub fn find(mmio_slots: impl Iterator<Item = (usize, u32)>) -> Option<(Self, u32)> {
-        for (base, irq) in mmio_slots {
-            let Some(header) = NonNull::new(base as *mut VirtIOHeader) else {
-                continue;
-            };
-
-            // Attempt to create an MMI/O transport for this slot. Fails naturally if the header
-            // isn't valid.
-            //
-            // SAFETY: `base` came from a `virtio,mmio` node's `reg` property, so it points to a
-            // valid VirtIO MMIO region of at least VIRTIO_MMIO_SIZE bytes, for the program's
-            // lifetime ('static).
-            let transport = match unsafe { MmioTransport::new(header, VIRTIO_MMIO_SIZE) } {
-                Ok(t) => t,
-                Err(_) => continue, // empty slot, or not a valid VirtIO device at all
-            };
-
-            // MMI/O transport successfully created; check if it's a block device.
-            if transport.device_type() != DeviceType::Block {
-                continue;
-            }
-
-            // Block device successfully identified; attempt to create a VirtIOBlk instance.
-            // If successful, return it; otherwise, continue searching.
-            if let Ok(mut inner) = VirtIOBlk::<VirtioHalImpl, _>::new(transport) {
-                // Enable interrupts for this block device (no-op since the HAL-provided DMA memory
-                // is already zeroed which enables interrupts by default).
-                inner.enable_interrupts();
-                return Some((Self { inner }, irq));
-            }
-        }
-
-        // No block device found among the discovered `virtio,mmio` slots.
-        None
+        let (transport, irq) = find_mmio_transport(mmio_slots, DeviceType::Block)?;
+        let mut inner = VirtIOBlk::<VirtioHalImpl, _>::new(transport).ok()?;
+        // Enable interrupts for this block device (no-op since the HAL-provided DMA memory
+        // is already zeroed which enables interrupts by default).
+        inner.enable_interrupts();
+        Some((Self { inner }, irq))
     }
 
     // Read/write flow: submit request, wait for interrupt, irq_handler calls `ack_interrupt` to

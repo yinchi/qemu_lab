@@ -42,11 +42,14 @@ fn find_program(name: &str) -> Result<FileEntry, &'static str> {
 }
 
 /// Runs the program `argv.program()` names -- see `find_program` -- with `argv`'s full argument
-/// list, if it's executable (`ATTR_EXEC`, Stage 8's convention -- claimed there, enforced here) and
-/// actually loads, reporting a nonzero exit status. Reports to UART and the console, never panics,
-/// on any failure a user's typo, an unmarked file or a file that isn't a program can genuinely
-/// cause -- the same way a real shell's "command not found" / "Exec format error" does, not a
-/// kernel bug to crash over.
+/// list. Reports an error if:
+///
+/// - The program is not found.
+/// - The program is a directory.
+/// - The program is not marked as executable.
+/// - The program is too large to be executed.
+/// - The program fails to load.
+/// - The program exits with a nonzero status.
 pub fn launch(vol: &FatVolume<BlkIo>, argv: &Argv, console: &mut Console) {
     let name = argv.program();
     let prog_entry = match find_program(name) {
@@ -66,7 +69,10 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &Argv, console: &mut Console) {
         return;
     }
     if prog_entry.len() as usize > MAX_PROGRAM_SIZE {
-        report(console, &alloc::format!("{name}: cannot execute: {}", errmsg(ENOEXEC)));
+        report(
+            console,
+            &alloc::format!("{name}: cannot execute: {}", errmsg(ENOEXEC)),
+        );
         return;
     }
 
@@ -80,8 +86,13 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &Argv, console: &mut Console) {
     match process::run_program(&elf_bytes, &argv.as_argv()) {
         Ok(0) => {}
         Ok(code) => report(console, &alloc::format!("exit {code}")),
-        Err(e) if e.errno() == E2BIG => report(console, &alloc::format!("{name}: {}", errmsg(E2BIG))),
-        Err(e) => report(console, &alloc::format!("{name}: cannot execute: {}", errmsg(e.errno()))),
+        Err(e) if e.errno() == E2BIG => {
+            report(console, &alloc::format!("{name}: {}", errmsg(E2BIG)))
+        }
+        Err(e) => report(
+            console,
+            &alloc::format!("{name}: cannot execute: {}", errmsg(e.errno())),
+        ),
     }
 }
 

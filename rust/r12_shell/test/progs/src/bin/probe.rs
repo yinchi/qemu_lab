@@ -6,6 +6,7 @@
 //!   probe bad-ptr       bad or wrapping pointers/lengths given to write/read/open/chmod
 //!   probe fds           opens files until the kernel says no, then closes them all
 //!   probe args ...      prints argc/argv exactly as received, plus what the stack layout guarantees
+//!   probe exit N        exits with status N, passed to the kernel unmasked (so N > 255 tests the mask)
 
 #![no_std]
 #![no_main]
@@ -62,8 +63,15 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             print_args(&mut out, argc, argv);
             0
         }
+        Some("exit") => match args.next().and_then(progs::atoi) {
+            Some(n) => n as i32,
+            None => {
+                let _ = writeln!(Fd(2), "usage: probe exit N");
+                2
+            }
+        },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit ...");
             2
         }
     }

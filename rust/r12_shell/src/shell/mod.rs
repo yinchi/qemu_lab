@@ -25,39 +25,23 @@ use launch::{launch, report};
 /// `keyboard/line.rs`) to erase into or through it.
 pub const PROMPT: &str = "> ";
 
-/// Handles a keyboard interrupt: drains every pending event (one IRQ can cover more than one --
-/// see `drivers::virtio::input::Keyboard::poll`'s doc comment), turns each genuine press into a
-/// token (`events::token_for`, which also updates the held-key set and the lock-key toggles) and
-/// feeds it into `LINE` (see `keyboard/line.rs` for what that does with it):
-/// - A plain edit (`LineEvent::Changed`) redraws `INPUT_ROW` in place with the live line.
-/// - A finished line (`LineEvent::Finished`) always moves off the input row first (an
-///   unconditional `'\n'`), then either runs `launch` -- which may load and run a whole program,
-///   producing output of its own via `syscall/fd.rs` -- or reports a parse error via `report`, then
-///   resyncs `INPUT_ROW` to wherever the console's cursor *actually* ended up (not simply "one
-///   row down": a launched program's output can span an arbitrary number of rows) before
-///   drawing a fresh prompt there.
+/// Handles a keyboard interrupt. Drains every pending event (one IRQ can cover several -- see
+/// `Keyboard::poll`), turns each key press into a `Token` (`events::token_for`) and feeds it to
+/// `LINE` (`keyboard/line.rs`):
+/// - `LineEvent::Changed`: redraw the live line at `INPUT_ROW`.
+/// - `LineEvent::Finished`: move off the input row, then run the line (`launch`, which may run a
+///   whole program) or report a parse error, resync `INPUT_ROW` to wherever the console cursor
+///   actually ended up (a program's output can span any number of rows), and draw a fresh prompt.
 ///
-/// The UART is kept as a readable transcript: the prompt, each finished line, whatever a launched
-/// program prints (mirrored by `syscall/fd.rs`), and `report`'s messages -- but no running echo of
-/// every keystroke. Auto-repeat (`value == 2`) intentionally reaches none of this, the same as it's
-/// already a no-op for `KeyState`/`LockState` (see `events::token_for`).
+/// Each event is drawn as it's processed, so several Enters in one batch each launch in turn; only
+/// `GPU.flush()` waits for the end of the batch. The UART gets a readable transcript (prompt, each
+/// finished line, program output, `report` messages) but no per-keystroke echo.
 ///
-/// Drawing happens immediately per event, not deferred to a single redraw after the drain loop:
-/// a batch containing more than one Enter needs each one to actually advance/scroll/launch in
-/// turn, not collapse into one. `GPU.flush()` alone is still deferred to the end of the batch --
-/// it's a presentation step, not something drawing operations need in between to stay correct.
-///
-/// SAFETY: at most one `irq_handler` invocation runs at a time (single core, and taking an IRQ
-/// exception masks further IRQs for its duration), and nothing outside `irq_handler` touches
-/// KEYBOARD/CONSOLE/GPU/KEY_STATE/LOCK_STATE/LINE/INPUT_ROW from the point `kernel_main` enables
-/// KEYBOARD_SPI's GIC line onward, except `keyboard/stdin.rs`'s `read(0)` -- which only ever runs
-/// during a program, with every IRQ masked -- so these `static mut` accesses can't race anything.
-/// `launch`'s `process::run_program` is what actually upholds this while a program runs: it
-/// masks every DAIF bit for the program's entire time at EL0 (see `exec/process.rs`'s doc comment),
-/// specifically so a keyboard IRQ can never land mid-program and re-enter this function while an
-/// outer call is still on the stack, blocked inside `run_program` -- that would otherwise remap
-/// the fixed user window a program is currently executing out of, and stomp the single-slot
-/// `KERNEL_CTX` checkpoint (`arch/context.s`) its own `enter_el0` just wrote.
+/// SAFETY: one `irq_handler` runs at a time (single core, IRQs masked on entry), and nothing else
+/// touches KEYBOARD/CONSOLE/GPU/KEY_STATE/LOCK_STATE/LINE/INPUT_ROW once `kernel_main` enables the
+/// keyboard's GIC line, except `read(0)` (`keyboard/stdin.rs`), which only runs inside a program
+/// with IRQs masked. `process::run` keeps IRQs masked for a program's whole time at EL0 precisely
+/// so this can't be re-entered while `launch` is still on the stack (see its doc comment).
 pub fn handle_keyboard_irq() {
     // SAFETY: see this function's doc comment.
     let kb = unsafe { static_mut_ref!(KEYBOARD) };

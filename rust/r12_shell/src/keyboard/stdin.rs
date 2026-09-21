@@ -21,12 +21,11 @@ use crate::platform::globals::{CONSOLE, GPU, KEYBOARD};
 use crate::platform::uart::uart_write;
 use crate::static_mut_ref;
 
-// The rest of the last line handed out, when the program's buffer was smaller than the line: the
-// bytes, and how far into them the program has read.
-//
 // SAFETY (every access): single core, syscalls run with IRQs masked -- nothing else touches
 // either one.
+/// The line buffer for a partially consumed line (the most recent one from the keyboard).
 static mut PENDING: Vec<u8> = Vec::new();
+/// The current read position within the pending line buffer.
 static mut PENDING_POS: usize = 0;
 
 /// Forgets any leftover line -- called at the start of each launch, so one program's unread
@@ -89,7 +88,6 @@ fn read_line() -> Option<Vec<u8>> {
         kb.ack_interrupt();
 
         while let Some(event) = kb.poll() {
-
             // Decode the keyboard event into a token, if possible.
             let Some(token) = events::token_for(event) else {
                 continue;

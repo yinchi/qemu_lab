@@ -1,37 +1,52 @@
-//! Where a new program's argument strings and pointer array go on its initial stack -- the address
-//! bookkeeping half of `ROADMAP.md`'s Stage 10 `argc`/`argv` design, pure so it can be unit-tested on
-//! the host (`hosttests/`); `process.rs` does the actual writes.
+//! Plans where a new program's argument strings and pointer array go on its initial stack.
+//! Pure memory layout calculation; does not perform any actual writes to the stack (that
+//! is performed by `process.rs`).
 //!
-//! Working *downward* from where the stack pointer currently is (the direction the stack grows), the
-//! strings go first, each NUL-terminated, then a `NULL`-terminated array of pointers to them, its
-//! base 16-byte aligned. Wherever that base ends up is the new stack pointer. The same shape is
-//! reused for `envp` in Stage 16, hence the array-at-a-time interface.
+//! Working *downward* from where the stack pointer currently is (the direction the stack grows):
+//!
+//! 1. Compute the space needed for all the strings, including their NUL terminators.
+//! 2. Allocate space for the pointer array, 16-byte aligned.  Each string gets a pointer, with
+//!    a final `NULL` pointer to terminate the array.
+//! 3. Return the planned addresses for the strings and the array.
+//!
+//! If the planned addresses would fall below `floor` or wrap around, `None` is returned.
 
 use alloc::vec::Vec;
 
-/// The addresses to write one array's strings and pointers at.
+/// The addresses to write arguments and their pointer array at.
 #[derive(Debug, PartialEq, Eq)]
-pub struct ArrayPlan {
+pub struct ArgsPlan {
     /// The address of each string, in argument order (the first is the highest).
     pub strings: Vec<usize>,
-    /// The address of the pointer array: `strings.len()` entries, then a `NULL` -- the C convention
-    /// (`argv[argc] == NULL`). 16-byte aligned, and the stack pointer to hand the program if
-    /// nothing else gets pushed below it.
+    /// The address of the pointer array: each array element itself points to one of the argument
+    /// strings, except the last one which is a `NULL` terminator.
     pub array: usize,
 }
 
-/// Plans one array of NUL-terminated strings of the given lengths below `sp`, or `None` if it
-/// wouldn't fit above `floor` (or the arithmetic would wrap).
-pub fn plan(sp: usize, floor: usize, lens: &[usize]) -> Option<ArrayPlan> {
+/// Plans memory layout for argument strings and their pointer array.
+///
+/// Args:
+/// * `sp` - The current stack pointer, from which to start allocating downward.
+/// * `floor` - The lowest permissible address for the planned layout.
+/// * `lens` - A slice containing the lengths of each argument string.
+///
+/// Returns:
+///
+/// * `Some(ArgsPlan)` if the layout fits above `floor` without wrapping.
+/// * `None` otherwise.
+pub fn plan(sp: usize, floor: usize, lens: &[usize]) -> Option<ArgsPlan> {
     let mut cursor = sp;
     let mut strings = Vec::with_capacity(lens.len());
     for &len in lens {
         cursor = cursor.checked_sub(len.checked_add(1)?)?; // +1 for the NUL terminator
         strings.push(cursor);
     }
-    let pointers = lens.len().checked_add(1)?.checked_mul(core::mem::size_of::<usize>())?;
+    let pointers = lens
+        .len()
+        .checked_add(1)?
+        .checked_mul(core::mem::size_of::<usize>())?;
     let array = cursor.checked_sub(pointers)? & !0xf;
-    (array >= floor).then_some(ArrayPlan { strings, array })
+    (array >= floor).then_some(ArgsPlan { strings, array })
 }
 
 #[cfg(test)]

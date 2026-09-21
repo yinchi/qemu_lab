@@ -1,30 +1,16 @@
 //! Unicode -> CP437 conversion for console output.
 //!
-//! `Font` (`font.rs`) indexes glyphs by CP437 byte, but files on disk are UTF-8 -- the encoding
-//! every normal editor and `git` actually write, so that's what source text is treated as. This
-//! bridges the two at the point text reaches the console, leaving UART output (a real terminal,
-//! which renders UTF-8 natively) untouched.
-//!
-//! The byte <-> codepoint pairs below are CP437's standard mapping (cross-checked against
-//! Python's built-in `cp437` codec), not something specific to this project.
+//! `Font` (`font.rs`) indexes glyphs by CP437 byte, but files on disk are UTF-8 -- this module
+//! provides the conversion from Unicode to CP437.
 
-/// Maps a Unicode scalar value to its CP437 byte, for characters meant to draw a glyph.
-/// Printable ASCII maps identically in both encodings. Anything outside CP437's repertoire --
-/// including C0/DEL control characters, which are structural rather than visible content and are
-/// `Console`'s job to intercept before they ever reach this function -- becomes `b'?'`, the
-/// conventional fallback for unrepresentable characters (same choice `iconv` and Windows'
-/// codepage-conversion APIs default to).
+/// Maps a Unicode scalar value to its CP437 byte, or ? if it has no representation in CP437.
 pub fn unicode_to_cp437(c: char) -> u8 {
     match c {
         // Printable ASCII maps identically in both encodings.
         '\u{20}'..='\u{7E}' => c as u8,
-        // The C0 control range's original IBM PC picture glyphs (smileys, suits, arrows, ...) --
-        // reachable only via these actual Unicode symbols, confirmed against the rendered
-        // bitmaps in `disk/fonts/spleen.raw`. This is a font-rendering convention, not part of
-        // CP437's registered *character encoding* -- a real control character with the same
-        // codepoint (e.g. literal U+0003) does NOT fall in here, since it's excluded from the
-        // ASCII arm above and has no other arm matching it, so it correctly falls through to the
-        // `b'?'` case instead of silently drawing a heart.
+
+        // Picture glyphs from the original IBM PC C0 control range, here accessible only via
+        // their corresponding Unicode codepoints (not from the original C0 control range).
         '\u{263A}' => 0x01, // ☺
         '\u{263B}' => 0x02, // ☻
         '\u{2665}' => 0x03, // ♥
@@ -185,6 +171,8 @@ pub fn unicode_to_cp437(c: char) -> u8 {
         '\u{00B2}' => 0xFD, // ²
         '\u{25A0}' => 0xFE, // ■
         '\u{00A0}' => 0xFF, // non-breaking space
+
+        // Fallback for any character not explicitly mapped above (?).
         _ => b'?',
     }
 }
