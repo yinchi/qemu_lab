@@ -13,6 +13,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 3 | Turn the MMU on for real; user stack mapping and guard | done |
 | 4 | One line-discipline module | done |
 | 4b | Wrapped input: replace the sliding window | done |
+| 4c | `clear`: an `ioctl` syscall, and program tiers | done |
 | 5 | Eval loop out of IRQ context (token queue) | -- |
 | 6 | Working directory and the shell-state frame stack | -- |
 | 7 | Lexer, `run_line`, bash wording | -- |
@@ -37,7 +38,9 @@ kernel-resident, as the roadmap says; the connections to a later userspace `sh` 
   no shared kernel crate across stages.
 - `user/userlib`, `user/progs` and the new `user/abi` are shared by every stage: changes there are additive and
   backward compatible. **`user/` holds only the common binaries that build up the core-utils set; tests belong to this
-  stage** (`disk/tests/`, `test/progs/`).
+  stage** (`disk/tests/`, `test/progs/`). `user/progs` is the *base tier* of programs (Stages 9-11); what a later stage adds
+  goes in its own tier crate, `user/progs_rNN`, and a stage builds every tier up to its own, the highest winning a name
+  collision (Step 4c) -- so nothing new ever lands where r09-r11 would pick it up.
 - Every Step ends with `just test` green in `r12_shell/` (extending `test/run_tests.py`) and the r09-r11 demos still
   building against the modified `user/` crates. Commits only when asked; each Step is a natural commit boundary.
 - ROADMAP.md edits touch only unimplemented stages (12, 13, 16, 19, 22, 23, 24); Stage 9-11 text stays as written.
@@ -471,6 +474,37 @@ remaining 42 cells; 125 Backspaces clear the two rows it no longer needs; the sh
 mode a 100-character line takes two consecutive rows and reaches `cat` intact. The r11 golden session (Step 4) still passes unchanged. The
 2320-cell cap is checked on the pure layout, not by typing.
 
+### Step 4c: `clear`, the `ioctl` syscall, and program tiers (`abi`, `userlib`, `syscall/fd.rs`, `user/progs_r12`)
+Added after Step 4b as a small step that turned out not to be small: `clear` is a user program, so it needs a way to reach the console,
+and putting it in the shared `user/progs` broke r11's tests. Both answers are lasting decisions.
+- **Console control is out of band.** The console interprets only newline, carriage return, tab and backspace, and draws every other
+  control character as U+FFFD, so `cat` of any file is safe and shows the file. A form feed or an escape sequence that cleared the
+  screen would let file contents control the display (a stray `0x0C` in a binary would wipe it), and parsing escape sequences
+  would need a state machine spanning `write` calls. It also contradicts the plan's stated design ("no ANSI vocabulary", Stage 13; the raw-mode
+  switch is a syscall). So control goes through a syscall, and the only in-band escape is on the UART, whose far end really is a terminal.
+- **One typed `ioctl`, not an ANSI-string syscall.** `SYS_IOCTL = 29` (Linux's number and shape: `ioctl(fd, request, arg)`), with request
+  codes in a new `abi::ioctl` module -- this project's own, not Linux's terminal codes, which would suggest a compatibility we don't have. First
+  request: `CONSOLE_CLEAR = 1`. Request codes are globally unique (not per device), so a request sent to the wrong kind of fd is `ENOTTY`,
+  never misread. Errors: `ENOTTY` (new in `abi::errno`, -25) for an fd that isn't the console or a request it doesn't know, `EBADF` for an fd that isn't
+  open. Typed requests also suit what comes next -- Stage 13's screen-size query and raw-mode switch -- where an ANSI string would need a reply read back
+  from stdin. `Console::clear` blanks every pixel, resets the width grid to `Narrow` (a blank cell counts as `Narrow`) and homes the cursor (clearing a
+  pending wrap); `uart_clear_screen` sends `ESC [H ESC [2J` and counts the transcript as at the start of a line.
+- **Program tiers.** `user/progs` is the base tier: everything Stages 9-11 have, and all r09-r11 ever build. A stage that adds or replaces
+  programs gets a crate of its own, `user/progs_rNN` (`progs_r12` now), and stage `rNN` builds the base tier plus every `progs_rMM` with `MM <= NN`,
+  copying binaries into `disk/bin/` lowest tier first, so **the highest tier wins a name collision**. Separate crates because Cargo allows one
+  binary of a name per package and a later stage must be able to replace an earlier program by name; each tier links with the base tier's
+  `link.ld` and its `build.rs` watches it. The trigger: r09-r11's `just disk` copies every `user/progs/src/bin/*.rs`, so one new program in
+  the shared crate made r11's `ls -F bin` test (a hard-coded list) fail after a rebuild. r09-r11 never look in a later tier, so they stay
+  untouched and passing. A later stage copies the tier crate and adds it to its `justfile`'s tier list.
+- **As built.** `abi` (`SYS_IOCTL`, `ioctl.rs`, `ENOTTY` + its message and pinned values), `userlib::ioctl` and the re-exported request code,
+  the kernel's `fd::ioctl`, `uart_clear_screen`, `user/progs_r12/` (`Cargo.toml`, `.cargo/config.toml`, `build.rs`, `src/bin/clear.rs`) and the tiered loop in
+  r12's `justfile`. `clear` takes no arguments and fails with `clear: standard output: Inappropriate ioctl for device` when stdout isn't the console.
+- **Tests:** `probe ioctl FD REQ`: a closed fd is `EBADF`, the keyboard fd is `ENOTTY`, and an unknown request on the console is `ENOTTY` (none of them
+  clears the screen); `core_utils`: after `cat` of a file, `clear` empties the display, the prompt is alone on the first row, and the serial log gets
+  the escape sequence. The `abi` tests pin `SYS_IOCTL`, `CONSOLE_CLEAR` and `ENOTTY`. r09-r11 rebuild and r11's tests pass.
+- **Consequences for later Steps:** `pwd` (Step 6) and `mkdir`, `rm`, `mv` (Step 10) go in `progs_r12`, not `progs`; Step 13's docs check reads every tier; and Step 13
+  adds the `clear` row to `docs/progs.md` and `ioctl` to the syscall table (not written yet, by choice).
+
 ### Step 5: eval loop out of IRQ context (`main.rs`, `stdin.rs`, `process.rs`, `input.rs`)
 Today `handle_keyboard_irq` -> `launch` -> `run_program`, so the GIC interrupt stays unacknowledged for a program's
 whole life; that is why every DAIF bit is masked at EL0 and `read(0)` drains the device itself (and why Stage 13
@@ -525,7 +559,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
 - **POSIX names throughout** (Cygwin is the reference): the shell builtin is `cd`; the kernel-side operation it calls is
   `shell_state::chdir(path)` (validates a directory, sets `top_mut().cwd`; error via `shell_err`); the syscall is `getcwd`
   (Linux aarch64 17, our own arg convention: buf ptr/len, returns length or a negative errno) with `userlib::getcwd`;
-  `pwd` is a program (`user/progs/src/bin/pwd.rs`, row in `docs/progs.md`).
+  `pwd` is a program (`user/progs_r12/src/bin/pwd.rs`, row in `docs/progs.md`).
 - **`cd` details (POSIX subset):** `cd DIR`; `cd` with no operand goes to `/` (POSIX says `$HOME`; no environment
   until Stage 16, which then switches this to `$HOME`); more than one operand -> `cd: too many arguments`; `cd -` and
   `-L`/`-P` unsupported (no `$OLDPWD`, no symlinks) with a clear error; `pwd -L/-P` likewise. `pwd` (program) prints the
@@ -612,7 +646,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
   past its pop); recursion depth cap error; script with a redirect `./s.sh > out` (scope-wide, shell-owned handle,
   file contains all lines' output) leaves the redirect gone after pop; missing/non-exec script errors.
 
-### Step 10: `mkdir`, `rm`, `mv` (`files.rs`, `syscall.rs`, `abi`, `userlib`, `progs`)
+### Step 10: `mkdir`, `rm`, `mv` (`files.rs`, `syscall.rs`, `abi`, `userlib`, `progs_r12`)
 - Syscalls over `hadris-fat`'s `create_dir`/`delete`/`rename` (first confirm exact APIs and their limits, e.g. delete of
   non-empty dirs, rename across directories, long-name handling). Linux-style numbers where they exist
   (`mkdirat`/`unlinkat`/`renameat` shapes simplified to path ptr/len args).
@@ -811,6 +845,10 @@ T4b.3 Backspace from row 2 back to row 1: the third row is blank afterwards. T4b
 output): the screen scrolls and all the line's rows stay visible, prompt on the first. T4b.5 `cat` in canonical mode with a
 100-character line: two rows, the line returned intact. T4b.6 the r11 golden session still passes unchanged.
 
+**Step 4c.** T4c.1 `probe ioctl 3 1` -> `-9` (closed fd), `probe ioctl 0 1` -> `-25` (the keyboard), `probe ioctl 1 999` -> `-25` (unknown request on the console).
+T4c.2 after output on the screen, `clear` leaves only the new prompt, on the first row; the serial log carries `ESC [H ESC [2J`. T4c.3 host: `abi` pins
+`SYS_IOCTL`, `CONSOLE_CLEAR`, `ENOTTY`. T4c.4 r09-r11 rebuild against the changed `user/` crates and r11's own tests pass (the bin listing is unchanged).
+
 **Step 5.** T5.1 `spin 3` then type `echo a`,`echo b` during it: after it ends they run in order, once each. T5.2 keys
 typed while `cat` (a reader) runs are consumed by `cat`, not the shell. T5.3 with a queue capacity of 256 tokens:
 200 `sendkey`s during `spin` are all processed in order; 600 during `spin` produce the documented overflow note on the UART
@@ -895,9 +933,9 @@ T12.6 manual (`just run`, real display): cursor visibility/blink-free block, fee
 
 **Step 13.** T13.1 every test above in one clean `just test` from a fresh checkout state (delete `disk.img`, `target/`).
 T13.2 r09, r10, r11 build and (r11) pass their tests against the modified `user/` crates. T13.3 docs check script:
-every program in `user/progs/src/bin/` has a `docs/progs.md` row; every syscall in `abi` appears in the docs table;
+every program in every tier (`user/progs*/src/bin/`) has a `docs/progs.md` row; every syscall in `abi` appears in the docs table;
 every program in `r12_shell/test/progs/` is described in `r12_shell/test/README.md`; nothing test-only exists under `user/`
-(`git diff` of `user/progs/src/bin/` adds only `pwd`, `mkdir`, `rm`, `mv`).
+(`git diff` adds nothing under `user/progs/`, and only `clear`, `pwd`, `mkdir`, `rm`, `mv` under `user/progs_r12/src/bin/`).
 T13.4 the acceptance demo below, run by hand on the display.
 
 ## Stage 12 complete: the final state
@@ -908,15 +946,15 @@ through the same line discipline. No shell code runs in IRQ context.
 **Kernel modules (new/changed):** `shell.rs` (run_line, builtins, scripts, pipelines), `lexer.rs`, `shell_state.rs`
 (frame stack), `path.rs`, `line_discipline.rs` + `editor.rs` + `history.rs`, `tokenq.rs`, `utf8.rs`, `files.rs` (`resolve`, append,
 mkdir/unlink/rename), `elf.rs` (fallible), explicit user stack + guard, `abi` crate shared with `user/`.
-**Syscalls (all with `abi` constants; Linux aarch64 numbers):** getcwd 17, mkdirat 34, unlinkat 35 (`AT_REMOVEDIR`),
+**Syscalls (all with `abi` constants; Linux aarch64 numbers):** getcwd 17, ioctl 29 (`CONSOLE_CLEAR`; `abi::ioctl`), mkdirat 34, unlinkat 35 (`AT_REMOVEDIR`),
 renameat 38, chmod 53, open 56 (+`O_APPEND`), close 57, getdents 61, read 63, write 64, exit 93; `chdir` (49) reserved,
 unimplemented by design (see the userspace-`sh` table); unknown -> `ENOSYS`, bad pointer -> `EFAULT`.
 **Shell language:** words with `'`/`"`/`\` quoting, `#` comments, `|`, `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`/`>&2`; builtins `cd`, `source`/`.`, `sh`;
 `./script` for exec-bit scripts; no variables/`$?`/`;`/`&&`/globbing/background jobs/fds above 2 (documented as not supported);
 line editing (arrows/Home/End/Delete/Backspace), 
 history; prompt `> `.
-**User programs (`user/progs`, core utils only):** echo cat ls cp head tail wc hexdump true false chmod (Stage 9-11) +
-`pwd mkdir rm mv` (new), plus Stage 9's `hello`/`crash`; all with rows in `docs/progs.md`. **Test programs and fixtures**
+**User programs (`user/progs` and `user/progs_r12`, core utils only):** echo cat ls cp head tail wc hexdump true false chmod (Stage 9-11, the base tier) +
+`clear pwd mkdir rm mv` (new, in `progs_r12`), plus Stage 9's `hello`/`crash`; all with rows in `docs/progs.md`. **Test programs and fixtures**
 live only in `r12_shell/test/progs/` -> `disk/tests/` (`probe overflow spin` + fixtures), documented in
 `r12_shell/test/README.md`; the shared `abi` crate sits beside `userlib` as a library, not a binary.
 **Disk and memory:** 64 MiB FAT16 (`bin/ fonts/ tmp/` + fixtures), gitignored image; kernel heap 16 MiB, DMA pool 2 MiB,
@@ -1002,11 +1040,19 @@ Decided while planning; later Steps may refine these but shouldn't silently reve
     gains a cell grid so Backspace, `show_row` and the line editor count cells. Rejected: pure CP437 (would have needed
     transcoding at every `&str` edge -- filenames, `Args`, `write_str`, the UART mirror) and a home-made range-indexed font
     file (recorded as the upgrade path in Step 2b).
+13. **Console control is out of band, through a typed `ioctl`** (Step 4c): no control character or escape sequence controls the
+    console (files can never change the display); `SYS_IOCTL = 29` with this project's own request codes, unique across
+    devices; the UART side alone receives an ANSI sequence. Rejected: a form feed, in-band escape parsing, and a syscall that
+    takes ANSI strings.
+14. **Program tiers** (Step 4c): `user/progs` is the base tier and every later stage that adds or replaces programs gets a
+    crate `user/progs_rNN`; stage `rNN` builds every tier up to its own and the highest wins a name collision. Rejected:
+    adding programs to the shared crate (broke r11's `bin/` listing test), editing r09-r11's tests, and per-stage local
+    program crates (would abandon `user/` as the home of the common utilities).
 
 ## Files touched
 `rust/r12_shell/src/{main.rs,elf.rs,fd.rs,files.rs,syscall.rs,process.rs,stdin.rs,input.rs,argv.rs,line.rs,console.rs,vectors.s}`,
 new `shell_state.rs`, `shell.rs`, `lexer.rs`, `line_discipline.rs`; `rust/r12_shell/test/run_tests.py`, `justfile`, `disk/` fixtures;
-`rust/user/{userlib,abi}` and `rust/user/progs/src/bin/{pwd,mkdir,rm,mv}.rs` (core utils only);
+`rust/user/{userlib,abi}` and `rust/user/progs_r12/src/bin/{clear,pwd,mkdir,rm,mv}.rs` (core utils only);
 `rust/r12_shell/test/progs/` (test programs) and `rust/r12_shell/disk/tests/` (fixtures); `rust/docs/progs.md`;
 `r12_shell/test/README.md`; `.gitignore`; `ROADMAP.md` (Stage 12 summary + forward-connection edits); `Stage12.md` (new, full plan).
 

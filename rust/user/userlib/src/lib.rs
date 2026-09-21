@@ -23,5 +23,5 @@ pub use process::*;
 // The syscall numbers live in the shared `abi` crate (the kernel uses the same ones); re-exported
 // so `userlib::SYS_WRITE`, ... keep working.
 pub use abi::syscall::{
-    SYS_CHMOD, SYS_CLOSE, SYS_EXIT, SYS_GETDENTS, SYS_OPEN, SYS_READ, SYS_WRITE,
+    SYS_CHMOD, SYS_CLOSE, SYS_EXIT, SYS_GETDENTS, SYS_IOCTL, SYS_OPEN, SYS_READ, SYS_WRITE,
 };

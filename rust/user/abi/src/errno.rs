@@ -26,6 +26,8 @@ pub const EISDIR: isize = -21;
 pub const EINVAL: isize = -22;
 /// Too many open files.
 pub const EMFILE: isize = -24;
+/// Inappropriate ioctl for device -- here: the fd is not the console.
+pub const ENOTTY: isize = -25;
 /// No space left on device.
 pub const ENOSPC: isize = -28;
 /// File name too long.
@@ -50,6 +52,7 @@ pub fn errmsg(code: isize) -> &'static str {
         EISDIR => "Is a directory",
         EINVAL => "Invalid argument",
         EMFILE => "Too many open files",
+        ENOTTY => "Inappropriate ioctl for device",
         ENOSPC => "No space left on device",
         ENAMETOOLONG => "File name too long",
         ENOSYS => "Function not implemented",
@@ -75,8 +78,8 @@ mod tests {
     #[test]
     fn new_values_are_linux_numbers() {
         assert_eq!(
-            [E2BIG, ENOEXEC, EFAULT, EEXIST, ENOSPC, ENAMETOOLONG, ENOSYS, ENOTEMPTY],
-            [-7, -8, -14, -17, -28, -36, -38, -39]
+            [E2BIG, ENOEXEC, EFAULT, EEXIST, ENOTTY, ENOSPC, ENAMETOOLONG, ENOSYS, ENOTEMPTY],
+            [-7, -8, -14, -17, -25, -28, -36, -38, -39]
         );
     }
 
@@ -84,7 +87,7 @@ mod tests {
     fn every_error_has_a_message() {
         for code in [
             ENOENT, EIO, E2BIG, ENOEXEC, EBADF, EACCES, EFAULT, EEXIST, ENOTDIR, EISDIR, EINVAL,
-            EMFILE, ENOSPC, ENAMETOOLONG, ENOSYS, ENOTEMPTY,
+            EMFILE, ENOTTY, ENOSPC, ENAMETOOLONG, ENOSYS, ENOTEMPTY,
         ] {
             assert_ne!(errmsg(code), "Unknown error", "{code}");
         }

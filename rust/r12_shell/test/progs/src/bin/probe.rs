@@ -13,6 +13,8 @@
 //!   probe poke-w ADDR   writes one byte at ADDR, reads it back, prints it
 //!   probe user-ptrs    syscalls given pointers into the guard, the gap, read-only code and past the stack:
 //!                      each must be refused (-14), none may fault the kernel
+//!   probe ioctl FD REQ  the `ioctl` syscall on FD with request REQ, no argument -- for the errors
+//!                      (0 is the keyboard, 3 is not open, 1 is the console, whose CLEAR would clear the screen)
 //!   probe sp            prints the stack pointer `main` runs with
 //!   probe stack KIB     legitimately uses KIB KiB of stack (recursion, one KiB per frame) and prints a checksum
 //!   probe bs-wide       a wide glyph, backspace, then `X`: `X` must land on the glyph's left cell
@@ -112,6 +114,18 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             user_ptrs(&mut out);
             0
         }
+        Some("ioctl") => {
+            match (
+                args.next().and_then(progs::atoi),
+                args.next().and_then(progs::atoi),
+            ) {
+                (Some(fd), Some(request)) => {
+                    let _ = writeln!(out, "ioctl({fd}, {request}): {}", userlib::ioctl(fd, request, 0));
+                    0
+                }
+                _ => usage_exit("probe ioctl FD REQUEST"),
+            }
+        }
         Some("sp") => {
             let sp: usize;
             // SAFETY: reads a register.
@@ -144,7 +158,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit|poke|poke-w|user-ptrs|sp|stack|frag|frag-raw|bs-wide|interleave ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit|poke|poke-w|user-ptrs|ioctl|sp|stack|frag|frag-raw|bs-wide|interleave ...");
             2
         }
     }

@@ -1,0 +1,21 @@
+# The programs Stage 12 adds to the core utilities (`../progs` is the base tier: everything Stages 9-11
+# have). Program tiers are separate crates because Cargo allows only one binary of a given name per
+# package, and a later stage must be able to replace an earlier stage's program by name. A stage `rNN`
+# builds the base tier and every `progs_rMM` with MM <= NN, and copies their binaries into `disk/bin/` in
+# that order, so the highest tier wins a name collision. A stage that adds programs copies this crate to
+# `progs_rNN`; stages 9-11 never look here, so they are unaffected.
+[package]
+name = "progs_r12"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+abi = { path = "../abi" }
+userlib = { path = "../userlib" }
+progs = { path = "../progs" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

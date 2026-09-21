@@ -9,9 +9,9 @@ too, on the private copy of the image.
 import os
 import subprocess
 
-from harness import CTRL_D, BACKSPACE, dir_attr, mcopy_out
+from harness import CTRL_D, BACKSPACE, dir_attr, mcopy_out, text_bands
 
-BINARIES = "cat chmod cp crash echo false head hello hexdump ls tail true wc".split()
+BINARIES = "cat chmod clear cp crash echo false head hello hexdump ls tail true wc".split()
 
 
 def run(ctx):
@@ -94,6 +94,12 @@ def run(ctx):
           "chmod 755 tests/copy.txt\nchmod: invalid mode: 755\nexit 1\n")
     check("chmod missing", s.run("chmod +x tests/nosuch"),
           "chmod +x tests/nosuch\nchmod: tests/nosuch: No such file or directory\nexit 1\n")
+
+    # --- clear: the screen is emptied and the prompt comes back at the top ---
+    s.run("cat tests/hello.txt")  # something on screen to clear
+    check("clear: the serial terminal is cleared too", s.run("clear"), "clear\n\x1b[H\x1b[2J")
+    bands = text_bands(s.screendump())
+    check("clear: only the new prompt is on screen, on the first row", [row for row, _ in bands], [0])
 
     # --- stdin: a program reading typed lines (Backspace absorbed, Ctrl+D ends) ---
     s.type("cat\n")

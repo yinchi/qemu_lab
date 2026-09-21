@@ -12,7 +12,9 @@ use crate::platform::uart::uart_ensure_newline;
 // Syscall numbers come from the shared `abi` crate (Linux's real aarch64 values, borrowed for
 // familiarity -- see its module doc), the same ones `userlib` issues them with.
 use abi::errno::ENOSYS;
-use abi::syscall::{SYS_CHMOD, SYS_CLOSE, SYS_EXIT, SYS_GETDENTS, SYS_OPEN, SYS_READ, SYS_WRITE};
+use abi::syscall::{
+    SYS_CHMOD, SYS_CLOSE, SYS_EXIT, SYS_GETDENTS, SYS_IOCTL, SYS_OPEN, SYS_READ, SYS_WRITE,
+};
 
 // The ESR_EL1 EC field values this handler decodes -- see sync_el0_handler for what each one
 // means here.
@@ -61,6 +63,7 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                 SYS_CLOSE => regs.x[0] = fd::close(a0) as u64,
                 SYS_GETDENTS => regs.x[0] = fd::getdents(a0, a1, a2) as u64,
                 SYS_CHMOD => regs.x[0] = fd::chmod(a0, a1, a2, a3) as u64,
+                SYS_IOCTL => regs.x[0] = fd::ioctl(a0, a1, a2) as u64,
                 SYS_EXIT => {
                     // Never returns to kernel_exit's normal eret-back-to-EL0
                     // path -- resume_kernel (arch/context.s) restores the register

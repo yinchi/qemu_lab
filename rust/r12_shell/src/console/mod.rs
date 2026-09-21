@@ -110,7 +110,7 @@ impl Console {
         (self.cursor.row, self.cursor.col)
     }
 
-    /// Clears the whole screen to `bg`, an BGR color value.
+    /// Clears the whole screen to `bg`, an BGR color value, and puts the cursor back at the top left.
     pub fn clear(&mut self, bg: u32) {
         for y in 0..self.fb.height {
             for x in 0..self.fb.width {
@@ -118,6 +118,7 @@ impl Console {
             }
         }
         self.grid.clear();
+        self.cursor.move_to(0, 0);
     }
 
     /// Clears one row of character cells to `bg`, an BGR color value.
@@ -174,9 +175,10 @@ impl Console {
 
     /// Writes one character of text at the cursor, advancing it. `\r`/`\n`/`\t`/backspace move the
     /// cursor instead of drawing a glyph for them (backspace moves back one whole character -- two
-    /// cells over a wide glyph -- and erases nothing); a zero-width code point (`font::is_zero_width`)
-    /// does nothing; any other control character draws Unifont's U+FFFD, the same as a character the
-    /// font lacks, so stray control bytes in a file show up instead of vanishing.
+    /// cells over a wide glyph -- and erases nothing); a zero-width code point
+    /// (`font::is_zero_width`) does nothing; any other control character draws Unifont's U+FFFD, the
+    /// same as a character the font lacks, so stray control bytes in a file show up instead of
+    /// vanishing.
     ///
     /// User or system programs can use this function directly if treating the console as a dumb
     /// terminal, but for more advanced terminal handling (e.g. a TUI), they might want to manage

@@ -26,8 +26,10 @@ build-test:
 elf:
     bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
 
-# Builds disk.img (64 MiB FAT16): every core utility in ../user/progs (one cargo build; see
-# docs/progs.md), staged into disk/bin/ as <name>.exe -- the launcher tries the typed name first
+# Builds disk.img (64 MiB FAT16): every core utility of every program tier up to this stage --
+# ../user/progs (the base tier, Stages 9-11) and ../user/progs_r12 (what Stage 12 adds); see
+# docs/progs.md -- staged into disk/bin/ as <name>.exe, tiers copied lowest first so that a later tier's
+# program replaces an earlier tier's of the same name -- the launcher tries the typed name first
 # and then name.exe, same as Cygwin's shell, so `cat` finds bin/cat.exe -- plus this stage's test
 # programs (test/progs, see test/README.md), staged into disk/tests/ next to the static test
 # fixtures already checked in there, plus the empty disk/tmp/ the shell's pipes will use. All of
@@ -40,12 +42,16 @@ disk:
     set -euo pipefail
     TARGET=aarch64-unknown-none-softfloat
     cd {{justfile_directory()}}
-    (cd ../user/progs && cargo build --target ${TARGET} --release)
     rm -rf disk/bin
     mkdir -p disk/bin
-    for src in ../user/progs/src/bin/*.rs; do
-        name=$(basename "$src" .rs)
-        cp ../user/progs/target/${TARGET}/release/${name} disk/bin/${name}.exe
+    # Program tiers, lowest first: a later tier's binary overwrites an earlier one's of the same name.
+    # A later stage lists every tier up to its own.
+    for tier in progs progs_r12; do
+        (cd ../user/${tier} && cargo build --target ${TARGET} --release)
+        for src in ../user/${tier}/src/bin/*.rs; do
+            name=$(basename "$src" .rs)
+            cp ../user/${tier}/target/${TARGET}/release/${name} disk/bin/${name}.exe
+        done
     done
     (cd test/progs && cargo build --target ${TARGET} --release)
     rm -f disk/tests/*.exe

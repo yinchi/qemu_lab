@@ -15,10 +15,11 @@ use crate::fs::files;
 use crate::keyboard::stdin;
 use crate::platform::base_addresses::{USER_BASE, USER_SIZE};
 use crate::platform::globals::{CONSOLE, GPU};
-use crate::platform::uart::uart_write;
+use crate::platform::uart::{uart_clear_screen, uart_write};
 use crate::static_mut_ref;
-use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE};
+use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY};
 use abi::fs::{O_RDONLY, O_WRONLY};
+use abi::ioctl::CONSOLE_CLEAR;
 
 /// How many fds a program may have open at once, the three standard ones included: every fd above
 /// them refers to an open file (`files::MAX_OPEN_FILES` of them), so `open` fails with `EMFILE` at
@@ -259,6 +260,25 @@ pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
             fd as isize
         }
         Err(e) => e,
+    }
+}
+
+/// Out-of-band control of what `fd` is open on (see `abi::ioctl` for the requests). Only the console
+/// understands any today -- `CONSOLE_CLEAR` clears it, and the terminal on the other end of the UART
+/// with it; any other request, or any other kind of fd, is `ENOTTY`; an fd that isn't open is `EBADF`.
+pub fn ioctl(fd: usize, request: usize, _arg: usize) -> isize {
+    match (FileDescriptor::for_fd(fd), request) {
+        (None, _) => EBADF,
+        (Some(FileDescriptor::Console), CONSOLE_CLEAR) => {
+            // SAFETY: as `console_draw`.
+            unsafe {
+                static_mut_ref!(CONSOLE).clear(BG);
+                static_mut_ref!(GPU).flush();
+            }
+            uart_clear_screen();
+            0
+        }
+        _ => ENOTTY,
     }
 }
 

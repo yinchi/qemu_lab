@@ -17,6 +17,10 @@ pub const SYS_READ: usize = 63;
 pub const SYS_WRITE: usize = 64;
 pub const SYS_EXIT: usize = 93;
 
+/// `ioctl(fd, request, arg)`: out-of-band control of whatever `fd` is open on -- the request codes
+/// are in `abi::ioctl`. Linux's number and Linux's shape; the requests are this project's own.
+pub const SYS_IOCTL: usize = 29;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -34,5 +38,10 @@ mod tests {
     #[test]
     fn reserved_numbers_are_linux_numbers() {
         assert_eq!(SYS_CHDIR, 49);
+    }
+
+    #[test]
+    fn ioctl_is_linuxs_number() {
+        assert_eq!(SYS_IOCTL, 29);
     }
 }

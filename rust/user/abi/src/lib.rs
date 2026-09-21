@@ -1,9 +1,10 @@
 //! The ABI shared by the kernel and every EL0 program -- one definition, instead of a copy on each
-//! side kept in sync by convention. Three modules, used by their full path (`abi::errno::ENOENT`,
-//! `abi::syscall::SYS_WRITE`, `abi::fs::ATTR_EXEC`):
+//! side kept in sync by convention. Four modules, used by their full path (`abi::errno::ENOENT`,
+//! `abi::syscall::SYS_WRITE`, `abi::fs::ATTR_EXEC`, `abi::ioctl::CONSOLE_CLEAR`):
 //!
 //! - [`syscall`]: the syscall numbers.
 //! - [`errno`]: the error values a syscall returns, and `errmsg` to turn one into text.
+//! - [`ioctl`]: the request codes `SYS_IOCTL` takes.
 //! - [`fs`]: the fixed layouts and flags around files -- `open` flags, the `getdents` record, the
 //!   FAT attribute bits.
 //!
@@ -20,4 +21,5 @@
 
 pub mod errno;
 pub mod fs;
+pub mod ioctl;
 pub mod syscall;

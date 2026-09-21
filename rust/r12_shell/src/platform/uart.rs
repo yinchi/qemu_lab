@@ -120,6 +120,14 @@ pub fn uart_write(bytes: &[u8]) {
     }
 }
 
+/// Clears the screen of whatever terminal is watching the serial line (ANSI: cursor to home, erase the
+/// display), the serial counterpart of clearing the console; the transcript then counts as at the start of
+/// a line. The console itself takes no escape sequences -- only this mirror does.
+pub fn uart_clear_screen() {
+    uart_write(b"\x1b[H\x1b[2J");
+    UART_AT_LINE_START.store(true, Ordering::Relaxed);
+}
+
 /// Starts a new UART line unless already at the start of one -- used before the shell's own
 /// output (its prompt, its error messages) so it never lands in the middle of a program's last
 /// unterminated line.
