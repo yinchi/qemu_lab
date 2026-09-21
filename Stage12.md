@@ -7,6 +7,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 |---|---|---|
 | 0 | Scaffold `r12_shell`, test infrastructure, this document | done |
 | 1 | Error handling, shared `abi`, launch by path, heap growth, small cleanups | done |
+| 1b | Code review and reorganization of what Steps 0-1 produced | done |
 | 2 | Console write path (streaming UTF-8, fewer flushes) | -- |
 | 3 | User stack mapping and guard | -- |
 | 4 | One line-discipline module | -- |
@@ -185,6 +186,61 @@ example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` 
 - Compatibility (T1.9) was checked by building r09's and r10's disks and running r11's `just test` against the
   modified `user/` crates: all pass. Those recipes regenerate the tracked `disk.img`/`disk/bin` files there, so
   restore them afterwards (`git checkout -- rust/r09_userspace rust/r10_repl rust/r11_busybox`).
+
+### Step 1b: code review and reorganization (done)
+An unplanned pause between Steps 1 and 2: the crate as it stood (r11's code plus Step 1's) was read through and
+reorganized before Step 2 adds more modules. No behavior change except where noted; `just test` stayed green throughout,
+and r09-r11 still build (and r11's `just test` passes) against the changed `user/` crates. The plan for later Steps keeps
+its r11-era file names; "Source layout" above maps them.
+
+**Reorganization**
+- **Source layout:** the flat 28-file crate became the hierarchy in "Source layout", each module a directory with a
+  fat `mod.rs`. It removed three dependency cycles (`fd`<->`files`, `stdin`<->`fd`, `gpu`->`console`) and the duplicated
+  attribute/dirent constants. `build.rs` scans `src/` recursively for the assembly.
+- **`abi` split into modules** (`abi::syscall`, `abi::errno`, `abi::fs`), used by full path; the kernel's `errno.rs` is gone.
+- **`userlib` split into three modules**, re-exported flat so no program changed: `syscall` (the raw `svc` and the
+  `syscall!` macro, crate-private), `io` (`read`, `write`, `open`, `close`, `getdents`, `DirEnt`, `chmod`) and `process`
+  (`exit`, exit statuses, `entry!`/`entry_with_args!`, `Args`, the panic handler and `start.s`). `exit` is the one syscall
+  outside `io`, because it belongs to the program's own life.
+- **Virtio drivers** share `find_mmio_transport(slots, device_type)` instead of three copies of the slot-probing loop,
+  assuming one device per type (as on this machine). The per-slot size is `VIRTIO_SLOT_SIZE`, distinct from the
+  whole-window `VIRTIO_MMIO_SIZE` in `platform::base_addresses`.
+
+**Behavior and API changes**
+- **The exit status travels with the jump.** `resume_kernel(code)` leaves the status in `x0`, so it is `enter_el0`'s return
+  value (a `longjmp` value) and `run` takes it from the `asm!` output. The `EXIT_CODE` global, `set_exit_code` and the
+  "never set" state are gone. The `exit` syscall masks the status to 8 bits as POSIX does (`exit 300` reports `exit 44`);
+  `probe exit N` and five QEMU cases cover it.
+- **Renames:** `Prepared` -> `PreparedProgram`; `argstack` -> `argplan`; `files::walk` -> `resolve` (a directory from a
+  slice of components -- Step 6's path handling is `abspath` on top of it); `read_file_to_vec` -> `read_file_or_panic`
+  (paired with `read_file_checked`).
+- **One directory-lookup function.** The panicking `find_entry` wrapper was removed; boot-time callers use
+  `find_entry_checked` with two `.expect`s, so an I/O error and a missing file give different messages.
+- **One open-file limit:** `files::MAX_OPEN_FILES` (13), with the fd table sized from it; the private `MAX_OPEN` alias was removed.
+- **Cleanups:** `arch/mmu.rs`'s one-line `region()` wrapper was removed; the `find` functions of `blk`/`gpu`/`input` shrank
+  to a few lines each.
+
+**Comments corrected or rewritten** (several were stale from r09-r11, or wrong):
+- `arch/vectors.s` and `arch/context.s`: `kernel_entry` is the entry into the kernel from EL0; every exception ends one of
+  three ways (`kernel_exit`, `resume_kernel`, `unexpected_exception`); `resume_kernel` abandons the trap frame by resetting SP,
+  as `longjmp` does.
+- `arch/mmu.rs`: what a level-1 root is (512 entries of 1 GiB, a 39-bit space) and what the TLB-invalidate sequence does.
+- `exec/process.rs` and `syscall/fd.rs`: closing files at program exit finishes writes in progress; it is cleanup, not a
+  save of the program's own state.
+- `keyboard/stdin.rs`: `PENDING`/`PENDING_POS` are the current line and how much of it `read(0)` has handed out.
+- `platform/base_addresses.rs`: the virtio window is four 4 KiB pages (16 KiB), not "2 KiB"; empty slots read back device ID 0.
+- `shell/mod.rs`: `handle_keyboard_irq`'s long doc comment was condensed to what is still true.
+- `abi::fs`: `O_RDONLY`/`O_WRONLY` document the `flags` argument of `SYS_OPEN`.
+
+**Decided during the review, not changed**
+- `platform/base_addresses.rs` stays the platform's full address map (constants for what is fixed, `BASE_ADDRESSES` for what
+  the device tree reports, `USER_*` included); the fixed virtio window stays hard-coded rather than derived from the
+  discovered slots.
+- `.`/`..` and `ls -a`: `list` keeps skipping `.`, `..` and the volume label. If `ls -a` is added, the Unix way is to
+  return every real entry from `getdents` and filter in `ls`, which then makes every other directory consumer (notably
+  Step 10's `rm -r`) skip `.` and `..` itself.
+
+**Carried into later Steps:** the segfault message reaching the console (Step 2, above); `abspath`/`resolve` (Step 6).
 
 ### Step 2: console write path (`fd.rs`, `userlib`/`progs::Fd`)
 - Replace `from_utf8().unwrap_or("<invalid utf8>")` with a **streaming UTF-8 decoder** in the kernel's Console write
