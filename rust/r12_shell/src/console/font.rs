@@ -34,7 +34,7 @@ pub fn glyph_for(c: char) -> &'static Glyph {
 
 /// How many cells `c` takes when written: 0 (`is_zero_width`), 2 (a wide glyph), or 1. The four
 /// characters the console interprets rather than draws (newline, carriage return, tab, backspace)
-/// count as 1, like everything else `show_row` may be asked to lay out.
+/// count as 1, like everything else the input layout (`input_layout.rs`) may be asked to lay out.
 pub fn cell_width(c: char) -> usize {
     if is_zero_width(c) {
         0
@@ -43,21 +43,6 @@ pub fn cell_width(c: char) -> usize {
     } else {
         1
     }
-}
-
-/// The longest tail of `text` that is at most `budget` cells wide -- whole characters only, so the
-/// window never starts in the middle of a wide glyph.
-pub fn tail_window(text: &str, budget: usize) -> &str {
-    let mut width = 0;
-    let mut start = text.len();
-    for (index, c) in text.char_indices().rev() {
-        width += cell_width(c);
-        if width > budget {
-            break;
-        }
-        start = index;
-    }
-    &text[start..]
 }
 
 #[cfg(test)]
@@ -117,20 +102,5 @@ mod tests {
         for c in ['\n', '\r', '\t', '\u{8}'] {
             assert_eq!(cell_width(c), 1);
         }
-    }
-
-    #[test]
-    fn the_window_is_measured_in_cells_and_never_splits_a_wide_glyph() {
-        assert_eq!(tail_window("hello", 3), "llo");
-        assert_eq!(tail_window("hello", 10), "hello");
-        assert_eq!(tail_window("hello", 0), "");
-        // 日本語 is 6 cells: a budget of 5 fits two glyphs (4 cells), not two and a half.
-        assert_eq!(tail_window("日本語", 5), "本語");
-        assert_eq!(tail_window("日本語", 6), "日本語");
-        assert_eq!(tail_window("日本語", 1), "");
-        // Mixed, with a zero-width character (free).
-        assert_eq!(tail_window("a日\u{200D}b", 3), "日\u{200D}b");
-        // A zero-width character costs nothing, so the window may start on it.
-        assert_eq!(tail_window("a日\u{200D}b", 2), "\u{200D}b");
     }
 }

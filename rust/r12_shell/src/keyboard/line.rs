@@ -39,6 +39,11 @@ impl LineBuffer {
         &self.text
     }
 
+    /// Drops the last character typed, if any.
+    pub fn pop(&mut self) -> Option<char> {
+        self.text.pop()
+    }
+
     /// Whether nothing has been typed on the current line.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()

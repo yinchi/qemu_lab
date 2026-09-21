@@ -12,6 +12,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 2b | Unicode console (Unifont glyphs, wide cells) | done |
 | 3 | Turn the MMU on for real; user stack mapping and guard | done |
 | 4 | One line-discipline module | done |
+| 4b | Wrapped input: replace the sliding window | done |
 | 5 | Eval loop out of IRQ context (token queue) | -- |
 | 6 | Working directory and the shell-state frame stack | -- |
 | 7 | Lexer, `run_line`, bash wording | -- |
@@ -73,8 +74,8 @@ src/
 │       └── hal.rs (was virtio_hal.rs)   blk.rs   gpu.rs (returns a FramebufferInfo)   input.rs (was keyboard.rs: raw events)
 ├── fs/                mod.rs: find_entry_checked, read_file_checked
 │   └── blkio.rs (was fat_io.rs; also the VOL static)   files.rs (open-file table, lookup, resolve; owns MAX_OPEN_FILES)
-├── console/           mod.rs: Console, show_row, FG/BG
-│   └── framebuffer.rs (the Framebuffer struct, out of console.rs)   font.rs (glyph_for, widths)   cells.rs (P)   utf8.rs (P)
+├── console/           mod.rs: Console, FG/BG
+│   └── framebuffer.rs (the Framebuffer struct, out of console.rs)   font.rs (glyph_for, widths)   cells.rs (P)   utf8.rs (P)   input_layout.rs (P)
 ├── keyboard/          mod.rs
 │   └── keymap.rs   tokens.rs   events.rs (was input.rs)   line.rs (LineBuffer, plus the LINE/INPUT_ROW statics)   stdin.rs
 ├── exec/              mod.rs
@@ -90,7 +91,8 @@ table from it); `keyboard::stdin` <-> `syscall::fd` (the UART transcript helpers
 `console` (the driver now returns a plain `FramebufferInfo` and the console wraps it). The duplicated `EXEC_BIT`,
 `READ_ONLY_BIT`, `VOLUME_LABEL_BIT`, `NAME_MAX` and `DIRENT_SIZE` constants were replaced by `abi::fs`'s.
 
-**Prompt drawing.** `console::show_row` is the drawing primitive (a prefix plus text on a row, with the sliding window).
+**Prompt drawing.** r11's `console::show_row` drew a prefix plus text on one row, with a sliding window; Step 4b replaced it with wrapped
+input drawn by the line discipline (`LineDiscipline::redraw`).
 `keyboard/` owns editing and echoing a line -- the buffer, the row it sits on, the redraw after each edit -- given
 whatever prefix to draw (`""` for a program's `read(0)`). `shell/` owns the prompt itself: the `PROMPT` string and when
 a fresh one is drawn. Today `handle_keyboard_irq` does both jobs and lives in `shell.rs`; Step 4 splits it along that
@@ -330,7 +332,7 @@ the font-embedding exception / OFL 1.1).
 (`CellGrid`: `place`, `back`, `fits`, `scroll_up`) are pure and host-tested (14 tests, with the `unifont` crate as a
 `hosttests` dependency); `Console` owns a `CellGrid` and draws through `draw_glyph` (16-px-wide glyphs span two cells),
 `write_char` handles BS, zero-width code points and wrapping a wide glyph whole, and `show_row` measures in cells with
-`tail_window`. Removed: `cp437.rs`, `FONT_DATA`/`read_font`/`Font` (the `Console` lost its lifetime parameter),
+`tail_window` (both since removed by Step 4b). Removed: `cp437.rs`, `FONT_DATA`/`read_font`/`Font` (the `Console` lost its lifetime parameter),
 `fs::read_file_or_panic` (its only caller was the font read), `disk/fonts/spleen.raw` (`NOTICE` now describes Unifont).
 Measured: the crate's tables add a read-only segment of about 1.9 MB (`.rodata`, 0x1e5520 bytes); the kernel image now ends
 ends at `0x41712080` (about 23 MiB after Step 3's page alignment), far below the user window. Display is 640x480 = 80x30 cells (the fixtures assume 80 columns). Tests:
@@ -426,6 +428,48 @@ doesn't need the r11 directory; all twelve transcripts are identical. It also ch
 screen the prompt is on the last row with output right above it. The one behavior that differs from r11 is the flush: `read_line`
 flushed the display for every event; it still does (a program reading a line is not a batch), while the shell flushes once per
 batch as before -- so the flush counts are unchanged. Naming: `discipline` is spelled out throughout (a `disc` reads as a floppy).
+
+### Step 4b: wrapped input, replacing the sliding window (`line_discipline.rs`, new `console/input_layout.rs`) (done)
+A line longer than the row currently scrolls sideways: `show_row` draws only the tail that fits one row (`font::tail_window`), so
+the start of a long command disappears while it is typed. Real terminals wrap it onto the following rows; so does this step.
+Both modes get it (the prompt, and `read(0)`'s canonical mode), since both draw through the line discipline.
+- **The input area is N rows, not one.** `LineDiscipline` tracks the first row and a height (rows the prefix and text occupy)
+  instead of a single row. Redraw clears the rows the line used to occupy (so a shrinking line -- Backspace across a row boundary --
+  leaves no stale row), then draws the prefix and the text with the ordinary `Console::write_char`, whose deferred wrap
+  (Step 2b) already lays text across rows, scrolls when it runs off the bottom, and wraps a wide glyph whole. Afterwards the first row
+  is recomputed from where the cursor ended and the line's height, so it follows the screen when the line made it scroll.
+- **`console/input_layout.rs` (pure, host-tested; in `console/` rather than `keyboard/` so it can reuse `Cursor` and `cell_width`):** the one
+  place that knows the layout: `rows_needed(prefix, text, cols)` and the pending-wrap-resolving insertion point, using `font::cell_width` and the same rules as
+  `console::cells::Cursor` (a row that fills exactly does not start the next; a wide glyph that doesn't fit leaves the last cell blank and
+  moves on whole). Step 12's cursor-aware editor maps a cell offset to a screen position with the same functions, so it builds on
+  this and adds no layout code of its own.
+- **`show_row` and `font::tail_window` are removed** (Step 2b's width-aware window served only the sliding design); drawing lives
+  in `LineDiscipline::redraw`. The reserved-column and window comments in `console/mod.rs` go with them.
+- **A named limit: the line may not outgrow the screen.** A line that would need more than `rows - 1` rows is not extended -- further
+  characters are ignored (as Backspace on an empty line is) -- so it can never scroll off the top or push its own start row out of
+  view. (`(rows - 1) * cols` cells, prefix included: 2320 on the 80x30 display; the layout functions supply the count.) Documented in
+  the limits list.
+- **The UART transcript is unchanged** -- it hears only the finished line -- so the golden comparison still holds, including the
+  "line wider than the row" transcript.
+- **Tests:** host -- `rows_needed`/insertion-point tables (empty, one short of a row, exactly a row, one over, prefix widths, wide glyph
+  at the end of a row, zero-width characters, the screen-size cap). QEMU -- a 200-character command line: the text occupies three rows
+  (two full, one partial) with the start of the line visible, the command runs correctly; Backspace back across the row boundary clears the
+  now-empty row; typing on the bottom row scrolls the screen and the whole line stays on screen; `cat` with a 100-character typed line
+  in canonical mode wraps the same way and returns the line intact; the line-longer-than-the-screen cap holds (checked on the pure
+  layout, not by typing 2300 keys).
+
+**As built.** `console/input_layout.rs`: `rows_needed(prefix, text, cols)` and `fits_on_screen(prefix, text, cols, rows)` (a line may use at most
+`rows - 1` rows), both replaying `Console::write_char` by driving the same `cells::Cursor` over an endless screen -- wide glyphs, the
+pending wrap and zero-width characters therefore behave exactly as drawn, and are covered by host tests even though no key types a wide
+glyph. The insertion point (where the next glyph goes) lives in the tests until Step 12's cursor drawing has a caller; the
+kernel has no dead code for it meanwhile. `LineDiscipline` gained a `height`; `redraw(&mut self, console)` clears the rows the line used to
+occupy, writes prefix and text with `write_char`, and recomputes its first row from where the cursor ended (scrolling moves the line up).
+`handle` drops a character that would outgrow the screen (`LineBuffer::pop` undoes it) and reports `Ignored`. `show_row`, `tail_window`, and the
+reserved-column comments are gone. Tests: `cases/step04b_wrapped_input.py` -- with the prompt on the bottom row, a 202-cell line takes
+three rows and scrolls the screen up two, its start (the prompt) still visible, rows one and two full, the third holding exactly the
+remaining 42 cells; 125 Backspaces clear the two rows it no longer needs; the shortened line runs with the right transcript; in canonical
+mode a 100-character line takes two consecutive rows and reaches `cat` intact. The r11 golden session (Step 4) still passes unchanged. The
+2320-cell cap is checked on the pure layout, not by typing.
 
 ### Step 5: eval loop out of IRQ context (`main.rs`, `stdin.rs`, `process.rs`, `input.rs`)
 Today `handle_keyboard_irq` -> `launch` -> `run_program`, so the GIC interrupt stays unacknowledged for a program's
@@ -620,7 +664,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
   scope. Ctrl+D at the prompt does nothing (POSIX interactive shells exit on EOF; this one is the init process and never exits --
   documented). Redraw by rewriting the changed
   cells via `put_char`; block-glyph cursor drawn as an ordinary glyph (virtio-gpu has no text cursor);
-  works with `show_row`'s sliding-window logic for lines wider than the row.
+  works with Step 4b's wrapped input layout (`input_layout.rs` maps a cell offset to a screen row and column) for lines wider than the row.
 - History: ring buffer of past lines (skip empties/duplicates of the last), Up/Down replace the current line
   (keeping the in-progress line to restore at the bottom).
 - Editor lives in the Step 4 line-discipline module in **two modes**. *Prompt mode* = everything above. *Canonical mode*
@@ -761,6 +805,12 @@ stdin: two lines echoed then Ctrl+D EOF; T4.4 Ctrl+D on a non-empty line does no
 (sliding window) still runs correctly; T4.6 more output than screen rows scrolls and the prompt lands on the last row
 (screendump: prompt glyphs present at the bottom row); T4.7 golden-transcript equality with r11.
 
+**Step 4b.** T4b.1 host: `input_layout` tables (see the Step). T4b.2 a 200-character command at the prompt: serial transcript
+unchanged from the sliding-window version; screendump shows the line on three consecutive rows, first characters visible.
+T4b.3 Backspace from row 2 back to row 1: the third row is blank afterwards. T4b.4 start the line on the bottom rows (after long
+output): the screen scrolls and all the line's rows stay visible, prompt on the first. T4b.5 `cat` in canonical mode with a
+100-character line: two rows, the line returned intact. T4b.6 the r11 golden session still passes unchanged.
+
 **Step 5.** T5.1 `spin 3` then type `echo a`,`echo b` during it: after it ends they run in order, once each. T5.2 keys
 typed while `cat` (a reader) runs are consumed by `cat`, not the shell. T5.3 with a queue capacity of 256 tokens:
 200 `sendkey`s during `spin` are all processed in order; 600 during `spin` produce the documented overflow note on the UART
@@ -836,8 +886,8 @@ paths are absolute so they're cwd-independent. T11.7 a script containing a pipe.
 **Step 12.** T12.1 insert mid-line: type `echo ac`, Left, `b` -> `echo abc`; Home/End/Delete/Backspace positions
 exact; Ctrl+A/E/U/K if implemented. T12.2 history: run 3 commands; Up x3 recalls in reverse, Down returns to the pending
 (half-typed) line; duplicates of the last command aren't re-recorded; empty lines aren't recorded; history ring wraps at
-its cap. T12.3 line wider than the row with the cursor near both ends: visible window follows the cursor, edits land
-in the right place (screendump: block cursor on the correct cell). T12.4 canonical mode for programs (`cat` reading stdin): Backspace edits, Ctrl+U discards the line, Left/Right/Up/Down/Home/End do
+its cap. T12.3 line wrapped over several rows with the cursor in each row and at a row boundary: edits land
+in the right place (screendump: block cursor on the correct cell, including after a wide glyph). T12.4 canonical mode for programs (`cat` reading stdin): Backspace edits, Ctrl+U discards the line, Left/Right/Up/Down/Home/End do
 nothing and nothing enters history; Ctrl+D on `abc` delivers `abc` with no newline, then Ctrl+D again is EOF.
 T12.4b prompt mode extras: Ctrl+A/E/U/K exact results; Ctrl+D at the prompt does nothing. T12.5 host: `editor.rs` and `history.rs`
 state-machine tables (insert/delete at every position, including wide characters (positions counted in cells, whole-character moves, Step 2b's rules), ring semantics, pending-line restore).

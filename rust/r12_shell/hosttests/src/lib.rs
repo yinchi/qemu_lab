@@ -18,3 +18,5 @@ pub mod cells;
 pub mod font;
 #[path = "../../src/exec/usermem.rs"]
 pub mod usermem;
+#[path = "../../src/console/input_layout.rs"]
+pub mod input_layout;

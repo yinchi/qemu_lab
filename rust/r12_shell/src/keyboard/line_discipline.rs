@@ -4,6 +4,10 @@
 //! and a running program's `read(0)` both call it, so a line is typed, edited, drawn and finished
 //! identically whichever of them is waiting for it. (Before Step 4 each had its own copy of this.)
 //!
+//! A line longer than a row wraps onto the rows below it, as on any terminal (Step 4b; the layout comes
+//! from `console/input_layout.rs`), and may not outgrow the screen: past `rows - 1` rows, further
+//! characters are ignored.
+//!
 //! What the callers keep to themselves: where tokens come from, what a finished line means (the shell runs
 //! it, `read(0)` hands it to the program), and the prompt. The rules that keep this module useful for
 //! the stages after it:
@@ -26,7 +30,8 @@ use alloc::string::String;
 
 use super::line::{LineBuffer, LineEvent};
 use super::tokens::{KEY_D, Token};
-use crate::console::{BG, Console, FG, show_row};
+use crate::console::input_layout::{fits_on_screen, rows_needed};
+use crate::console::{BG, Console, FG};
 use crate::platform::uart::uart_write;
 
 /// How a line is being read.
@@ -55,10 +60,13 @@ pub enum LineOutcome {
 pub struct LineDiscipline {
     /// The text typed so far.
     buffer: LineBuffer,
-    /// Which console row the live prefix + line is on. A finished line is never redrawn or erased --
+    /// The console row the live prefix + line starts on. A finished line is never redrawn or erased --
     /// it is already showing correctly from the edits leading up to Enter -- so finishing only ever
     /// needs the next `begin` to pick a new row.
     row: usize,
+    /// How many rows the prefix + line occupied when last drawn (at least one): what a redraw must
+    /// clear, since a line that just got shorter leaves its old last rows behind.
+    height: usize,
     /// What is drawn before the line: the shell's prompt, or nothing for a program.
     prefix: &'static str,
     mode: Mode,
@@ -75,6 +83,7 @@ impl LineDiscipline {
         Self {
             buffer: LineBuffer::new(),
             row: 0,
+            height: 1,
             prefix: "",
             mode: Mode::Prompt,
         }
@@ -88,13 +97,27 @@ impl LineDiscipline {
             console.write_char('\n', FG, BG);
         }
         self.row = console.cursor().0;
+        self.height = 1;
         self.prefix = prefix;
         self.mode = mode;
     }
 
-    /// Draws the prefix and the line so far on the line's row.
-    pub fn redraw(&self, console: &mut Console) {
-        show_row(console, self.row, self.prefix, self.buffer.as_str());
+    /// Draws the prefix and the line so far, from the line's first row down as far as it needs: the rows
+    /// it used to occupy are cleared first, then the text is written the way any output is, so it wraps
+    /// at the edge of the screen and scrolls it if it runs past the bottom -- after which the first row
+    /// is recomputed from where the cursor ended, because scrolling moved the line up.
+    pub fn redraw(&mut self, console: &mut Console) {
+        let height = rows_needed(self.prefix, self.buffer.as_str(), console.cols);
+        let last_row = (self.row + self.height.max(height)).min(console.rows);
+        for row in self.row..last_row {
+            console.clear_row(row, BG);
+        }
+        console.move_cursor(self.row, 0);
+        for c in self.prefix.chars().chain(self.buffer.as_str().chars()) {
+            console.write_char(c, FG, BG);
+        }
+        self.row = console.cursor().0 + 1 - height;
+        self.height = height;
     }
 
     /// Handles one token. The caller flushes the display afterwards if the outcome says so.
@@ -109,6 +132,17 @@ impl LineDiscipline {
         match self.buffer.feed(token) {
             None => LineOutcome::Ignored,
             Some(LineEvent::Changed) => {
+                // A character that would make the line outgrow the screen is dropped (Backspace, the
+                // other way a line changes, only ever shortens it).
+                if !fits_on_screen(
+                    self.prefix,
+                    self.buffer.as_str(),
+                    console.cols,
+                    console.rows,
+                ) {
+                    self.buffer.pop();
+                    return LineOutcome::Ignored;
+                }
                 self.redraw(console);
                 LineOutcome::Edited
             }

@@ -9,10 +9,11 @@
 pub mod cells;
 pub mod font;
 pub mod framebuffer;
+pub mod input_layout;
 pub mod utf8;
 
 use cells::{CellGrid, Cursor};
-use font::{GLYPH_HEIGHT, GLYPH_WIDTH, cell_width, glyph_for, is_zero_width, tail_window};
+use font::{GLYPH_HEIGHT, GLYPH_WIDTH, glyph_for, is_zero_width};
 use framebuffer::Framebuffer;
 use unifont::Glyph;
 
@@ -136,8 +137,8 @@ impl Console {
     /// arrives, so a full row followed by `\n` doesn't leave a blank row. (A space is a glyph like
     /// any other: it lands in column 0 of the next row.) A wide glyph that would not fit in what is
     /// left of the row wraps first, whole, rather than being cut. A running EL0 program's output
-    /// (via `fd::write`) has no reason to stay within a single row the way `show_row`'s
-    /// pre-truncated prompt line does.
+    /// (via `fd::write`) and a typed line (`keyboard/line_discipline.rs`) can both span any number of
+    /// rows, so nothing here assumes a single one.
     fn put_char_at_cursor(&mut self, c: char, fg: u32, bg: u32) {
         let glyph = glyph_for(c);
         let width = if glyph.is_fullwidth() { 2 } else { 1 };
@@ -195,34 +196,5 @@ impl Console {
             _ if is_zero_width(c) => {}
             _ => self.put_char_at_cursor(c, fg, bg),
         }
-    }
-}
-
-/// Redraws one row with `prefix` followed by `line`, on the display only -- used for the
-/// prompt+live-line row, redrawn on every keystroke, and for the fresh empty prompt drawn once a
-/// line finishes. Display only: the UART hears the prompt and each *finished* line (see
-/// `handle_keyboard_irq`), not a running echo of every keystroke.
-///
-/// Renders via `write_char` specifically so `line` -- which, coming from the line buffer, may contain a
-/// literal `\t` -- gets real tab-stop/control-character handling.
-///
-/// If `prefix`+`line` would overflow this row's width (counted in cells, so a wide character is two),
-/// only `line`'s *tail* is shown -- whole characters, never half a wide glyph -- a
-/// sliding window, not wrapping onto the next row. Wrapping would go uncleared by `clear_row`
-/// above (only `row` itself is cleared), leaving stale glyphs behind once the line shrinks back;
-/// The line buffer itself (see `line.rs`) is never truncated, only this on-screen slice of it.
-///
-/// The whole row width is usable: text that fills it exactly leaves the cursor on the last cell with
-/// the wrap pending (see `cells.rs`), and the `'\n'` the line discipline writes when a line finishes moves off it
-/// without a blank row in between.
-pub fn show_row(console: &mut Console, row: usize, prefix: &str, line: &str) {
-    console.clear_row(row, BG);
-    console.move_cursor(row, 0);
-
-    let prefix_width: usize = prefix.chars().map(cell_width).sum();
-    let window = tail_window(line, console.cols.saturating_sub(prefix_width));
-
-    for c in prefix.chars().chain(window.chars()) {
-        console.write_char(c, FG, BG);
     }
 }

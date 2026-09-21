@@ -606,6 +606,8 @@ things the shell shouldn't be built on:
   or a character split at a 4096-byte boundary), draws Unicode with GNU Unifont (Basic Multilingual Plane
   only; wide glyphs take two cells; wrapping follows xterm), and stops flushing the GPU per fragment.
 - One line-discipline module replaces the two duplicated copies (the prompt's and `read(0)`'s).
+- Long input lines wrap onto the following rows instead of scrolling sideways in a one-row window (a
+  layout module shared with Step 12's cursor-aware editor); a line may not outgrow the screen.
 - **The eval loop leaves IRQ context.** Today `handle_keyboard_irq` calls `launch`, so a program runs
   inside an unacknowledged interrupt -- which is why every DAIF bit is masked at EL0 and `read(0)` drains
   the device itself. Instead the IRQ handler only enqueues `Token`s onto a ring buffer, `kernel_main`'s
