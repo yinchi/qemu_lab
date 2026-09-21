@@ -20,3 +20,5 @@ pub mod font;
 pub mod usermem;
 #[path = "../../src/console/input_layout.rs"]
 pub mod input_layout;
+#[path = "../../src/keyboard/ring_buffer.rs"]
+pub mod ring_buffer;

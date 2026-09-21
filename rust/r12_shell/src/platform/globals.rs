@@ -25,10 +25,11 @@ use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
 // at each handoff point for why that ordering rules out a race, the same reasoning Stage 3's
 // `STATE` static relies on: at most one `irq_handler` invocation ever runs at a time (single
 // core, IRQs masked for its duration), so once `kernel_main` stops touching a given static,
-// nothing outside `irq_handler` ever does -- true even once a program is running at EL0, since
-// `process::run_program` masks every DAIF bit for its entire time there (see `exec/process.rs`'s doc
-// comment): a keyboard IRQ simply can't land mid-program to re-enter `irq_handler` while an
-// outer call is still on the stack.
+// nothing outside `irq_handler` does. That has changed with Step 5: the shell's loop and the programs
+// it runs now have IRQs enabled (they are masked only inside a syscall), so a handler can fire at
+// any time -- which is why the keyboard's handler touches only the device and the token queue
+// (`keyboard/queue.rs`), never the console, the display, the line discipline or anything else the
+// shell uses.
 pub static mut BLK: Option<Blk> = None;
 pub static mut GPU: Option<Gpu> = None;
 pub static mut CONSOLE: Option<Console> = None;

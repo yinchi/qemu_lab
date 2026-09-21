@@ -166,24 +166,22 @@ pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, Launc
 /// `resume_kernel` (`arch/context.s`) are what make an ordinary Rust function call correctly "pause"
 /// for however long the EL0 program runs, however it ends.
 ///
-/// The program runs with every DAIF bit masked -- no interrupt of any kind reaches it while
-/// it's executing at EL0. This isn't a performance choice: a keyboard IRQ landing mid-program
-/// would re-enter `handle_keyboard_irq` while this very call is still on the stack, and that
-/// function's own line-editing path (`LINE_DISCIPLINE`/`launch`) isn't reentrant -- a second
-/// `run_program` call from the nested invocation would remap the *same* fixed user window this
-/// one is currently executing out of, and overwrite the single-slot `KERNEL_CTX` checkpoint
-/// (`arch/context.s`) this call's own `enter_el0` just wrote. Masking DAIF here closes that off
-/// entirely. A program that reads fd 0 isn't left deaf to the keyboard by this: `read(0)` drains
-/// the device itself from inside the syscall (see `stdin.rs`), which is why that path doesn't
-/// need the IRQ this masks. What's lost is only keystrokes typed while a program *isn't*
-/// reading -- they queue up in the device -- and there is no Ctrl+C either way. (`Stage12.md`'s
-/// Step 5 removes this structure: the eval loop leaves IRQ context, so the mask isn't needed.)
+/// The program runs with interrupts enabled, like any other code: a keyboard interrupt only feeds
+/// the token queue (`keyboard/queue.rs`), so it can arrive at any moment without re-entering anything
+/// -- the shell's loop, which called this, is not in an interrupt. (Until Step 5 it *was*, so every
+/// DAIF bit had to stay masked at EL0.) Keys pressed while the program isn't reading wait in the queue
+/// for the next reader, in order. Inside a syscall IRQs are masked, as on any exception entry; a
+/// blocked `read(0)` fetches from the device itself (`stdin.rs`).
+///
+/// Interrupts are masked here from the first system-register write until the `eret`: an interrupt
+/// in between would overwrite `ELR_EL1` and `SPSR_EL1`, and the `eret` would go somewhere else. The
+/// `eret` itself unmasks them, by restoring the `SPSR_EL1` set below (whose DAIF bits are clear).
 pub fn run(program: PreparedProgram) -> i32 {
-    // M[3:0] = bits 3:0 = 0b0000 (EL0t). DAIF bits 9:6 are all *set* here (masked), not
-    // cleared -- see this function's doc comment on why interrupts stay masked for a program's
-    // entire time at EL0.
-    const DAIF_MASKED: u64 = 0b1111 << 6; // D=A=I=F=1
-    SPSR_EL1.set(DAIF_MASKED);
+    // Nothing may interrupt between here and the `eret` (see this function's doc comment).
+    DAIF.write(DAIF::I::SET);
+
+    // M[3:0] = bits 3:0 = 0b0000 (EL0t), DAIF bits 9:6 all clear: the program runs with interrupts on.
+    SPSR_EL1.set(0);
 
     ELR_EL1.set(program.entry as u64); // Set the entry point for the EL0 program
     SP_EL0.set(program.sp as u64); // The write-cursor's final position -- see `prepare`.
@@ -208,9 +206,8 @@ pub fn run(program: PreparedProgram) -> i32 {
         );
     }
 
-    // Close every file the program left open, which finishes any writes still in progress.
-    // Done while interrupts are still masked, like every other filesystem access made during a
-    // launch.
+    // Back from the program (its `exit` or a fault, both taken as exceptions, so IRQs are masked
+    // again): close every file it left open, which finishes any writes still in progress, then unmask.
     fd::end_launch();
 
     // Ensure that interrupts are unmasked for the kernel after the program has finished,

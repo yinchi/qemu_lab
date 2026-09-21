@@ -331,9 +331,7 @@ pub static mut KEY_STATE: Option<KeyState> = None;
 pub static mut LOCK_STATE: Option<LockState> = None;
 
 // KEY_NAMES is populated even earlier than the two above -- right at the top of `kernel_main`,
-// before anything else -- since `KeyState::describe` (called from `main.rs`'s
-// `show_keyboard_state`, itself called both from `kernel_main` directly and from every
-// `handle_keyboard_irq` redraw) needs it from the very first call onward. Read-only after that
+// before anything else -- since `KeyState::describe` needs it from the very first call onward. Read-only after that
 // one-time population; nothing ever writes it again, so unlike KEY_STATE/LOCK_STATE only
 // `static_ref!` (never `static_mut_ref!`) is ever used on it.
 pub static mut KEY_NAMES: Option<BiMap<u16, &'static str>> = None;

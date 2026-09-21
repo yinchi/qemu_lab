@@ -14,7 +14,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 4 | One line-discipline module | done |
 | 4b | Wrapped input: replace the sliding window | done |
 | 4c | `clear`: an `ioctl` syscall, and program tiers | done |
-| 5 | Eval loop out of IRQ context (token queue) | -- |
+| 5 | Eval loop out of IRQ context (token queue) | done |
 | 6 | Working directory and the shell-state frame stack | -- |
 | 7 | Lexer, `run_line`, bash wording | -- |
 | 8 | Redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`) | -- |
@@ -505,7 +505,7 @@ and putting it in the shared `user/progs` broke r11's tests. Both answers are la
 - **Consequences for later Steps:** `pwd` (Step 6) and `mkdir`, `rm`, `mv` (Step 10) go in `progs_r12`, not `progs`; Step 13's docs check reads every tier; and Step 13
   adds the `clear` row to `docs/progs.md` and `ioctl` to the syscall table (not written yet, by choice).
 
-### Step 5: eval loop out of IRQ context (`main.rs`, `stdin.rs`, `process.rs`, `input.rs`)
+### Step 5: eval loop out of IRQ context (`main.rs`, `stdin.rs`, `process.rs`, `input.rs`) (done)
 Today `handle_keyboard_irq` -> `launch` -> `run_program`, so the GIC interrupt stays unacknowledged for a program's
 whole life; that is why every DAIF bit is masked at EL0 and `read(0)` drains the device itself (and why Stage 13
 has a "first thing to unmask" hazard). This step removes that structure.
@@ -525,6 +525,29 @@ has a "first thing to unmask" hazard). This step removes that structure.
 - **Tests:** everything from before; keys typed while a non-reading program runs (`hello`/a slow program) appear at the
   next prompt in order; typing during `cat` (reads) still works; rapid multi-line input; no lost keys across a
   `cp` of a large file (many blk IRQs during typing).
+
+**As built.**
+- `keyboard/ring_buffer.rs` (pure, 4 host tests): `RingBuffer<T, N>`, drop-newest when full. `keyboard/queue.rs`: the static queue of `Token`s
+  (256 slots; 16 in a `testhooks` build so the overflow path is reachable by typing), `drain_keyboard()` (the one producer: ack the device, poll,
+  `token_for`, push; one UART note per overflow burst, `[keyboard: input queue full, further keys dropped]`), `pop()` (masks IRQs for the
+  moment it takes) and `wait_for_token()`. `arch/irq.rs`: `without_irqs` (saves and restores the mask, so it works both with IRQs on and inside
+  a syscall) and `wait_for_interrupt_unless` (checks and sleeps with IRQs masked, so no wakeup is lost; `wfi`, which wakes on a masked pending interrupt).
+- `irq_handler`'s keyboard branch is just `drain_keyboard()`. `handle_keyboard_irq` is gone: `shell::run()` is the read-eval loop `kernel_main`
+  ends in and never leaves -- pop, hand to the line discipline, `launch` on Enter, `start_prompt`, flush when the queue runs dry, then sleep.
+  `stdin::read_line` drains the device into the queue itself (IRQs are masked inside a syscall), pops, and feeds the same discipline.
+- `process::run` masks IRQs before it writes `ELR_EL1`/`SPSR_EL1` and lets the `eret` unmask them (`SPSR_EL1` = 0, DAIF clear): with IRQs on,
+  an interrupt in that window would have overwritten both and sent the `eret` elsewhere -- a hazard the plan did not anticipate. The kernel
+  boot also sets `CNTKCTL_EL1.EL0VCTEN` so a program can read the counter.
+- The IRQ handler now shares the CPU with code it interrupts, so it touches only the keyboard device and the queue -- never the console,
+  the display or the line discipline. The block device is the one shared thing left: its interrupt handler acks the device while the interrupted
+  code may be inside a `Blk` call (`wfe` + `peek_used`); that is device-register access only, exercised by the large-copy test.
+- Tests (`cases/step05_token_queue.py`; test program `spin N`, a busy-wait on the virtual counter -- Stage 21's real `sleep` may replace it in
+  places later): keys typed while `spin 3` runs are run afterwards, in order, once each; with the 16-key test queue, 30 keys typed during `spin 4`
+  keep the first 16 in order, print one note, and the shell stays responsive; typing during a 3 MiB `cp` (many block interrupts) loses nothing and the
+  copy is byte-identical on the host; 15 commands typed back to back run in order. Deviations from the plan's numbers: capacity 16 (not 256) in
+  the test build, and 15 rapid commands (not 30) so the typing rate stays under what the shell can keep up with. Typing during `cat`, prompt editing
+  and the r11 golden session were already covered and still pass. Wording fixed in the comments that assumed the mask (`globals.rs`,
+  `events.rs`, `process.rs`, `stdin.rs`); ROADMAP's Stage 13 and Stage 24 text already describes this structure.
 
 ## Phase 2: the shell
 

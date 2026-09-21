@@ -9,5 +9,7 @@ pub mod events;
 pub mod keymap;
 pub mod line;
 pub mod line_discipline;
+pub mod queue;
+pub mod ring_buffer;
 pub mod stdin;
 pub mod tokens;

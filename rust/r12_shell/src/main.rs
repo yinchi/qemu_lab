@@ -21,7 +21,9 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::sync::atomic::Ordering;
 
-use aarch64_cpu::registers::{DAIF, ELR_EL1, ESR_EL1, Readable, Writeable};
+use aarch64_cpu::registers::{
+    CNTKCTL_EL1, DAIF, ELR_EL1, ESR_EL1, ReadWriteable, Readable, Writeable,
+};
 use abi::fs::ATTR_EXEC;
 use arm_gic::{IntId, InterruptGroup, gicv2::GicV2};
 use linked_list_allocator::LockedHeap;
@@ -84,6 +86,9 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
     // subsequent MMIO touch goes through the page table from this point on.
     let hardening = mmu::enable(BASE_ADDRESSES.get_gicd(), BASE_ADDRESSES.get_gicc());
     uart0_writer.write_str("MMU enabled.\r\n").unwrap_or(());
+    // Let EL0 read the virtual counter (`CNTVCT_EL0`), so a program can tell how much time has passed
+    // (there is no sleep syscall yet). `CNTFRQ_EL0`, its frequency, is always readable.
+    CNTKCTL_EL1.modify(CNTKCTL_EL1::EL0VCTEN::SET);
     uart0_writer
         .write_str(if hardening.pan {
             "MMU hardening: WXN, stack alignment checks, PAN.\r\n"
@@ -170,7 +175,7 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
 
     // Find the VirtIO input device -- this stage's new piece. Its SPI isn't enabled yet: doing
     // so before CONSOLE/GPU/KEY_STATE/LOCK_STATE are populated below would let a keypress IRQ
-    // reach handle_keyboard_irq while those statics are still None.
+    // reach `drain_keyboard` while those statics are still None.
     let (keyboard, kb_spi) = Keyboard::find(BASE_ADDRESSES.virtio_mmio_slots())
         .expect("no virtio-input device found among the virtio-mmio slots");
 
@@ -184,7 +189,7 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
     shell::start_prompt(&mut line_discipline, &mut console);
     gpu_dev.flush();
 
-    // Hand every piece of state handle_keyboard_irq needs over to its static home.
+    // Hand every piece of state the shell loop and the keyboard queue need over to its static home.
     //
     // SAFETY: sole writes to each of these, and KEYBOARD_SPI's GIC line isn't enabled until
     // after this block -- irq_handler's keyboard branch can't run, and so can't observe any of
@@ -201,11 +206,9 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
     KEYBOARD_SPI.store(kb_spi, Ordering::Relaxed);
     gic_enable(kb_spi);
 
-    // Sleep between interrupts -- every actual event, blk or keyboard, is now handled entirely
-    // by irq_handler.
-    loop {
-        unsafe { core::arch::asm!("wfe") };
-    }
+    // From here on `kernel_main` is the shell's read-eval loop, and never returns: the role `init`
+    // plays. The keyboard interrupt only queues key presses (`irq_handler`); this loop consumes them.
+    shell::run()
 }
 
 /// Handles IRQ (Interrupt Request) exceptions -- the only two possible sources are the block
@@ -230,7 +233,8 @@ extern "C" fn irq_handler() {
             // SAFETY: BLK is populated before BLK_SPI's GIC line is ever enabled (kernel_main).
             unsafe { static_mut_ref!(BLK) }.ack_interrupt();
         } else if intid == IntId::spi(KEYBOARD_SPI.load(Ordering::Relaxed)) {
-            shell::handle_keyboard_irq();
+            // Only moves key presses from the device into the queue; the shell's loop does the rest.
+            keyboard::queue::drain_keyboard();
         }
         gic.end_interrupt(intid, InterruptGroup::Group0);
     }

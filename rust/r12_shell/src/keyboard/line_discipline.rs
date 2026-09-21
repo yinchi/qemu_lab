@@ -12,12 +12,10 @@
 //! it, `read(0)` hands it to the program), and the prompt. The rules that keep this module useful for
 //! the stages after it:
 //!
-//! - It knows nothing about where tokens come from -- never the keyboard device, `wfe`, or interrupt
-//!   state. Today its callers drain the device themselves; Step 5 has them pop a queue instead, and
-//!   nothing here changes.
-//! - It is never called from interrupt context. Once Step 5 lets IRQs through while a program runs, the
-//!   IRQ handler only enqueues tokens; this module runs only in the shell's loop or inside a syscall,
-//!   one at a time, which is why it needs no lock.
+//! - It knows nothing about where tokens come from -- never the keyboard device, `wfi`, or interrupt
+//!   state. Its callers pop them from the token queue (`queue.rs`).
+//! - It is never called from interrupt context. The IRQ handler only enqueues tokens; this module runs
+//!   only in the shell's loop or inside a syscall, one at a time, which is why it needs no lock.
 //! - It never sees signal keys (Ctrl+Z, Ctrl+C): the queue's producer recognizes those before a token is
 //!   queued (Stages 20-22). Ctrl+D is different -- end-of-file is canonical-mode policy, so it is handled
 //!   here.

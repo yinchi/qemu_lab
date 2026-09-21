@@ -1,21 +1,21 @@
 //! `read(0)`: hands a running program one finished line of typed input at a time.
 //!
-//! This can't reuse the IRQ path the shell's own prompt uses. `process::run_program` masks every
-//! DAIF bit for a program's whole time at EL0, so no keyboard IRQ ever arrives while a program
-//! runs -- nothing would ever complete a line for it to read. Instead `read(0)` blocks inside
-//! the syscall, draining `KEYBOARD` directly (the device's queue fills regardless of the mask)
-//! through the same `events::token_for` -> line discipline (`line_discipline.rs`) path the prompt uses, so
-//! Backspace is absorbed here exactly as it is there -- a program only ever sees a finished line's
-//! printable bytes plus a trailing newline, like a real tty's cooked mode.
+//! The program is blocked inside the syscall, with IRQs masked, so no keyboard interrupt can reach the
+//! queue while it waits: `read_line` drains the device into the queue itself (`queue::drain_keyboard`,
+//! the same producer the interrupt handler uses), pops what is there and feeds it to the line
+//! discipline (`line_discipline.rs`) -- the one the shell's prompt uses -- so Backspace is absorbed here
+//! exactly as it is there. A program only ever sees a finished line's printable bytes plus a trailing
+//! newline, like a real tty's cooked mode. Keys typed before the program asked for input wait in the
+//! queue and are read like any other, in order.
 //!
 //! Ctrl+D on an empty line is end-of-file (`read` returns 0), so a program reading until EOF
 //! (`cat` with no arguments) has a way to stop. On a non-empty line it does nothing.
 
 use alloc::vec::Vec;
 
-use super::events;
 use super::line_discipline::{LINE_DISCIPLINE, LineOutcome, Mode};
-use crate::platform::globals::{CONSOLE, GPU, KEYBOARD};
+use super::queue;
+use crate::platform::globals::{CONSOLE, GPU};
 use crate::static_mut_ref;
 
 // SAFETY (every access): single core, syscalls run with IRQs masked -- nothing else touches
@@ -64,13 +64,12 @@ pub fn read(buf: &mut [u8]) -> isize {
 /// Blocks until Enter finishes a line (returned without its newline), echoing what's typed at
 /// the console's current row as it goes; `None` on Ctrl+D with nothing typed.
 fn read_line() -> Option<Vec<u8>> {
-    // SAFETY: syscalls run with IRQs masked, so `handle_keyboard_irq` can't be running -- these
-    // are the same statics it uses, with the same at-most-one-user guarantee (see platform/globals.rs).
-    let (console, gpu, kb, discipline) = unsafe {
+    // SAFETY: the shell's loop is inside `launch` (it called us, through the program), so nothing
+    // else uses these statics -- and the interrupt handler never does (see `queue.rs`).
+    let (console, gpu, discipline) = unsafe {
         (
             static_mut_ref!(CONSOLE),
             static_mut_ref!(GPU),
-            static_mut_ref!(KEYBOARD),
             static_mut_ref!(LINE_DISCIPLINE),
         )
     };
@@ -80,16 +79,10 @@ fn read_line() -> Option<Vec<u8>> {
     discipline.begin(console, "", Mode::Canonical);
 
     loop {
-        // Clears the device's interrupt line so it doesn't keep re-asserting (unserviced, since
-        // IRQs are masked) and cutting every `wfe` below short.
-        kb.ack_interrupt();
+        // IRQs are masked inside a syscall, so the device's events wait there until we fetch them.
+        queue::drain_keyboard();
 
-        while let Some(event) = kb.poll() {
-            // Decode the keyboard event into a token, if possible.
-            let Some(token) = events::token_for(event) else {
-                continue;
-            };
-
+        while let Some(token) = queue::pop() {
             match discipline.handle(token, console) {
                 LineOutcome::Ignored => {}
                 LineOutcome::Edited => gpu.flush(),
@@ -101,7 +94,9 @@ fn read_line() -> Option<Vec<u8>> {
             }
         }
 
-        // SAFETY: plain `wfe`, no memory or register effects -- see blk.rs's identical waits.
-        unsafe { core::arch::asm!("wfe") };
+        // Nothing typed yet: sleep until an interrupt line goes up (a masked interrupt still wakes
+        // `wfi`); the loop then fetches it.
+        // SAFETY: plain `wfi`, no memory or register effects.
+        unsafe { core::arch::asm!("wfi") };
     }
 }
