@@ -14,7 +14,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use virtio_drivers::{BufferDirection, Hal, PAGE_SIZE, PhysAddr};
 
 // Backing store for every VirtIO Direct Memory Access (DMA) allocation this program ever makes.
-// 2 MiB, so that our font table for this program fits comfortably.
+// 2 MiB: room for the display's 1.2 MiB framebuffer (640x480, 4 bytes a pixel) and the virtqueues.
 /// Number of pages in the Direct Memory Access (DMA) pool.
 const DMA_POOL_PAGES: usize = 512;
 /// Size of the Direct Memory Access (DMA) pool in bytes.

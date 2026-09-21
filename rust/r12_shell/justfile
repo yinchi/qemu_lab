@@ -32,7 +32,7 @@ elf:
 # programs (test/progs, see test/README.md), staged into disk/tests/ next to the static test
 # fixtures already checked in there, plus the empty disk/tmp/ the shell's pipes will use. All of
 # disk/ is handed to folder_to_img.sh along with the static files already staged in it (fonts/,
-# the text/binary fixtures the utilities are demoed on).
+# which holds only the Unifont notice now, and the text/binary fixtures the utilities are demoed on).
 
 # Build every program and (re)create disk.img.
 disk:

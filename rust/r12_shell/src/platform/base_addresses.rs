@@ -38,6 +38,29 @@ pub const USER_BASE: usize = 0x4400_0000;
 /// Size of the fixed EL0-accessible user window.
 pub const USER_SIZE: usize = 0x0020_0000; // 2 MiB
 
+// The window's layout, from the bottom: the program image (its segments, wherever it links them,
+// page-aligned), a gap, the guard, then the stack up to the top of the window --
+//
+//   USER_BASE                 USER_IMAGE_END      USER_STACK_BOTTOM               USER_STACK_TOP
+//   |  image (up to ~960 KiB) |  guard, unmapped  |        stack, 1 MiB           |
+//                                  (64 KiB)
+//
+// Nothing is mapped between the last segment and the stack, so a stack that overflows -- or a
+// wild pointer into the gap -- faults instead of silently running into the program's own data.
+// (Stage 17 makes the window variable-sized; until then the split is fixed.)
+
+/// The stack's size: generous, per the project's rule of thumb for MiB-scale stacks and buffers.
+pub const USER_STACK_SIZE: usize = 0x0010_0000; // 1 MiB
+/// The unmapped guard below the stack. Larger than any frame a sane program has, so a single
+/// large frame can't step over it.
+pub const USER_GUARD_SIZE: usize = 0x0001_0000; // 64 KiB
+/// One past the highest stack address: the initial stack pointer's starting point.
+pub const USER_STACK_TOP: usize = USER_BASE + USER_SIZE;
+/// The lowest stack address; the guard lies just below it.
+pub const USER_STACK_BOTTOM: usize = USER_STACK_TOP - USER_STACK_SIZE;
+/// The highest address (exclusive) a program's image may occupy.
+pub const USER_IMAGE_END: usize = USER_STACK_BOTTOM - USER_GUARD_SIZE;
+
 /// One `virtio,mmio` slot's base address and SPI (Shared Peripheral Interrupt) number, as a pair
 /// of atomics so the whole table can live in a plain `static` (see this module's doc comment).
 struct VirtioMmioSlot {

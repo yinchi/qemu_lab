@@ -29,7 +29,7 @@ def run(ctx):
     check(
         "crash",
         s.run("crash"),
-        "crash\nabout to crash\nSegmentation fault (address 0xffff800000000000, ESR_EL1 0x92000000)\nexit 139\n",
+        "crash\nabout to crash\nSegmentation fault (address 0xffff800000000000, ESR_EL1 0x92000004)\nexit 139\n",
     )
 
     # --- launcher ---

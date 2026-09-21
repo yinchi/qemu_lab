@@ -20,6 +20,8 @@ fn add_asm(dir: &Path, build: &mut cc::Build) -> bool {
 }
 
 fn main() {
+    // The kernel's linker script isn't watched by cargo on its own.
+    println!("cargo:rerun-if-changed=link.ld");
     println!("cargo:rerun-if-changed=src");
     let mut build = cc::Build::new();
     if add_asm(Path::new("src"), &mut build) {

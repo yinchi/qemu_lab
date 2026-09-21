@@ -10,7 +10,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 1b | Code review and reorganization of what Steps 0-1 produced | done |
 | 2 | Console write path (streaming UTF-8, fewer flushes, segfault message) | done |
 | 2b | Unicode console (Unifont glyphs, wide cells) | done |
-| 3 | User stack mapping and guard | -- |
+| 3 | Turn the MMU on for real; user stack mapping and guard | done |
 | 4 | One line-discipline module | -- |
 | 5 | Eval loop out of IRQ context (token queue) | -- |
 | 6 | Working directory and the shell-state frame stack | -- |
@@ -78,7 +78,7 @@ src/
 ├── keyboard/          mod.rs
 │   └── keymap.rs   tokens.rs   events.rs (was input.rs)   line.rs (LineBuffer, plus the LINE/INPUT_ROW statics)   stdin.rs
 ├── exec/              mod.rs
-│   └── argplan.rs (P)   elfparse.rs (P)   elf.rs   process.rs
+│   └── argplan.rs (P)   elfparse.rs (P)   usermem.rs (P)   elf.rs (maps the window)   process.rs
 ├── syscall/           mod.rs: dispatch and the fault path
 │   └── fd.rs          the fd table
 └── shell/             mod.rs: PROMPT and handle_keyboard_irq (the loop, for now)
@@ -144,8 +144,8 @@ example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` 
   will reuse it for `envp`; the env-aware entry macro and `x2` forwarding stay deferred to Stage 16).
 - **Kernel heap growth (1 MiB -> 16 MiB, see analysis below):** raise `HEAP_SIZE` in `main.rs`; the heap is a static in
   `.bss`, so `mmu.rs` maps it automatically via `__data_start..__kernel_end`; update `main.rs`'s comments
-  since the image grows past `0x41000000`. (`user/progs/link.ld`'s comments describe the smaller image r09-r11 still
-  have, and that file is shared by every stage, so it is left alone.)
+  since the image grows past `0x41000000`. (`user/progs/link.ld`'s comment about the kernel image was written for the smaller one
+  in r09-r11; it was reworded in Step 3 to cover both, since the file is shared by every stage.)
 - Small items: `MAX_FDS`(16) vs `MAX_OPEN`(8) made coherent (EMFILE behavior documented/tested); `files::close_all`
   no longer runs twice per launch; stale comments refreshed. The boot-time exec-bit rewrite of `bin/*` stays
   (documented mtools workaround).
@@ -333,7 +333,7 @@ the font-embedding exception / OFL 1.1).
 `tail_window`. Removed: `cp437.rs`, `FONT_DATA`/`read_font`/`Font` (the `Console` lost its lifetime parameter),
 `fs::read_file_or_panic` (its only caller was the font read), `disk/fonts/spleen.raw` (`NOTICE` now describes Unifont).
 Measured: the crate's tables add a read-only segment of about 1.9 MB (`.rodata`, 0x1e5520 bytes); the kernel image now ends
-near `0x41610000`, far below the user window. Display is 640x480 = 80x30 cells (the fixtures assume 80 columns). Tests:
+ends at `0x41712080` (about 23 MiB after Step 3's page alignment), far below the user window. Display is 640x480 = 80x30 cells (the fixtures assume 80 columns). Tests:
 `cases/step02b_unicode.py` (a CJK line is exactly six cells; a wide glyph at column 80 wraps whole and leaves the last
 cell blank; `é` differs from U+FFFD while an emoji, an invalid byte and a control character each draw exactly U+FFFD; a
 zero-width joiner leaves `a<ZWJ>b` identical to `ab`; `probe bs-wide` -- backspace over a wide glyph then `X` equals `X`
@@ -348,7 +348,7 @@ word-wrapping (it would break the cell model). Tests: 10 host tests on `Cursor`;
 and a typed command exactly as wide as the row. The ASCII screendump baseline
 for later Steps is simply the Unifont look from here on (no baseline files exist yet).
 
-### Step 3: user stack mapping and guard (`elf.rs` / `process.rs`, `mmu.rs`)
+### Step 3: turn the MMU on for real; user stack mapping and guard (`mmu.rs`, `elf.rs`, `usermem.rs`, `link.ld`) (done)
 - First task is **verification**: `elf.rs` maps only `PT_LOAD` segments, yet argv is written at `USER_BASE+USER_SIZE`
   downward and programs run; find/prove where those pages get mapped (aarch64-paging behavior or a probe), and
   confirm nothing else is being relied on by accident.
@@ -358,6 +358,48 @@ for later Steps is simply the Unifont look from here on (no baseline files exist
   window remains Stage 17).
 - **Tests:** an infinite-recursion program -> `exit 139` with no corruption of neighbors; a program that touches the
   guard faults; existing programs (incl. `tail` with its 512 KiB static buffer) still run.
+
+**What the verification found (T3.5).** The plan assumed the stack pages were mapped by something. Nothing maps them, and
+neither does anything else: **the MMU has never been on**, in any stage. `SCTLR_EL1.M` is 0 (read back with a probe), `TCR_EL1`
+was never configured beyond `EPD1`, and `aarch64-paging`'s `activate()` only writes `TTBR0_EL1`. Every stage since Stage 9 has
+built its page tables and set `TTBR0_EL1` without turning translation on, so the RX/RO/XN split, the EL0-only window and the
+"unmapped guard gaps" were never enforced -- EL0 could read and write kernel memory and the UART, and `overflow` ran through its
+own code and into the kernel. The programs worked because with translation off every address is its own physical address. Stages
+9-11 (`r09`-`r11`) are unchanged and still have this; whether to back-port the fix is open (see below).
+
+**As built.**
+- `arch/mmu.rs` now sets `TCR_EL1` (T0SZ 25 = 39-bit VA for the level-1 root, 4 KiB granule, write-back caching of walks,
+  inner shareable, `IPS` from `ID_AA64MMFR0_EL1`, `EPD1`) and `SCTLR_EL1` `M | C | I`, after `activate()`.
+- `link.ld` (kernel and both user scripts) aligns every region boundary to 4 KiB. Permissions are per page, and `.rodata` starting
+  in `.text`'s last page made the vector table non-executable on the first IRQ. `elfparse` refuses an executable whose segments
+  share a page (`SegmentsShareAPage`); the user scripts and `build.rs` (`rerun-if-changed=link.ld`) were updated.
+- Window layout (`platform/base_addresses.rs`): image up to `0x440f0000`, unmapped gap, a 64 KiB guard, a 1 MiB stack ending at
+  `0x44200000`. `elfparse` bounds segments to the image part.
+- `elf.rs` rewritten: each load unmaps the whole window, maps each segment's pages writable, zeroes them (no leftovers from the
+  previous program) and copies, maps and zeroes the stack, then locks each segment to its own permissions (RX / RO / RW+XN);
+  `dc cvau` + `ic ialluis` make the code visible to instruction fetch. Kernel writes obey page permissions too, which is why
+  the write-then-lock order matters.
+- `exec/usermem.rs` (pure, host-tested) records what is mapped and whether it is writable. `syscall/fd.rs::validate` checks
+  every user pointer against it: with the MMU on, the kernel itself faults on an unmapped or read-only page, and a kernel fault is a
+  panic, so a pointer into the guard, the gap or the program's own code is now `EFAULT`.
+- Tests: `cases/step03_stack.py`; probe subcommands `poke`, `poke-w`, `user-ptrs`, `sp`, `stack`; test program `overflow`;
+  fixtures `elf-inguard.exe`, `elf-instack.exe`, `elf-sharepage.exe`; the `crash` case's expected `ESR_EL1` is now `0x92000004`
+  (a translation fault; it was `0x92000000`, an address-size fault, with translation off).
+- **Hardening on top (decided after the review):** `SCTLR_EL1.WXN` (no page is both writable and executable), `SA`/`SA0`
+  (misaligned stack pointers fault at EL1/EL0) and **PAN** when the CPU has FEAT_PAN (`ID_AA64MMFR1_EL1`): with `SPAN` = 0 every
+  exception entry sets `PSTATE.PAN`, so the kernel faults on any access to a user-accessible page unless it asked for it with
+  `mmu::user_access()` (a guard that clears PAN and restores it on drop). Held by the loader, `prepare`'s `argv` writes, and the
+  five syscalls that take a user pointer. Boot prints `MMU hardening: ...`, and the harness checks it. Verified that PAN bites
+  by removing the guard from `write`: the first user-buffer access took a permission fault (`ESR_EL1 0x9600000f`) and panicked
+  the kernel. Deliberately not enabled: `SCTLR_EL1.A` (alignment faults), since Rust's `read_unaligned` (`elfparse.rs`) compiles to
+  plain unaligned loads.
+- **Identity mapping stays** (decided): kernel and user both keep virtual = physical addresses, in one table, as long as
+  possible. What would change that is several processes at once: a kernel in the high half (`TTBR1`) with only `TTBR0` swapped per
+  process, and user virtual addresses independent of physical ones, so two programs can share one link address (today every
+  binary links at `0x44000000`, which is why only one can be resident). Both are prerequisites for Stages 17-19, not for Stage 12.
+- **Decided: `r09`-`r11` are left exactly as built.** They are complete stages and the repo shows the progression; ROADMAP's Stage 9
+  carries a warning that the MMU was never activated there, and its Stage 12 summary carries the matching note that this stage is
+  where it is.
 
 ### Step 4: one line-discipline module (`line.rs`, new `linedisc.rs`)
 - Replace the two duplicated implementations (`handle_keyboard_irq`'s draw/finish/UART-mirror logic and

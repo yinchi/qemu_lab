@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates the test fixtures that are derived from built programs, so no binary blobs are checked in:
-malformed and oversized ELF files, made by corrupting `echo.exe`/`hello.exe`. Run by `just disk`, after
+malformed and oversized ELF files (including segments in the stack guard and sharing a page), made by corrupting `echo.exe`/`hello.exe`. Run by `just disk`, after
 `disk/bin/` is staged.
 
 Usage: mkfixtures.py <bin-dir> <tests-dir>
@@ -78,6 +78,23 @@ def main():
     p = first_load(b)
     patch(b, p + P_MEMSZ, "<Q", u64(b, p + P_FILESZ) - 1)  # memsz < filesz
     write("elf-memlt.exe", b)
+
+    # The user window is: image (up to 0x440f0000), 64 KiB guard, 1 MiB stack from 0x44100000 (see
+    # `platform/base_addresses.rs`). A segment may not reach into the guard or the stack...
+    b = bytearray(echo)
+    patch(b, first_load(b) + P_VADDR, "<Q", 0x440F_F000)
+    write("elf-inguard.exe", b)
+
+    b = bytearray(echo)
+    patch(b, first_load(b) + P_VADDR, "<Q", 0x4410_0000)
+    write("elf-instack.exe", b)
+
+    # ...and two segments may not share a page (permissions are per page): move the second loadable
+    # segment to start inside the first one's last page.
+    b = bytearray(echo)
+    loads = [p for p in phdrs(b) if struct.unpack_from("<I", b, p + P_TYPE)[0] == 1]
+    patch(b, loads[1] + P_VADDR, "<Q", u64(b, loads[0] + P_VADDR) + 0x10)
+    write("elf-sharepage.exe", b)
 
 
 if __name__ == "__main__":

@@ -63,6 +63,7 @@ enum OpenFile {
 static mut OPEN_FILES: [Option<OpenFile>; MAX_OPEN_FILES] = [const { None }; MAX_OPEN_FILES];
 
 /// Accessor for `OPEN_FILES`.
+#[allow(clippy::deref_addrof)]
 fn table() -> &'static mut [Option<OpenFile>; MAX_OPEN_FILES] {
     // SAFETY: see OPEN_FILES.
     unsafe { &mut *(&raw mut OPEN_FILES) }

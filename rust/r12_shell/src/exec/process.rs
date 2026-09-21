@@ -13,7 +13,7 @@ use aarch64_cpu::registers::{DAIF, ELR_EL1, SP_EL0, SPSR_EL1, Writeable};
 
 use super::elfparse::ElfError;
 use super::{argplan, elf};
-use crate::platform::base_addresses::{USER_BASE, USER_SIZE};
+use crate::platform::base_addresses::USER_STACK_TOP;
 use crate::syscall::fd;
 use abi::errno::{E2BIG, ENOEXEC};
 
@@ -48,8 +48,8 @@ unsafe extern "C" {
 pub const EXIT_FAULT: i32 = 139;
 
 /// The most stack a program's initial `argv` (strings plus pointer array) may take -- far more than
-/// a typed line can ever produce, and a small fraction of the 2 MiB user window, so an absurd
-/// argument list is refused up front instead of running into the program's own memory.
+/// a typed line can ever produce, and an eighth of the 1 MiB stack, so an absurd argument list is
+/// refused up front instead of leaving the program almost no stack of its own.
 pub const ARG_MAX: usize = 128 * 1024;
 
 /// Enumerates the possible reasons why a program couldn't be started.
@@ -133,7 +133,7 @@ unsafe fn push_cstr_array(sp: usize, floor: usize, items: &[&str]) -> Option<usi
 /// and initial stack with `args` as its `argv`. Returns a `PreparedProgram` on success.
 pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, LaunchError> {
     // Set up the initial stack boundaries.
-    let stack_top = USER_BASE + USER_SIZE;
+    let stack_top = USER_STACK_TOP;
     let floor = stack_top - ARG_MAX;
 
     // Dry run first: an argument list that can't fit must not cost a load.
@@ -150,7 +150,10 @@ pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, Launc
     //
     // SAFETY: `stack_top` and `floor` are inside the user window `elf::load` just mapped; the
     // destination is otherwise-unused stack memory nothing touches until the program itself runs.
-    let argv = unsafe { push_cstr_array(stack_top, floor, args) }.ok_or(LaunchError::ArgsTooBig)?;
+    let argv = {
+        let _user = crate::arch::mmu::user_access(); // writes the user stack, which PAN would forbid
+        unsafe { push_cstr_array(stack_top, floor, args) }.ok_or(LaunchError::ArgsTooBig)?
+    };
     Ok(PreparedProgram {
         entry,
         sp: argv,

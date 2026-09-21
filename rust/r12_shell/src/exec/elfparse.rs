@@ -29,6 +29,9 @@ const EM_AARCH64: u16 = 183;
 /// Program header `p_type` value meaning "load this segment into memory at runtime".
 const PT_LOAD: u32 = 1;
 
+/// The page size the loader maps in. Permissions are per page, so segments may not share one.
+pub const PAGE_SIZE: usize = 4096;
+
 /// `p_flags` bit meaning the segment should be mapped executable.
 pub const PF_X: u32 = 1;
 
@@ -115,6 +118,9 @@ pub enum ElfError {
     SegmentTruncated,
     /// A `PT_LOAD` segment's `p_memsz` is smaller than its `p_filesz`.
     BadSegmentSize,
+    /// Two `PT_LOAD` segments occupy (part of) the same page, so they can't each get their own
+    /// permissions. This project's own linker scripts page-align every segment.
+    SegmentsShareAPage,
     /// The entry point isn't inside any loaded segment.
     BadEntry,
     /// The page table refused a mapping (see `elf.rs`).
@@ -233,6 +239,21 @@ pub fn parse(elf: &[u8], window_start: usize, window_end: usize) -> Result<Parse
     if segments.is_empty() {
         return Err(ElfError::NoLoadSegment);
     }
+    // Permissions are per page (read-only, no-execute), so each segment needs pages of its own.
+    let pages = |s: &Segment| {
+        (
+            s.vaddr & !(PAGE_SIZE - 1),
+            (s.vaddr + s.memsz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1),
+        )
+    };
+    for (i, a) in segments.iter().enumerate() {
+        for b in &segments[i + 1..] {
+            let ((a_start, a_end), (b_start, b_end)) = (pages(a), pages(b));
+            if a_start < b_end && b_start < a_end {
+                return Err(ElfError::SegmentsShareAPage);
+            }
+        }
+    }
     let entry = usize::try_from(header.e_entry).map_err(|_| ElfError::BadEntry)?;
     if !segments
         .iter()
@@ -327,6 +348,43 @@ mod tests {
         let p = parse_good(&b).unwrap();
         assert_eq!(p.segments.len(), 2);
         assert_eq!(p.segments[1].memsz, 0x4000);
+    }
+
+    #[test]
+    fn refuses_segments_that_share_a_page() {
+        // Code at the start of a page and data in the same page: one page can't be both.
+        let b = build(
+            START as u64,
+            64,
+            &[
+                (PT_LOAD, PF_X, 0, START as u64, 200, 200),
+                (PT_LOAD, PF_W, 200, (START + 200) as u64, 8, 64),
+            ],
+            300,
+        );
+        assert_eq!(parse_good(&b), Err(ElfError::SegmentsShareAPage));
+        // The same two segments a page apart are fine, however small the first one is.
+        let b = build(
+            START as u64,
+            64,
+            &[
+                (PT_LOAD, PF_X, 0, START as u64, 200, 200),
+                (PT_LOAD, PF_W, 200, (START + PAGE_SIZE) as u64, 8, 64),
+            ],
+            300,
+        );
+        assert!(parse_good(&b).is_ok());
+        // A segment ending exactly on a page boundary doesn't touch the next page.
+        let b = build(
+            START as u64,
+            64,
+            &[
+                (PT_LOAD, PF_X, 0, START as u64, 200, PAGE_SIZE as u64),
+                (PT_LOAD, PF_W, 200, (START + PAGE_SIZE) as u64, 8, 64),
+            ],
+            300,
+        );
+        assert!(parse_good(&b).is_ok());
     }
 
     #[test]

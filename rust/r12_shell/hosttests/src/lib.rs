@@ -16,3 +16,5 @@ pub mod utf8;
 pub mod cells;
 #[path = "../../src/console/font.rs"]
 pub mod font;
+#[path = "../../src/exec/usermem.rs"]
+pub mod usermem;

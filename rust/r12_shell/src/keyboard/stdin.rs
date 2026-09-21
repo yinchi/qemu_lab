@@ -30,6 +30,7 @@ static mut PENDING_POS: usize = 0;
 
 /// Forgets any leftover line -- called at the start of each launch, so one program's unread
 /// input can't leak into the next.
+#[allow(clippy::deref_addrof)]
 pub fn reset() {
     // SAFETY: see PENDING.
     unsafe {
@@ -45,6 +46,7 @@ pub fn read(buf: &mut [u8]) -> isize {
         return 0;
     }
     // SAFETY: see PENDING.
+    #[allow(clippy::deref_addrof)]
     let (pending, pos) = unsafe { (&mut *(&raw mut PENDING), &mut *(&raw mut PENDING_POS)) };
 
     if *pos >= pending.len() {

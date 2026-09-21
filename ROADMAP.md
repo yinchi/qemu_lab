@@ -374,6 +374,9 @@ filesystem image, that calls the `write` syscall to print
 `hello from userspace` -- loaded from disk, launched at EL0, its output
 observed arriving back through the syscall path onto Stage 6's display.
 
+> [!WARNING]
+> Due to an uncaught bug, the MMU is not actually activated until Stage 12. 
+
 ---
 
 ## Stage 10: a minimal program launcher -- `r10_repl`
@@ -590,9 +593,18 @@ things the shell shouldn't be built on:
 - One small `abi` crate (syscall numbers, errno values, dirent layout) shared by kernel and `userlib`
   instead of copies kept in sync by convention; unknown syscalls return `ENOSYS`, bad pointers `EFAULT`.
 - The kernel heap grows from 1 MiB to 16 MiB (a static in `.bss`; the real ceiling is the fixed user
-  address, not QEMU); the user stack becomes an explicit mapping with a guard.
+  address, not QEMU).
+- **The MMU is turned on for real** -- the fix for the bug flagged under Stage 9. Stages 9-11 built their
+  page tables and set `TTBR0_EL1` but never wrote `TCR_EL1` or `SCTLR_EL1.M`, so translation stayed off and
+  none of the permissions, the EL0-only window or the "guard gaps" were ever enforced (an overflowing user
+  stack ran straight through the program and into the kernel). Stage 12 configures `TCR_EL1`, sets
+  `SCTLR_EL1` `M | C | I` plus WXN, stack-alignment checks and PAN, page-aligns every linker section, gives
+  the user stack an explicit mapping with an unmapped guard, and makes the kernel check every user pointer
+  against what is really mapped. Stages 9-11 are deliberately left as they were built. Kernel and user
+  addresses stay identity mapped; only per-process address spaces (Stages 17-19) would change that.
 - The console write path decodes UTF-8 across `write` calls (no more `<invalid utf8>` for binary output
-  or a character split at a 4096-byte boundary) and stops flushing the GPU per fragment.
+  or a character split at a 4096-byte boundary), draws Unicode with GNU Unifont (Basic Multilingual Plane
+  only; wide glyphs take two cells; wrapping follows xterm), and stops flushing the GPU per fragment.
 - One line-discipline module replaces the two duplicated copies (the prompt's and `read(0)`'s).
 - **The eval loop leaves IRQ context.** Today `handle_keyboard_irq` calls `launch`, so a program runs
   inside an unacknowledged interrupt -- which is why every DAIF bit is masked at EL0 and `read(0)` drains

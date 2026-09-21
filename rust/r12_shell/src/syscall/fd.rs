@@ -9,6 +9,7 @@
 //! no state of their own here.
 
 use crate::console::utf8::Utf8Decoder;
+use crate::exec::elf;
 use crate::console::{BG, FG};
 use crate::fs::files;
 use crate::keyboard::stdin;
@@ -36,6 +37,7 @@ enum FileDescriptor {
 static mut FD_TABLE: [Option<FileDescriptor>; MAX_FDS] = [None; MAX_FDS];
 
 /// Returns a mutable reference to the file descriptor table.
+#[allow(clippy::deref_addrof)]
 fn table() -> &'static mut [Option<FileDescriptor>; MAX_FDS] {
     // SAFETY: see FD_TABLE.
     unsafe { &mut *(&raw mut FD_TABLE) }
@@ -78,6 +80,7 @@ fn console_draw(bytes: &[u8]) {
     // be running; CONSOLE_DECODER: see its declaration.
     unsafe {
         let console = static_mut_ref!(CONSOLE);
+        #[allow(clippy::deref_addrof)]
         let decoder = &mut *(&raw mut CONSOLE_DECODER);
         for &byte in bytes {
             decoder.push(byte, |c| console.write_char(c, FG, BG));
@@ -115,6 +118,7 @@ fn console_finish_stream() {
     // SAFETY: see `console_draw`.
     unsafe {
         let console = static_mut_ref!(CONSOLE);
+        #[allow(clippy::deref_addrof)]
         let decoder = &mut *(&raw mut CONSOLE_DECODER);
         if decoder.is_pending() {
             decoder.finish(|c| console.write_char(c, FG, BG));
@@ -172,28 +176,26 @@ impl FileDescriptor {
     }
 }
 
-/// Bounds-checks `ptr`/`len` against the fixed user window before trusting
-/// them: the MMU's `USER` attribute bit gates *EL0's* access, not EL1's, so
-/// a buggy or malicious pointer aimed at kernel memory is otherwise still
-/// readable/writable by the kernel and must be rejected in software.
+/// Checks that the kernel may read (or, with `write`, write) the `len` bytes at `ptr` before it does:
+/// they must lie in the user window *and* in pages the loader actually mapped with the needed
+/// permission (`exec/usermem.rs`) -- not the guard below the stack, not the gap after the program,
+/// and not a program's own read-only code when the kernel is about to write. The MMU's `USER`
+/// attribute bit gates only *EL0's* access; the kernel, at EL1, faults on an unmapped or read-only
+/// page too, and a kernel fault is a panic, so a bad pointer has to be refused here as `EFAULT`.
 ///
-/// The end is computed with `checked_add`: a `ptr` near `usize::MAX` would otherwise wrap around
-/// to a small sum and pass the range check.
-fn validate(ptr: usize, len: usize) -> bool {
-    ptr >= USER_BASE
-        && len <= USER_SIZE
-        && ptr
-            .checked_add(len)
-            .is_some_and(|end| end <= USER_BASE + USER_SIZE)
+/// The end is computed with `checked_add` (in `allows`): a `ptr` near `usize::MAX` would otherwise
+/// wrap around to a small sum and pass the range check.
+fn validate(ptr: usize, len: usize, write: bool) -> bool {
+    (USER_BASE..=USER_BASE + USER_SIZE).contains(&ptr) && elf::user_memory().allows(ptr, len, write)
 }
 
 /// Validates a user-supplied path and returns it as a `&str`: `EFAULT` if the pointer is bad,
 /// `EINVAL` if the bytes aren't UTF-8 (paths here are `str`s, not arbitrary byte strings).
 fn user_path(ptr: usize, len: usize) -> Result<&'static str, isize> {
-    if !validate(ptr, len) {
+    if !validate(ptr, len, false) {
         return Err(EFAULT);
     }
-    // SAFETY: validated above to lie entirely within the user window.
+    // SAFETY: validated above to lie entirely within mapped user memory.
     let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
     core::str::from_utf8(bytes).map_err(|_| EINVAL)
 }
@@ -201,13 +203,14 @@ fn user_path(ptr: usize, len: usize) -> Result<&'static str, isize> {
 /// Writes to a file descriptor from user space, after validating the pointer and length against
 /// the fixed user window. Returns the number of bytes written, or a negative error.
 pub fn write(fd: usize, ptr: usize, len: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
     let Some(fd) = FileDescriptor::for_fd(fd) else {
         return EBADF;
     };
-    if !validate(ptr, len) {
+    if !validate(ptr, len, false) {
         return EFAULT;
     }
-    // SAFETY: validated above to lie entirely within the user window.
+    // SAFETY: validated above to lie entirely within mapped user memory.
     let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
     fd.write(bytes)
 }
@@ -216,13 +219,14 @@ pub fn write(fd: usize, ptr: usize, len: usize) -> isize {
 /// the fixed user window. Returns the number of bytes read (`0` at end of file), or a negative
 /// error.
 pub fn read(fd: usize, ptr: usize, len: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
     let Some(fd) = FileDescriptor::for_fd(fd) else {
         return EBADF;
     };
-    if !validate(ptr, len) {
+    if !validate(ptr, len, true) {
         return EFAULT;
     }
-    // SAFETY: validated above to lie entirely within the user window.
+    // SAFETY: validated above to lie entirely within writable user memory.
     let buf = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, len) };
     fd.read(buf)
 }
@@ -230,6 +234,7 @@ pub fn read(fd: usize, ptr: usize, len: usize) -> isize {
 /// Opens the file or directory at the user-space path `ptr`/`len`, returning the lowest free fd
 /// number (never one of the standard three) or a negative error.
 pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
     let path = match user_path(ptr, len) {
         Ok(path) => path,
         Err(e) => return e,
@@ -271,13 +276,14 @@ pub fn close(fd: usize) -> isize {
 /// Reads the next batch of directory records from an fd opened on a directory -- see
 /// `files::getdents` for the record layout.
 pub fn getdents(fd: usize, ptr: usize, len: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
     let Some(FileDescriptor::File(handle)) = FileDescriptor::for_fd(fd) else {
         return EBADF;
     };
-    if !validate(ptr, len) {
+    if !validate(ptr, len, true) {
         return EFAULT;
     }
-    // SAFETY: validated above to lie entirely within the user window.
+    // SAFETY: validated above to lie entirely within writable user memory.
     let buf = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, len) };
     files::getdents(handle, buf)
 }
@@ -285,6 +291,7 @@ pub fn getdents(fd: usize, ptr: usize, len: usize) -> isize {
 /// Sets and clears permission bits on the file at the user-space path `ptr`/`len` -- see
 /// `files::chmod` for which bits are allowed.
 pub fn chmod(ptr: usize, len: usize, set: usize, clear: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
     let path = match user_path(ptr, len) {
         Ok(path) => path,
         Err(e) => return e,

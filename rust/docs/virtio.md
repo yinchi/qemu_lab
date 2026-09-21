@@ -78,7 +78,7 @@ For example, if the user presses and releases Caps Lock, then holds down 'A' whi
 
 The GPU driver holds a pointer to a framebuffer in RAM, and provides the functions `flush()`, which dumps the framebuffer contents to the display, and `change_resolution()`, which changes the display resolution and replaces the framebuffer with a new one matching the new resolution (in our program, this is only called once at initialization, with the resolution fixed thereafter).
 
-We also provide a `Console` abstraction that interacts with the GPU driver to render text output to the display, using functions such as `put_char` and `move_cursor`.  A call chain may include (all within `console.rs`):
+We also provide a `Console` abstraction that interacts with the GPU driver to render text output to the display, using functions such as `put_char` and `move_cursor` (the list below is the `r06`-`r11` API; `r12_shell` changed it -- see "Stage 12 onward" under Font handling).  A call chain may include (all within `console.rs`):
 
 - `write_char()`: handles `\n`, `\r`, and `\t`, which move the cursor accordingly (a `\n` on the last row also calls `scroll_up()` to make room for the new line), and otherwise writes a character to the current cursor position using `putc`.
 - `putc()`: writes a character to the current cursor position on the framebuffer, using `put_char`, and then advances the cursor position accordingly — note that this does not itself scroll if writing runs past the last row.
@@ -91,9 +91,26 @@ Currently, although the GPU driver is pixel-based, we only interact with it thro
 
 ### Font handling
 
+The font scheme changes at Stage 12, so this section has two parts.
+
+#### Stages r06-r11: a CP437 bitmap font
+
 Font handling in the console is managed through a bitmap font, where each character is represented as a grid of pixels. Extracting the bitmap for a specific glyph is handled by the `font::Font::glyph()` function. Since each character is 8x16, the returned bitmap is an array of 16 bytes, with each byte representing a row of 8 pixels.
 
 The glyph bitmaps are packed into a single contiguous array in CP437 order; however, the rest of the system typically interacts with characters using Unicode code points. Thus, `cp437::unicode_to_cp437()` provides the necessary mappings between Unicode code points and CP437 indices, allowing the console to correctly retrieve the corresponding glyph bitmaps for display.
+
+#### Stage 12 onward: Unicode with GNU Unifont
+
+`r12_shell` draws Unicode directly. There is no codepage and no font file on the disk: the glyphs are GNU Unifont's, from the `unifont` crate (`no_std`, MIT; the font data itself is dual-licensed GPLv2+ with the font-embedding exception, or SIL OFL 1.1), compiled into the kernel image's read-only data (about 1.9 MB). `Font`, `cp437.rs`, `spleen.raw` and the boot-time font read are gone. Three small modules under `console/` divide the work, and all three are pure (apart from the `unifont` crate), so they are tested on the host (`hosttests/`):
+
+- **Bytes to characters (`utf8.rs`, pure).** A program's console output is UTF-8, but a `write` can end in the middle of a character (`cat` sends 4096-byte chunks). `Utf8Decoder` decodes one byte at a time, keeps its state between calls, and yields `char`s. Each maximal invalid sequence becomes one U+FFFD and the decoder resynchronizes (the WHATWG algorithm, so overlong forms, surrogates and values above U+10FFFF are invalid). The UART mirror still carries the raw bytes. `syscall/fd.rs`'s `console_write` is the caller.
+- **Characters to glyphs (`font.rs`).** `glyph_for(c)` returns `unifont::get_glyph(c)`: a `Glyph::Halfwidth` (8x16 pixels) or `Glyph::Fullwidth` (16x16). The crate covers the Basic Multilingual Plane only, so a character with no glyph -- everything above U+FFFF included -- and any control character the console does not interpret draws U+FFFD. `cell_width(c)` is 2 for a fullwidth glyph, 0 for the few code points that draw nothing (`is_zero_width`: zero-width space and joiners, the word joiner, variation selectors, the byte-order mark) and 1 otherwise; the width comes from the glyph itself, with no East Asian Width table. `tail_window` picks the tail of a line that fits a number of cells, never splitting a wide glyph.
+- **Cells (`cells.rs`, pure).** A cell is still 8x16 pixels; a wide glyph takes two adjacent cells. The console keeps pixels and forgets what it drew, so `CellGrid` records which cells are the left or right half of a wide glyph. That is what lets Backspace move back one whole character, and what blanks the other half when a glyph overwrites half of a wide one. It scrolls with the pixels.
+- **The cursor (`cells.rs`, pure).** `Cursor` wraps the way xterm does: a glyph that ends in the last column leaves the cursor there with a wrap *pending*, and the wrap (and any scroll) happens only when the next glyph arrives. Carriage return, newline, backspace, tab and explicit positioning clear it without wrapping, so a full row followed by `\n` leaves no blank row. A wide glyph that would not fit in what is left of the row wraps whole. A space after an automatic wrap is an ordinary glyph, so it lands in column 0 of the next row, as in every terminal.
+
+The `Console` API changed with it: `Console::new` takes only the framebuffer; `putc` and `put_char` are replaced by `write_char` (which interprets `\n`, `\r`, `\t` and backspace, and draws everything else through the private `draw_glyph`); and `show_row` measures in cells.
+
+What it does not do: characters above the Basic Multilingual Plane (emoji included), combining marks (each draws standalone in its own cell), emoji sequences, bidirectional text, and shaping for complex scripts such as Arabic and Indic scripts -- text arrives in logical order and each character draws in isolation. No key of the US-only keymap can type any of it, so this affects only output from files and programs. The range-indexed font file that would add the astral plane, built from Unifont's `.hex` files (BDF and PCF only hold Plane 0), is described as the upgrade path in `Stage12.md`'s Step 2b.
 
 ## Block Device
 

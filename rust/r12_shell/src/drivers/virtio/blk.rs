@@ -64,9 +64,7 @@ impl Blk {
     }
 
     /// Writes `buf` to one or more sectors, IRQ-driven -- same shape and safety reasoning as
-    /// `read_blocks_irq`. Unused by this stage's demo (only a read is needed to fetch the font)
-    /// but kept for symmetry with the underlying driver's own read/write pair.
-    #[allow(dead_code)]
+    /// `read_blocks_irq`.
     pub fn write_blocks_irq(&mut self, block_id: usize, buf: &[u8]) -> Result<(), Error> {
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();

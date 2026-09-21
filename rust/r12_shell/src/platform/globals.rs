@@ -37,8 +37,8 @@ pub static mut KEYBOARD: Option<Keyboard> = None;
 // The page table `mmu::enable` builds and activates. Must be kept alive for the program's entire
 // remaining life once activated -- `IdMap`'s `Drop` impl panics if an active mapping is ever
 // dropped, since that would free memory the CPU is still using as its page table -- and stays
-// reachable afterward since the ELF loader calls `map_range` again to remap the user window's
-// entries on each program load.
+// reachable afterward since the ELF loader edits the user window's entries (`modify_range`) on each
+// program load.
 pub static mut IDMAP: Option<IdMap<El1And0>> = None;
 
 // SPI numbers for the two interrupt-driven devices, filled in once each right before that

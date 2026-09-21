@@ -56,9 +56,9 @@ use crate::shell::PROMPT;
 /// none of it is freed until the program is done. The heap is a static in `.bss`, so `arch/mmu.rs`
 /// maps it with the rest of the kernel image (`__data_start..__kernel_end`) and nothing else needs
 /// to know its size. The ceiling is not QEMU's RAM but the fixed user address: every user binary is
-/// linked at `0x44000000`, so the image (about 21 MiB with this heap, from `0x40000000`) must end
-/// below it -- which leaves a guard gap of roughly 40 MiB, where earlier stages' 6 MiB image left
-/// 48 MiB.
+/// linked at `0x44000000`, so the image (about 23 MiB with this heap and the Unifont tables, from
+/// `0x40000000`) must end below it -- which leaves an unmapped gap of roughly 41 MiB, where earlier
+/// stages' 6 MiB image left 48 MiB.
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
@@ -86,8 +86,15 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
     // first use, mirrored here). Must come after init_base_addresses (GICD/GICC are only known
     // once the DTB has been parsed) but before gic_setup/any other device access -- every
     // subsequent MMIO touch goes through the page table from this point on.
-    mmu::enable(BASE_ADDRESSES.get_gicd(), BASE_ADDRESSES.get_gicc());
+    let hardening = mmu::enable(BASE_ADDRESSES.get_gicd(), BASE_ADDRESSES.get_gicc());
     uart0_writer.write_str("MMU enabled.\r\n").unwrap_or(());
+    uart0_writer
+        .write_str(if hardening.pan {
+            "MMU hardening: WXN, stack alignment checks, PAN.\r\n"
+        } else {
+            "MMU hardening: WXN, stack alignment checks (no PAN on this CPU).\r\n"
+        })
+        .unwrap_or(());
 
     gic_setup();
 
@@ -95,7 +102,7 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
     // point on, a real IRQ can call `static_mut_ref!(BLK)` inside `irq_handler`, so this write
     // must (and does) happen before `gic_enable(blk_spi)`. Unlike Stage 6/7, BLK stays live (and
     // its SPI enabled) for this program's entire remaining life: fs/blkio.rs's BlkIo reaches
-    // through it for every filesystem read, not just one early font load.
+    // through it for every filesystem read, not just one early load.
     let (blk, blk_spi) = Blk::find(BASE_ADDRESSES.virtio_mmio_slots())
         .expect("no virtio-blk device found among the virtio-mmio slots");
     // SAFETY: sole write to BLK, and it happens before BLK_SPI's GIC line is enabled below --
@@ -207,8 +214,7 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
 }
 
 /// Handles IRQ (Interrupt Request) exceptions -- the only two possible sources are the block
-/// device (only during the font read early in `kernel_main`) and the keyboard (for the rest of
-/// the program's life).
+/// device (for the filesystem reads and writes) and the keyboard.
 ///
 /// See `arch::gic::gic_setup`'s doc comment for why this constructs its own `GicV2` rather than
 /// sharing one via a static.

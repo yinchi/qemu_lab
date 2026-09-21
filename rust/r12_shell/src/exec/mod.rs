@@ -5,3 +5,4 @@ pub mod argplan;
 pub mod elf;
 pub mod elfparse;
 pub mod process;
+pub mod usermem;

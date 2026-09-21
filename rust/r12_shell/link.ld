@@ -17,6 +17,11 @@ SECTIONS
 
 	__text_start = .;
 	.text : { *(.text.boot) *(.text*) }
+	/* Each region below is mapped with its own permissions (`arch/mmu.rs`), and a page has only one
+	set: a boundary inside a page would give it whichever mapping came last -- .rodata's, which is
+	not executable, over the tail of .text, which holds the exception vectors. So every boundary
+	is page-aligned. */
+	. = ALIGN(4096);
 	__text_end = .;
 
 	__rodata_start = .;
@@ -30,6 +35,7 @@ SECTIONS
 	builds (or any future profile) where that isn't guaranteed to hold. */
 	.eh_frame_hdr : { *(.eh_frame_hdr) }
 	.eh_frame : { *(.eh_frame) }
+	. = ALIGN(4096);
 	__rodata_end = .;
 
 	__data_start = .;

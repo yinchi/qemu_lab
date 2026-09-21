@@ -9,6 +9,12 @@
 //!   probe exit N        exits with status N, passed to the kernel unmasked (so N > 255 tests the mask)
 //!   probe frag          one line of 200 one-digit `write!` fragments (stdout buffer: one console flush)
 //!   probe frag-raw      the same line as 200 raw `write` syscalls (one console flush each)
+//!   probe poke ADDR     reads one byte at ADDR (decimal) and prints it; a bad address faults (exit 139)
+//!   probe poke-w ADDR   writes one byte at ADDR, reads it back, prints it
+//!   probe user-ptrs    syscalls given pointers into the guard, the gap, read-only code and past the stack:
+//!                      each must be refused (-14), none may fault the kernel
+//!   probe sp            prints the stack pointer `main` runs with
+//!   probe stack KIB     legitimately uses KIB KiB of stack (recursion, one KiB per frame) and prints a checksum
 //!   probe bs-wide       a wide glyph, backspace, then `X`: `X` must land on the glyph's left cell
 //!   probe interleave    `OUT` (no newline) to stdout, `ERR` to stderr, then a newline to stdout
 
@@ -81,6 +87,45 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             userlib::write(1, b"\n");
             0
         }
+        Some("poke") => match args.next().and_then(progs::atoi) {
+            Some(addr) => {
+                // SAFETY: none -- the point is to touch an address the kernel may not have mapped.
+                let byte = unsafe { core::ptr::read_volatile(addr as *const u8) };
+                let _ = writeln!(out, "read {addr:#x}: {byte:#x}");
+                0
+            }
+            None => usage_exit("probe poke ADDR"),
+        },
+        Some("poke-w") => match args.next().and_then(progs::atoi) {
+            Some(addr) => {
+                // SAFETY: as above.
+                let byte = unsafe {
+                    core::ptr::write_volatile(addr as *mut u8, 0xAA);
+                    core::ptr::read_volatile(addr as *const u8)
+                };
+                let _ = writeln!(out, "wrote {addr:#x}: {byte:#x}");
+                0
+            }
+            None => usage_exit("probe poke-w ADDR"),
+        },
+        Some("user-ptrs") => {
+            user_ptrs(&mut out);
+            0
+        }
+        Some("sp") => {
+            let sp: usize;
+            // SAFETY: reads a register.
+            unsafe { asm!("mov {}, sp", out(reg) sp) };
+            let _ = writeln!(out, "sp {sp:#x}");
+            0
+        }
+        Some("stack") => match args.next().and_then(progs::atoi) {
+            Some(kib) => {
+                let _ = writeln!(out, "stack {kib} KiB: {}", use_stack(kib));
+                0
+            }
+            None => usage_exit("probe stack KIB"),
+        },
         Some("bs-wide") => {
             let _ = write!(out, "日\u{8}X\n");
             0
@@ -99,7 +144,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit|frag|frag-raw|bs-wide|interleave ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit|poke|poke-w|user-ptrs|sp|stack|frag|frag-raw|bs-wide|interleave ...");
             2
         }
     }
@@ -157,4 +202,50 @@ fn print_args(out: &mut Fd, argc: usize, argv: *const *const u8) {
     let _ = writeln!(out, "argv[argc] is NULL: {}", yes(terminator.is_null()));
     let _ = writeln!(out, "argv is 16-byte aligned: {}", yes(argv as usize % 16 == 0));
     let _ = writeln!(out, "sp is 16-byte aligned: {}", yes(sp % 16 == 0));
+}
+
+/// User-window addresses (see the kernel's `platform/base_addresses.rs`) that are not backed by memory
+/// the kernel may write, or at all.
+fn user_ptrs(out: &mut Fd) {
+    const BASE: usize = 0x4400_0000;
+    const GAP: usize = BASE + 0x8_0000; // between the program image and the guard
+    const GUARD: usize = BASE + 0xF_0000;
+    const STACK_TOP: usize = BASE + 0x20_0000;
+    let code = user_ptrs as *const () as usize; // this program's own (read-only) code
+    // A file to read from, so `read` has a real fd that returns at once.
+    let fd = userlib::open("tests/hello.txt", userlib::O_RDONLY);
+    let dir = userlib::open("tests", userlib::O_RDONLY);
+    let cases: [(&str, isize); 9] = [
+        ("write from the gap", raw(SYS_WRITE, 1, GAP, 16, 0)),
+        ("write from the guard", raw(SYS_WRITE, 1, GUARD, 16, 0)),
+        ("write running off the top of the stack", raw(SYS_WRITE, 1, STACK_TOP - 8, 16, 0)),
+        ("read into read-only code", raw(SYS_READ, fd as usize, code, 16, 0)),
+        ("read into the guard", raw(SYS_READ, fd as usize, GUARD, 16, 0)),
+        ("getdents into read-only code", raw(SYS_GETDENTS, dir as usize, code, 64, 0)),
+        ("open with the path in the guard", raw(SYS_OPEN, GUARD, 5, 0, 0)),
+        ("chmod with the path in the gap", raw(SYS_CHMOD, GAP, 4, 0, 0)),
+        ("write from code (the kernel only reads it: allowed)", raw(SYS_WRITE, 1, code, 0, 0)),
+    ];
+    for (what, ret) in cases {
+        let _ = writeln!(out, "{what}: {ret}");
+    }
+}
+
+fn usage_exit(text: &str) -> i32 {
+    let _ = writeln!(Fd(2), "usage: {text}");
+    2
+}
+
+/// Recurses `kib` frames of about 1 KiB each, touching every one, so exactly that much stack is
+/// really used (not optimized away). Returns a checksum of what it wrote.
+#[inline(never)]
+fn use_stack(kib: usize) -> usize {
+    let mut frame = [0u8; 1024];
+    for (i, byte) in frame.iter_mut().enumerate() {
+        // SAFETY: a plain write to our own array; volatile so the frame is not optimized away.
+        unsafe { core::ptr::write_volatile(byte, (i ^ kib) as u8) };
+    }
+    let below = if kib > 1 { use_stack(kib - 1) } else { 0 };
+    // SAFETY: as above.
+    below + unsafe { core::ptr::read_volatile(&frame[kib % 1024]) } as usize
 }
