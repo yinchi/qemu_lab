@@ -40,12 +40,3 @@ pub fn read_file_checked(
         .read_to_vec()
         .map_err(|_| EIO) // Error if can't read the file into a Vec
 }
-
-/// Reads a whole file into a freshly allocated `Vec<u8>` -- for boot-time files (the font) whose
-/// absence or corruption is fatal; `shell::launch` uses `read_file_checked`.
-pub fn read_file_or_panic(vol: &FatVolume<BlkIo>, entry: &FileEntry) -> alloc::vec::Vec<u8> {
-    vol.read_file(entry)
-        .expect("failed to open file for reading")
-        .read_to_vec()
-        .expect("failed to read file")
-}

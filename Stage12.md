@@ -8,7 +8,8 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 0 | Scaffold `r12_shell`, test infrastructure, this document | done |
 | 1 | Error handling, shared `abi`, launch by path, heap growth, small cleanups | done |
 | 1b | Code review and reorganization of what Steps 0-1 produced | done |
-| 2 | Console write path (streaming UTF-8, fewer flushes) | -- |
+| 2 | Console write path (streaming UTF-8, fewer flushes, segfault message) | done |
+| 2b | Unicode console (Unifont glyphs, wide cells) | done |
 | 3 | User stack mapping and guard | -- |
 | 4 | One line-discipline module | -- |
 | 5 | Eval loop out of IRQ context (token queue) | -- |
@@ -70,10 +71,10 @@ src/
 ├── drivers/           mod.rs
 │   └── virtio/        mod.rs: find_mmio_transport (shared slot probing)
 │       └── hal.rs (was virtio_hal.rs)   blk.rs   gpu.rs (returns a FramebufferInfo)   input.rs (was keyboard.rs: raw events)
-├── fs/                mod.rs: find_entry_checked, read_file_checked, read_file_or_panic
+├── fs/                mod.rs: find_entry_checked, read_file_checked
 │   └── blkio.rs (was fat_io.rs; also the VOL static)   files.rs (open-file table, lookup, resolve; owns MAX_OPEN_FILES)
 ├── console/           mod.rs: Console, show_row, FG/BG
-│   └── framebuffer.rs (the Framebuffer struct, out of console.rs)   font.rs   cp437.rs
+│   └── framebuffer.rs (the Framebuffer struct, out of console.rs)   font.rs (glyph_for, widths)   cells.rs (P)   utf8.rs (P)
 ├── keyboard/          mod.rs
 │   └── keymap.rs   tokens.rs   events.rs (was input.rs)   line.rs (LineBuffer, plus the LINE/INPUT_ROW statics)   stdin.rs
 ├── exec/              mod.rs
@@ -242,14 +243,22 @@ its r11-era file names; "Source layout" above maps them.
 
 **Carried into later Steps:** the segfault message reaching the console (Step 2, above); `abspath`/`resolve` (Step 6).
 
-### Step 2: console write path (`fd.rs`, `userlib`/`progs::Fd`)
-- Replace `from_utf8().unwrap_or("<invalid utf8>")` with a **streaming UTF-8 decoder** in the kernel's Console write
-  path: it keeps partial-sequence state between `write` calls (so a multibyte character split across `cat`'s
-  4096-byte chunks decodes correctly), valid sequences go through the existing `cp437::unicode_to_cp437` as today
-  (so `echo é` still shows CP437 0x82), and an invalid byte is drawn as its own CP437 glyph instead of blanking the
-  whole chunk (so binary files render as CP437 garbage, not `<invalid utf8>`). The UART mirror keeps sending the raw bytes.
-- Fewer flushes: `Fd` buffers small `write_str` fragments (flush on newline / full / exit / before a blocking read);
-  kernel flushes the GPU once per write syscall (not per fragment), UART mirroring unchanged. A `testhooks` cargo
+### Step 2: console write path (`fd.rs`, `userlib`/`progs::Fd`) (done)
+- Replace `from_utf8().unwrap_or("<invalid utf8>")` with a **streaming UTF-8 decoder** (`utf8.rs`, pure) in the kernel's
+  Console write path: it keeps partial-sequence state between `write` calls (so a multibyte character split across
+  `cat`'s 4096-byte chunks decodes correctly) and yields `char`s; an invalid byte yields U+FFFD and the decoder
+  resynchronizes, instead of blanking the whole chunk. The decoder state is one static (single resident program; it
+  becomes per-process state with Stage 19). The UART mirror keeps sending the raw bytes, so a split character is
+  intact on the serial transcript. Until Step 2b the `char`s still go through the existing `cp437::unicode_to_cp437`
+  (U+FFFD, like any unmappable character, shows as `?`); Step 2b replaces that mapping with a Unicode font behind a
+  single `glyph_for(char)` function, so nothing above it changes.
+- Fewer flushes: a `write!` makes one `write` syscall per fragment, and each syscall costs a GPU flush. So `Fd(1)` (stdout)
+  buffers small `write_str` fragments in one static in `progs` (single thread, one user of fd 1) and sends them in one
+  `write`: on newline, at exit, before a blocking `read`, and **before every other write** -- stderr's included (C++'s
+  tied-`cerr` rule, so `cmd > f 2>&1` keeps exact program order even for a partial line). stderr is unbuffered.
+  The buffer lives in `userlib` (`write_stdout`/`flush_stdout`, 512 bytes; `exit` flushes) because `exit` and `read` are
+  there, and `progs::Fd(1)` uses it; `userlib::write` flushes it first, so raw `write(1, ..)` calls stay in order too. Known cost, same as C's stdout: a fault loses the unflushed partial line (a panic flushes first). The
+  kernel already flushes the GPU once per write syscall (not per fragment); UART mirroring unchanged. A `testhooks` cargo
   feature (enabled by `just test`, off for `just run`) keeps a GPU-flush counter printed on the UART at program exit,
   so the flush-count test (T2.5) is deterministic.
 - **Show the segmentation fault on the console** (raised in the Step 1b review). Today the fault handler
@@ -262,6 +271,82 @@ its r11-era file names; "Source layout" above maps them.
   `crash` case in `core_utils` still passes; add a screendump check that the message is on the display.
 - **Tests:** `cat` of a binary fixture: serial transcript matches expectations byte-for-byte; a UTF-8 fixture larger
   than 4096 bytes with a multibyte char on the boundary; timing sanity on a long `write!` loop (no per-fragment flush).
+
+**As built.** `console/utf8.rs` (WHATWG decoder, 8 host tests incl. every split point) feeds `console_draw` in `syscall/fd.rs`
+(one GPU flush per call); `console_write` adds the raw-byte UART mirror and is what the fault path calls
+(`console_start_line` first, which also ends any half-written character). `end_launch` turns a character left incomplete into
+one U+FFFD. The `testhooks` feature and `just build-test` (`r12_shell-test.elf`, what `just test-qemu` runs) print
+`[testhooks] console_flushes=N` when a program ends; the harness strips those lines from transcripts and exposes them as
+`Session.flush_counts()`. New: `probe frag|frag-raw|interleave`, fixtures `binary256`, `utf8-boundary.txt` (a two-byte
+character straddling offset 4096) and `utf8-line.txt`, `cases/step02_console.py`. Not done here (Step 8): the `> f 2>&1`
+form of T2.6 -- the console-order form passes now. Noted, unchanged: after a program whose output does not end in a
+newline, the serial log shows the next prompt directly after it (as in r11); only the display starts a fresh line.
+
+### Step 2b: Unicode console (`console/font.rs`, `console/mod.rs`, `keyboard/line.rs`, `Cargo.toml`) (done)
+Decided in the Step 2 discussion: instead of converting Unicode to a private codepage, draw Unicode with GNU Unifont
+through the `unifont` crate (`no_std`, no dependencies, MIT; the font data is Unifont's own, dual-licensed GPLv2+ with
+the font-embedding exception / OFL 1.1).
+- **One font, compiled in.** `glyph_for(c: char)` (in `font.rs`, the one place that knows about fonts) returns
+  `unifont::get_glyph(c)`, or U+FFFD's glyph for a character with no glyph (everything above U+FFFF included) and for
+  any control character the console doesn't interpret. The Spleen font is dropped: `disk/fonts/spleen.raw`, `FONT_DATA`,
+  `read_font` in `main.rs` and `cp437.rs` are deleted, so the boot no longer reads a font from disk. `disk/fonts/` stays
+  (later Steps' tests use it as a second directory) and its `NOTICE` becomes Unifont's licence text. The cell size stays
+  8x16. ASCII therefore looks different from r11 (Unifont's shapes); every screendump baseline in Steps 3-12 is taken
+  after this Step.
+- **The console gets a cell grid.** Today it is pixels plus a cursor, with no record of what is where (see
+  `scroll_up`'s comment), so it can't know that the character before the cursor was wide. Add one byte per cell
+  (`Narrow`, `WideLeft`, `WideRight`; blank = `Narrow`), scrolled with the pixels in `scroll_up` and reset by
+  `clear`/`clear_row`. Wide glyphs are two cells: the width comes from the glyph itself (`is_fullwidth()`: 16 px = two
+  cells, 8 px = one), with no East Asian Width table. A wide glyph that would start in the last column wraps to the next
+  line first. Drawing over one half of a wide glyph blanks the other half (no orphaned half-glyphs).
+- **Width-aware editing** (raised in review): Backspace and every place that counts columns count *cells*.
+  - `write_char` gains **BS (0x08)**: it moves the cursor back one *character* -- two cells if the previous cell is a
+    `WideRight`, else one, stopping at column 0 -- and does not erase (a program erasing sends `\b\b  \b\b` for a wide
+    glyph, as with any terminal).
+  - `show_row`'s budget (`prefix.chars().count()`, `line.chars().count()`) becomes a sum of cell widths, and its sliding
+    window never starts in the middle of a wide character.
+  - `LineBuffer`'s Backspace already removes one whole `char` (never half a UTF-8 sequence); Step 12's cursor-aware editor
+    tracks widths so Left/Right/Delete move by character and the cursor is drawn at the right cell. Today a typed line is
+    always ASCII (US-only keymap), so this is exercised by host tests and by history/paste-like sources, not by keystrokes.
+- **Zero-width code points draw nothing and take no cell:** U+200B-U+200F, U+2060, U+FE00-U+FE0F, U+FEFF (ZWJ,
+  joiners, variation selectors, BOM). Combining marks draw as ordinary standalone glyphs in their own cell.
+- **Known limits (documented in `docs/`):** BMP only -- the crate has no astral plane, so emoji and other characters above
+  U+FFFF draw U+FFFD (deliberate: the astral plane is a small audience for a converter and a font file format); no
+  emoji sequences, bidi or complex-script shaping (Arabic and Indic scripts show as isolated glyphs in logical order).
+  Unifont's table is compiled into the kernel image's `.rodata` (the crate's `get_storage_size()` reports the exact size;
+  record it here after the first build -- the image must stay below the `0x44000000` user window). The crate's lookup is
+  a linear scan over its code-point ranges; add a small cache for ASCII only if a full-screen `cat` measures slow.
+- **Upgrade path if the astral plane is wanted later:** BDF and PCF can only hold Plane 0 (unifoundry.com/unifont), so
+  they are not the source. Unifont publishes the astral glyphs (`unifont_upper`) as `.hex` -- plain text, one glyph per
+  line, `CODEPOINT:HEXBITMAP` (32 hex digits = 8x16, 64 = 16x16) -- the same format the `unifont` crate's `build.rs`
+  already parses. A host-side script would merge the two `.hex` files into a range-indexed binary file, records
+  `(first, count, data_offset, wide)`, binary-searched; only `glyph_for` changes.
+- **Effort budget:** no key can type a non-ASCII character (US-only keymap), so this is all edge cases -- the goal is only
+  that Unicode text from files and programs displays gracefully or degrades to U+FFFD, not a complete text stack.
+- **Tests:** see T2b below (host: `glyph_for` classification, the cell-grid and Backspace rules, the width-aware
+  `show_row` window; QEMU: CJK fixture, wrap at the last column, `echo é`, invalid bytes, `cat binary256`).
+
+**As built.** `console/font.rs` (`glyph_for`, `cell_width`, `is_zero_width`, `tail_window`) and `console/cells.rs`
+(`CellGrid`: `place`, `back`, `fits`, `scroll_up`) are pure and host-tested (14 tests, with the `unifont` crate as a
+`hosttests` dependency); `Console` owns a `CellGrid` and draws through `draw_glyph` (16-px-wide glyphs span two cells),
+`write_char` handles BS, zero-width code points and wrapping a wide glyph whole, and `show_row` measures in cells with
+`tail_window`. Removed: `cp437.rs`, `FONT_DATA`/`read_font`/`Font` (the `Console` lost its lifetime parameter),
+`fs::read_file_or_panic` (its only caller was the font read), `disk/fonts/spleen.raw` (`NOTICE` now describes Unifont).
+Measured: the crate's tables add a read-only segment of about 1.9 MB (`.rodata`, 0x1e5520 bytes); the kernel image now ends
+near `0x41610000`, far below the user window. Display is 640x480 = 80x30 cells (the fixtures assume 80 columns). Tests:
+`cases/step02b_unicode.py` (a CJK line is exactly six cells; a wide glyph at column 80 wraps whole and leaves the last
+cell blank; `é` differs from U+FFFD while an emoji, an invalid byte and a control character each draw exactly U+FFFD; a
+zero-width joiner leaves `a<ZWJ>b` identical to `ab`; `probe bs-wide` -- backspace over a wide glyph then `X` equals `X`
+alone), fixtures `cjk.txt`, `wide-wrap.txt`, `unicode-mix.txt`, probe subcommand `bs-wide`.
+**Wrapping follows xterm** (added after reviewing a screenshot of a long `cat`): a glyph that ends in the last column leaves the
+cursor there with a *wrap pending* (`cells::Cursor`), and the wrap -- and any scroll -- happens when the next glyph arrives.
+CR, LF, BS, tab and explicit positioning clear the flag without wrapping, so a full row followed by `\n` leaves no blank row,
+and `cursor()` reports the last column while pending, which the "am I mid-line?" checks (`report`, the fault path, the
+prompt resync) read correctly. `show_row` lost its reserved trailing column and uses the full width. Deliberately *not* done:
+hanging or swallowing a space that lands in column 0 after an automatic wrap (xterm prints it there; so do we), and
+word-wrapping (it would break the cell model). Tests: 10 host tests on `Cursor`; QEMU -- `full-row.txt`, `full-row-space.txt`
+and a typed command exactly as wide as the row. The ASCII screendump baseline
+for later Steps is simply the Unifont look from here on (no baseline files exist yet).
 
 ### Step 3: user stack mapping and guard (`elf.rs` / `process.rs`, `mmu.rs`)
 - First task is **verification**: `elf.rs` maps only `PT_LOAD` segments, yet argv is written at `USER_BASE+USER_SIZE`
@@ -584,10 +669,25 @@ still passes against the modified `user/` crates.
 **Step 2.** T2.1 `cat binary256` -> serial transcript contains all 256 byte values in order (after `\n`->`\r\n`).
 T2.2 `cat` of the >4096-byte UTF-8 fixture with a multibyte char at offset 4096: screendump row crops equal the same
 text typed as a single write (no mangled glyph at the boundary). T2.3 `echo é` and `cat` of a file containing byte
-0x82 render the *same* glyph (screendump cell equality). T2.4 host: `utf8.rs` decoder -- valid 1-4 byte sequences, split
-at every possible boundary, overlong/invalid/truncated sequences (invalid byte -> CP437 fallback, decoder resyncs).
+0x82 render the *same* glyph (screendump cell equality; only until Step 2b, where a lone 0x82 becomes U+FFFD -- see T2b).
+T2.4 host: `utf8.rs` decoder -- valid 1-4 byte sequences, split at every possible boundary, overlong/invalid/truncated
+sequences (invalid byte -> U+FFFD, decoder resyncs).
 T2.5 `probe` prints 200 `write!` fragments in one line: GPU flush count (kernel debug counter exposed via a UART
-line at exit) is bounded (one per syscall, and `Fd` sends far fewer syscalls than fragments).
+line at exit) is bounded (one per syscall, and `Fd` sends far fewer syscalls than fragments). T2.6 `probe` writes `OUT`
+(no newline) to stdout, `ERR` to stderr, then `\n`: under `> f 2>&1` the file is `OUTERR\n` (needs Step 8's redirection,
+so it is checked there; until then the console shows the same order).
+
+**Step 2b.** T2b.1 host (`std` allowed, includes the crate): `glyph_for` classification -- ASCII width 1, CJK width 2,
+zero-width set draws nothing, character above U+FFFF -> U+FFFD, uninterpreted control -> U+FFFD. T2b.2 host: the
+cell-grid rules on a pure grid model -- wide glyph = `WideLeft`+`WideRight`; wrap at the last column; overwriting half of
+a wide glyph blanks the other half; scrolling moves the grid with the rows; BS after a wide glyph moves back two cells,
+after a narrow one cell, at column 0 stays; BS twice over `a` + wide + `b`. T2b.3 host: `show_row`'s window in cells --
+a line of wide characters wider than the row keeps a whole-character window that never starts on a `WideRight`.
+T2b.4 CJK fixture: screendump shows two cells per glyph, serial transcript is the raw UTF-8. T2b.5 a program writing
+`<wide>\b` then a marker: the marker lands on the wide glyph's left cell. T2b.6 `echo é` draws Unifont's `é`; a lone
+byte 0x82 and an emoji draw U+FFFD. T2b.7 `cat binary256` draws a run of U+FFFD, no panic, serial transcript still
+byte-exact. T2b.8 the ASCII baseline is re-captured after this Step (Unifont's ASCII differs from r11's) and later
+Steps compare against it.
 
 **Step 3.** T3.1 `overflow` -> serial `Segmentation fault ...`, prompt shows `exit 139`, next command works, and
 `hello` afterward prints normally (no corruption). T3.2 `probe stack 256` (uses 256 KiB of stack legitimately) succeeds
@@ -679,7 +779,7 @@ its cap. T12.3 line wider than the row with the cursor near both ends: visible w
 in the right place (screendump: block cursor on the correct cell). T12.4 canonical mode for programs (`cat` reading stdin): Backspace edits, Ctrl+U discards the line, Left/Right/Up/Down/Home/End do
 nothing and nothing enters history; Ctrl+D on `abc` delivers `abc` with no newline, then Ctrl+D again is EOF.
 T12.4b prompt mode extras: Ctrl+A/E/U/K exact results; Ctrl+D at the prompt does nothing. T12.5 host: `editor.rs` and `history.rs`
-state-machine tables (insert/delete at every position, wide chars excluded, ring semantics, pending-line restore).
+state-machine tables (insert/delete at every position, including wide characters (positions counted in cells, whole-character moves, Step 2b's rules), ring semantics, pending-line restore).
 T12.6 manual (`just run`, real display): cursor visibility/blink-free block, feel of redraw, no flicker.
 
 **Step 13.** T13.1 every test above in one clean `just test` from a fresh checkout state (delete `disk.img`, `target/`).
@@ -786,6 +886,11 @@ Decided while planning; later Steps may refine these but shouldn't silently reve
     POSIX table are applied as written.
 11. **Names:** POSIX names throughout -- builtin `cd`, syscalls `getcwd` (now) and `chdir` (number reserved, not
     implemented until state is per-process).
+12. **Unicode console:** GNU Unifont through the `unifont` crate (Step 2b), compiled into the kernel; BMP only -- the
+    astral plane draws U+FFFD; Spleen and `cp437.rs` are dropped; widths come from the glyph (8 or 16 px) and the console
+    gains a cell grid so Backspace, `show_row` and the line editor count cells. Rejected: pure CP437 (would have needed
+    transcoding at every `&str` edge -- filenames, `Args`, `write_str`, the UART mirror) and a home-made range-indexed font
+    file (recorded as the upgrade path in Step 2b).
 
 ## Files touched
 `rust/r12_shell/src/{main.rs,elf.rs,fd.rs,files.rs,syscall.rs,process.rs,stdin.rs,input.rs,argv.rs,line.rs,console.rs,vectors.s}`,

@@ -31,7 +31,7 @@ use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
 // outer call is still on the stack.
 pub static mut BLK: Option<Blk> = None;
 pub static mut GPU: Option<Gpu> = None;
-pub static mut CONSOLE: Option<Console<'static>> = None;
+pub static mut CONSOLE: Option<Console> = None;
 pub static mut KEYBOARD: Option<Keyboard> = None;
 
 // The page table `mmu::enable` builds and activates. Must be kept alive for the program's entire

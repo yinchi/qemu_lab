@@ -13,8 +13,13 @@ embedded-io = { version = "0.7.1", default-features = false }
 fdt = "0.1.5"
 hadris-fat = { version = "2.4.0", default-features = false, features = ["alloc", "lfn", "read", "write", "sync"] }
 linked_list_allocator = "0.10.6"
+unifont = "1.1"
 shlex = { version = "2", default-features = false }
 virtio-drivers = "0.13.0"
+
+[features]
+# Test-only kernel instrumentation (see syscall/fd.rs's `testhooks`); enabled by `just test`.
+testhooks = []
 
 [build-dependencies]
 cc = "1"

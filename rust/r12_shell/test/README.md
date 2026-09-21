@@ -8,6 +8,8 @@
 - **`just test-qemu`** -- `run_tests.py` boots the kernel headless and drives it like a user would, typing on the
   virtio keyboard through the QEMU monitor's `sendkey` and checking the serial log (which mirrors the console), the
   display (`screendump`, where the serial log can't tell), and the disk image afterwards (`mcopy`, `fsck.fat -n`).
+  It runs the kernel built with the `testhooks` feature (`just build-test`), which prints a console-flush count when
+  each program ends; the harness strips those lines from transcripts and reads them via `Session.flush_counts()`.
   It works on a sparse copy of `disk.img`, and fails at once on a `Kernel Panic!` or `Unexpected exception`.
 
   - `harness.py` -- the `Session` (QEMU + monitor + serial log), key names, `Context`, disk helpers.
@@ -35,4 +37,4 @@ only the core utilities every stage shares.
 
 | Program | Purpose |
 |---|---|
-| `probe` | Pokes at the syscall surface from EL0: `sys-unknown` (an unassigned syscall number), `bad-ptr` (bad/wrapping pointers and lengths to write/read/open/chmod), `fds` (opens files until refused, then closes them), `args ...` (prints argc/argv and what the stack layout guarantees). Later Steps add subcommands. |
+| `probe` | Pokes at the syscall surface from EL0: `sys-unknown` (an unassigned syscall number), `bad-ptr` (bad/wrapping pointers and lengths to write/read/open/chmod), `fds` (opens files until refused, then closes them), `args ...` (prints argc/argv and what the stack layout guarantees). `frag`/`frag-raw` (a 200-fragment line through the stdout buffer vs. 200 raw writes -- the display flush counts differ), `interleave` (stdout `OUT`, stderr `ERR`, order kept), `bs-wide` (a wide glyph, backspace, `X`). Later Steps add subcommands. |

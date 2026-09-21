@@ -7,7 +7,7 @@ pub mod fd;
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 
 use crate::exec::process;
-use crate::platform::uart::{uart_ensure_newline, uart_write};
+use crate::platform::uart::uart_ensure_newline;
 
 // Syscall numbers come from the shared `abi` crate (Linux's real aarch64 values, borrowed for
 // familiarity -- see its module doc), the same ones `userlib` issues them with.
@@ -80,14 +80,11 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
         // respectively.
         EC_IABT_LOWER | EC_DABT_LOWER => {
             let far = FAR_EL1.get(); // read the Fault Address Register (FAR_EL1)
-            // UART only, not the GPU console: unlike ordinary program output (fd::write, which
-            // goes through Console and keeps INPUT_ROW in sync -- see syscall/fd.rs), a segfault is an
-            // unplanned interruption mid-program: writing through Console directly here too
-            // would move its cursor without run_program's caller ever getting a chance to
-            // resync INPUT_ROW to it. UART-only matches this crate's own panic handler's choice
-            // for the same reason.
+            // On the console as well as the UART: whoever wrote last has moved the console cursor,
+            // and `handle_keyboard_irq` resyncs INPUT_ROW from it once the launch returns.
             uart_ensure_newline();
-            uart_write(
+            fd::console_start_line();
+            fd::console_write(
                 alloc::format!("Segmentation fault (address {far:#x}, ESR_EL1 {esr:#x})\n")
                     .as_bytes(),
             );

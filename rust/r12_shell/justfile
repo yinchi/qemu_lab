@@ -16,6 +16,12 @@ build:
     cd {{justfile_directory()}} && cargo build --target aarch64-unknown-none-softfloat --release
     cd {{justfile_directory()}} && cp target/aarch64-unknown-none-softfloat/release/{{BIN}} {{BIN}}.elf
 
+# The kernel again with the `testhooks` feature (test-only instrumentation, see syscall/fd.rs), copied
+# out as {{BIN}}-test.elf; the ordinary {{BIN}}.elf that `just run` uses has none of it.
+build-test:
+    cd {{justfile_directory()}} && cargo build --target aarch64-unknown-none-softfloat --release --features testhooks
+    cd {{justfile_directory()}} && cp target/aarch64-unknown-none-softfloat/release/{{BIN}} {{BIN}}-test.elf
+
 # ELF file inspection on the built binary (copied out of target/ by `just build`)
 elf:
     bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
@@ -87,5 +93,5 @@ test-host:
 # disk contents -- see test/run_tests.py. Works on a copy of disk.img, so it never modifies it.
 
 # QEMU-driven tests.
-test-qemu: build disk
-    python3 {{justfile_directory()}}/test/run_tests.py {{justfile_directory()}}/{{BIN}}.elf {{justfile_directory()}}/disk.img
+test-qemu: build-test disk
+    python3 {{justfile_directory()}}/test/run_tests.py {{justfile_directory()}}/{{BIN}}-test.elf {{justfile_directory()}}/disk.img

@@ -8,6 +8,7 @@
 //! `File(handle)` entries refer to `fs/files.rs`'s open-file table; `Console` and `Keyboard` have
 //! no state of their own here.
 
+use crate::console::utf8::Utf8Decoder;
 use crate::console::{BG, FG};
 use crate::fs::files;
 use crate::keyboard::stdin;
@@ -57,6 +58,91 @@ pub fn reset_for_launch() {
 /// Cleanup, not a save: nothing the program held only in memory is written out.
 pub fn end_launch() {
     files::close_all();
+    // A character the program left half-written becomes one U+FFFD now, not the first byte of the
+    // next program's output.
+    console_finish_stream();
+    #[cfg(feature = "testhooks")]
+    testhooks::report_and_reset();
+}
+
+/// The bytes of a program's console output are UTF-8, but a `write` can end in the middle of a
+/// character (`cat` sends 4096-byte chunks), so the decoder outlives each call.
+/// SAFETY (every access): single core, and syscalls run with IRQs masked, so nothing else touches it.
+static mut CONSOLE_DECODER: Utf8Decoder = Utf8Decoder::new();
+
+/// Draws `bytes` (UTF-8, possibly ending mid-character) on the console at the cursor and flushes
+/// the display once for the whole call, not per character; no UART mirroring.
+fn console_draw(bytes: &[u8]) {
+    // SAFETY: CONSOLE/GPU are populated well before the keyboard's GIC line is ever enabled in
+    // kernel_main, and so before any program (the only way this is ever reached) could possibly
+    // be running; CONSOLE_DECODER: see its declaration.
+    unsafe {
+        let console = static_mut_ref!(CONSOLE);
+        let decoder = &mut *(&raw mut CONSOLE_DECODER);
+        for &byte in bytes {
+            decoder.push(byte, |c| console.write_char(c, FG, BG));
+        }
+        static_mut_ref!(GPU).flush();
+    }
+    #[cfg(feature = "testhooks")]
+    testhooks::count_flush();
+}
+
+/// A program's console output: drawn (see `console_draw`) and mirrored to the UART as the raw bytes
+/// it sent, so a character split across two calls is intact on the serial transcript. Also used by
+/// the fault path to show the segmentation-fault message.
+pub fn console_write(bytes: &[u8]) {
+    console_draw(bytes);
+    uart_write(bytes);
+}
+
+/// Ends any character still incomplete (drawn as U+FFFD) and starts a fresh console line if the
+/// cursor is mid-line -- the console half of `uart_ensure_newline`, for a message the kernel itself
+/// is about to write.
+pub fn console_start_line() {
+    console_finish_stream();
+    // SAFETY: see `console_draw`.
+    unsafe {
+        let console = static_mut_ref!(CONSOLE);
+        if console.cursor().1 != 0 {
+            console.write_char('\n', FG, BG);
+        }
+    }
+}
+
+/// Draws U+FFFD for an incomplete character, if there is one, and resets the decoder.
+fn console_finish_stream() {
+    // SAFETY: see `console_draw`.
+    unsafe {
+        let console = static_mut_ref!(CONSOLE);
+        let decoder = &mut *(&raw mut CONSOLE_DECODER);
+        if decoder.is_pending() {
+            decoder.finish(|c| console.write_char(c, FG, BG));
+            static_mut_ref!(GPU).flush();
+        }
+    }
+}
+
+/// Test-only instrumentation (cargo feature `testhooks`, enabled for `just test`, off for
+/// `just run`): counts GPU flushes done by console writes and prints the count on the UART when a
+/// program ends, so the flush-count test is exact instead of timing-based. The harness strips these
+/// lines from the transcripts it compares.
+#[cfg(feature = "testhooks")]
+mod testhooks {
+    use crate::platform::uart::uart_write;
+
+    static mut FLUSHES: usize = 0;
+
+    pub fn count_flush() {
+        // SAFETY: single core, IRQs masked in syscalls (see FD_TABLE).
+        unsafe { *(&raw mut FLUSHES) += 1 };
+    }
+
+    pub fn report_and_reset() {
+        // SAFETY: as above.
+        let n = unsafe { core::mem::replace(&mut *(&raw mut FLUSHES), 0) };
+        uart_write(alloc::format!("[testhooks] console_flushes={n}\n").as_bytes());
+    }
 }
 
 impl FileDescriptor {
@@ -68,18 +154,7 @@ impl FileDescriptor {
     fn write(self, bytes: &[u8]) -> isize {
         match self {
             FileDescriptor::Console => {
-                let text = core::str::from_utf8(bytes).unwrap_or("<invalid utf8>");
-                // SAFETY: CONSOLE/GPU are populated well before the keyboard's GIC line is ever
-                // enabled in kernel_main, and so before any program (the only way this is ever
-                // reached) could possibly be running.
-                unsafe {
-                    let console = static_mut_ref!(CONSOLE);
-                    for c in text.chars() {
-                        console.write_char(c, FG, BG);
-                    }
-                    static_mut_ref!(GPU).flush();
-                }
-                uart_write(text.as_bytes());
+                console_write(bytes);
                 bytes.len() as isize
             }
             FileDescriptor::Keyboard => EBADF,

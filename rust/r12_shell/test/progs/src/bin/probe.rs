@@ -7,6 +7,10 @@
 //!   probe fds           opens files until the kernel says no, then closes them all
 //!   probe args ...      prints argc/argv exactly as received, plus what the stack layout guarantees
 //!   probe exit N        exits with status N, passed to the kernel unmasked (so N > 255 tests the mask)
+//!   probe frag          one line of 200 one-digit `write!` fragments (stdout buffer: one console flush)
+//!   probe frag-raw      the same line as 200 raw `write` syscalls (one console flush each)
+//!   probe bs-wide       a wide glyph, backspace, then `X`: `X` must land on the glyph's left cell
+//!   probe interleave    `OUT` (no newline) to stdout, `ERR` to stderr, then a newline to stdout
 
 #![no_std]
 #![no_main]
@@ -63,6 +67,30 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             print_args(&mut out, argc, argv);
             0
         }
+        Some("frag") => {
+            for i in 0..200 {
+                let _ = write!(out, "{}", i % 10);
+            }
+            let _ = writeln!(out);
+            0
+        }
+        Some("frag-raw") => {
+            for i in 0..200 {
+                userlib::write(1, &[b'0' + (i % 10) as u8]);
+            }
+            userlib::write(1, b"\n");
+            0
+        }
+        Some("bs-wide") => {
+            let _ = write!(out, "日\u{8}X\n");
+            0
+        }
+        Some("interleave") => {
+            let _ = write!(out, "OUT");
+            let _ = write!(Fd(2), "ERR");
+            let _ = writeln!(out);
+            0
+        }
         Some("exit") => match args.next().and_then(progs::atoi) {
             Some(n) => n as i32,
             None => {
@@ -71,7 +99,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit|frag|frag-raw|bs-wide|interleave ...");
             2
         }
     }

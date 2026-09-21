@@ -24,6 +24,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 /// `start.s` will call `exit` with code 255.
 #[unsafe(no_mangle)]
 pub extern "C" fn exit(code: i32) -> ! {
+    crate::flush_stdout();
     syscall!(SYS_EXIT, code as usize);
     // `exit` never returns from the kernel's side either; loop defensively
     // in case it somehow does, rather than falling into whatever follows.

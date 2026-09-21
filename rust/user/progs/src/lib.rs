@@ -15,10 +15,18 @@ pub const CHUNK: usize = 4096;
 
 /// A file descriptor as a `core::fmt::Write` sink, so a program can `write!(Fd(1), ...)`
 /// instead of hand-assembling numbers into byte buffers.
+///
+/// `Fd(1)` (stdout) is buffered -- see `userlib::write_stdout` for when it is sent -- and never
+/// reports a write error. Every other fd is written immediately, which sends stdout's pending text
+/// first, so `Fd(2)` (stderr) output stays in order with stdout even under `2>&1`.
 pub struct Fd(pub usize);
 
 impl fmt::Write for Fd {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.0 == 1 {
+            userlib::write_stdout(s.as_bytes());
+            return Ok(());
+        }
         write_all(self.0, s.as_bytes()).map_err(|_| fmt::Error)
     }
 }

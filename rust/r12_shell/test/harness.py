@@ -8,6 +8,7 @@ on the serial log fails the run at once, wherever it shows up (see `Session.wait
 """
 
 import os
+import re
 import socket
 import subprocess
 import time
@@ -33,6 +34,10 @@ KEY_NAMES = {
 UP, DOWN, LEFT, RIGHT = "up", "down", "left", "right"
 HOME, END, DELETE, BACKSPACE, ENTER = "home", "end", "delete", "backspace", "ret"
 CTRL_A, CTRL_D, CTRL_E, CTRL_K, CTRL_U = "ctrl-a", "ctrl-d", "ctrl-e", "ctrl-k", "ctrl-u"
+
+# The kernel built with the `testhooks` feature (what `just test` runs) prints one of these lines when a
+# program ends; `Session.log` strips them so transcripts read the same as from a normal build.
+TESTHOOK_LINE = re.compile(r"\[testhooks\] console_flushes=(\d+)\r?\n")
 
 # What ends the serial log when the kernel has died -- never legitimate output of any test.
 FATAL_MARKERS = ("Kernel Panic!", "Unexpected exception")
@@ -88,10 +93,20 @@ class Session:
             return ""
         return self.qemu.stderr.read().decode(errors="replace")
 
-    def log(self):
-        """Returns the current contents of the serial log."""
+    def log_bytes(self):
+        """Returns the serial log exactly as received (testhooks lines included)."""
         with open(self.serial_path, "rb") as f:
-            return f.read().decode(errors="replace").replace("\r\n", "\n")
+            return f.read()
+
+    def log(self):
+        """Returns the current contents of the serial log, `\\r\\n` as `\\n`, testhooks lines removed."""
+        text = self.log_bytes().decode(errors="replace").replace("\r\n", "\n")
+        return TESTHOOK_LINE.sub("", text)
+
+    def flush_counts(self):
+        """The console flush count each program that has ended reported, in order (see `syscall/fd.rs`)."""
+        text = self.log_bytes().decode(errors="replace")
+        return [int(n) for n in TESTHOOK_LINE.findall(text)]
 
     def check_alive(self):
         """Raises if the kernel has panicked or QEMU has exited -- checked on every wait, so a
@@ -122,6 +137,16 @@ class Session:
         rows = [[tuple(data[(y * width + x) * 3:(y * width + x) * 3 + 3]) for x in range(width)]
                 for y in range(height)]
         return width, height, rows
+
+    def run_raw(self, command):
+        """Like `run`, but returns the bytes the command sent to the serial port, exactly -- for output
+        that is not text. Everything between the echoed command line's end and the next prompt."""
+        start = len(self.log_bytes())
+        self.run(command)
+        raw = TESTHOOK_LINE.sub("", self.log_bytes()[start:].decode("latin-1")).encode("latin-1")
+        echoed = raw.index(b"\r\n") + 2  # the command line the shell echoed
+        assert raw.endswith(b"> "), raw[-20:]
+        return raw[echoed:-2]
 
     def keys(self, names):
         """Sends a sequence of key names to the QEMU monitor, simulating key presses."""
@@ -185,6 +210,21 @@ def dir_attr(img_path, short_name):
 
 def mcopy_out(img_path, name, dest):
     subprocess.run(["mcopy", "-i", img_path, f"::{name}", dest], check=True)
+
+
+CELL_W, CELL_H = 8, 16  # a console cell on the display
+
+
+def text_bands(dump):
+    """The rows of character cells of a `screendump` that are not blank, as `(cell_row, band)` where
+    `band` is that cell row's pixels -- for comparing what two commands drew, glyph for glyph."""
+    _w, height, rows = dump
+    bands = []
+    for r in range(height // CELL_H):
+        band = rows[r * CELL_H:(r + 1) * CELL_H]
+        if any(px != band[0][0] for line in band for px in line):
+            bands.append((r, band))
+    return bands
 
 
 class Context:

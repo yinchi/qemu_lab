@@ -10,3 +10,9 @@ extern crate alloc;
 pub mod argplan;
 #[path = "../../src/exec/elfparse.rs"]
 pub mod elfparse;
+#[path = "../../src/console/utf8.rs"]
+pub mod utf8;
+#[path = "../../src/console/cells.rs"]
+pub mod cells;
+#[path = "../../src/console/font.rs"]
+pub mod font;

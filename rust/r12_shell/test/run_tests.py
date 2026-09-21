@@ -17,10 +17,10 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, step01_launch
+from cases import core_utils, step01_launch, step02_console, step02b_unicode
 from harness import Context, Session
 
-CASES = [core_utils, step01_launch]
+CASES = [core_utils, step01_launch, step02_console, step02b_unicode]
 
 
 def main():

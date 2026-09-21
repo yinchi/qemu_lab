@@ -32,13 +32,12 @@ use crate::arch::{
 };
 use crate::console::{
     BG, Console,
-    font::{FONT_DATA, Font},
     show_row,
 };
 use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
 use crate::fs::{
     blkio::{BlkIo, VOL},
-    find_entry_checked, read_file_or_panic,
+    find_entry_checked,
 };
 use crate::keyboard::{
     keymap::{KEY_NAMES, KEY_STATE, KeyState, LOCK_STATE, LockState, build_key_names},
@@ -65,33 +64,6 @@ static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
-
-/// Reads the font through the filesystem (`fonts/spleen.raw`), same as any other file -- no
-/// more special-cased raw sector read the way Stage 6/7 needed before a real filesystem existed.
-///
-/// SAFETY: nothing else may touch FONT_DATA concurrently -- true here, since this only ever runs
-/// once, from `kernel_main`, before anything else exists that could read or write it.
-#[allow(clippy::deref_addrof)]
-unsafe fn read_font(vol: &hadris_fat::sync::FatVolume<BlkIo>) -> &'static [u8; 4096] {
-    let root = vol.root_dir();
-    let fonts_dir_entry = find_entry_checked(&root, "fonts")
-        .expect("failed to read the root directory")
-        .expect("/fonts/ not found on the disk image");
-    let fonts_dir = root
-        .open_entry(&fonts_dir_entry)
-        .expect("failed to open fonts directory");
-    let font_entry = find_entry_checked(&fonts_dir, "spleen.raw")
-        .expect("failed to read /fonts/")
-        .expect("/fonts/spleen.raw not found on the disk image");
-    let font_bytes = read_file_or_panic(vol, &font_entry);
-    unsafe {
-        (&raw mut FONT_DATA as *mut u8).copy_from_nonoverlapping(font_bytes.as_ptr(), 4096);
-        // `FONT_DATA` isn't an `Option`, so `static_mut_ref!`/`static_ref!` (see `util.rs`)
-        // don't apply to it -- deliberately kept as its own plain raw-pointer access rather than
-        // complicating those two macros to handle a single one-off non-`Option` case.
-        &*(&raw const FONT_DATA)
-    }
-}
 
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
@@ -185,19 +157,12 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
         }
     }
 
-    // SAFETY: BLK is populated and its SPI enabled above.
-    let font = Font::new(unsafe { read_font(&vol) });
-
-    uart0_writer
-        .write_str("Font read from disk.\r\n")
-        .unwrap_or(());
-
     // Find the VirtIO GPU device and set up the console -- polled, not interrupt-driven; see
     // drivers/virtio/gpu.rs's doc comment on why.
     let mut gpu_dev = Gpu::find(BASE_ADDRESSES.virtio_mmio_slots())
         .expect("no virtio-gpu device found among the virtio-mmio slots");
     let fb = gpu_dev.framebuffer();
-    let mut console = Console::new(fb.into(), font);
+    let mut console = Console::new(fb.into());
     console.clear(BG);
 
     // Find the VirtIO input device -- this stage's new piece. Its SPI isn't enabled yet: doing
