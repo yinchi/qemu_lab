@@ -67,20 +67,22 @@ impl FrameStack {
     }
 
     /// How many frames there are; 1 is just the shell's own.
-    #[allow(dead_code)] // for the script depth limit (Step 9)
+    // Not used by production code: `shell::MAX_SCRIPT_DEPTH`'s guard is a separate counter, since it
+    // also has to catch *unscoped* recursion (`source` sourcing itself), which never pushes a frame
+    // at all. Kept as a coherent part of this type's API, alongside `push_copy`/`pop`, and exercised
+    // by this module's own tests.
+    #[allow(dead_code)]
     pub fn depth(&self) -> usize {
         self.frames.len()
     }
 
     /// Pushes a copy of the top frame.
-    #[allow(dead_code)] // scripts (Step 9)
     pub fn push_copy(&mut self) {
         let copy = self.top().clone();
         self.frames.push(copy);
     }
 
     /// Pops the top frame. Refuses (returns `false`) to pop the shell's own.
-    #[allow(dead_code)] // scripts (Step 9)
     pub fn pop(&mut self) -> bool {
         if self.frames.len() == 1 {
             return false;
@@ -91,7 +93,6 @@ impl FrameStack {
 
     /// Runs `f` against a copy of the current frame, then discards it: nothing `f` changes in the
     /// frame -- its `cd`s, its stream bindings -- survives.
-    #[allow(dead_code)] // scripts (Step 9)
     pub fn with_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         self.push_copy();
         let result = f(self);

@@ -1,4 +1,4 @@
-"""Last updated: Stage 12, Step 1.
+"""Last updated: Stage 12, Step 9.
 
 Launching by path, files that aren't programs, the syscall error values, the fd limit, and how
 `argv` is laid out on the new program's stack.
@@ -18,11 +18,23 @@ MALFORMED_ELFS = [
     "elf-memlt.exe",      # p_memsz < p_filesz
 ]
 
-NOT_PROGRAMS = ["tests/notes.txt", "tests/data.bin"]
+# `notes.txt` (plain text) isn't here: since Step 9, a non-ELF exec-bit file whose first bytes look
+# like text is bash's `ENOEXEC` fallback -- run as a script -- not an error; see scripts.py for that.
+# `data.bin` has a NUL early on, so it's still refused outright, just with Step 9's more specific
+# wording ("binary file").
+NOT_PROGRAMS = ["tests/data.bin"]
 
 
 def cannot_execute(path):
+    """`MALFORMED_ELFS`' wording: these do have ELF magic (they're broken further in), so `launch`
+    never treats them as the Step 9 `ENOEXEC` fallback -- `process::run_program` itself refuses them."""
     return f"{path}\n{path}: cannot execute: Exec format error\n"
+
+
+def cannot_execute_binary(path):
+    """`NOT_PROGRAMS`' wording: no ELF magic at all, and not text either -- Step 9's `ENOEXEC`
+    fallback's own "genuinely not a script" case, bash's wording."""
+    return f"{path}\n{path}: cannot execute binary file: Exec format error\n"
 
 
 def run(ctx):
@@ -49,7 +61,7 @@ def run(ctx):
 
     # --- files that are not programs: refused, never a panic ---
     for path in NOT_PROGRAMS:
-        check(f"not a program: {path}", s.run(path), cannot_execute(path))
+        check(f"not a program: {path}", s.run(path), cannot_execute_binary(path))
     for name in MALFORMED_ELFS:
         path = f"tests/{name}"
         check(f"malformed ELF: {name}", s.run(path), cannot_execute(path))

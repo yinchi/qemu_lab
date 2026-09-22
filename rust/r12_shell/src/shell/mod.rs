@@ -52,6 +52,14 @@ pub fn start_prompt(discipline: &mut LineDiscipline, console: &mut Console) {
 /// (`launch.rs`) -- reporting whatever went wrong via `shell_err`. A blank line or a comment does
 /// nothing, quietly, as in any shell. Pipes parse but are not run yet, and say so.
 pub fn run_line(line: &str) {
+    run_line_inner(line, 0);
+}
+
+/// `run_line`'s real body, with the script-nesting depth threaded through: `0` at the prompt, and
+/// `depth + 1` for every line a script (`run_script_content`) feeds back through here. Kept separate
+/// from `run_line` so the prompt -- the only caller that doesn't already have a `depth` -- has a
+/// plain, depth-free entry point.
+fn run_line_inner(line: &str, depth: usize) {
     let pipeline = match syntax::parse(line) {
         Ok(Some(pipeline)) => pipeline,
         Ok(None) => return,
@@ -64,7 +72,7 @@ pub fn run_line(line: &str) {
         shell_err("pipes are not supported yet");
         return;
     }
-    run_segment(&pipeline[0]);
+    run_segment(&pipeline[0], depth);
 }
 
 /// Runs one segment: opens its redirections in order -- left to right, each already in effect for
@@ -74,7 +82,7 @@ pub fn run_line(line: &str) {
 /// why the error message for that failure (and any launch error) is itself subject to whichever
 /// redirects already succeeded -- `cmd 2> e < missing` reports the missing-file error into `e`, not
 /// the console. Shell-opened handles are closed once the scope ends, committing anything written.
-fn run_segment(segment: &Segment) {
+fn run_segment(segment: &Segment, depth: usize) {
     let mut opened = Vec::new();
     shell_state::frames().with_stdio([None, None, None], |frames| {
         for redir in &segment.redirs {
@@ -82,7 +90,7 @@ fn run_segment(segment: &Segment) {
                 return; // shell_err already reported; the command does not run
             }
         }
-        run_command(&segment.argv);
+        run_command(&segment.argv, depth);
     });
     for handle in opened {
         files::close(handle);
@@ -138,20 +146,54 @@ fn open_redirect_target(path: &str, write: bool, append: bool) -> Result<usize, 
 /// Runs a segment's command -- once its redirections (if any) are already bound -- as a builtin or a
 /// program. Empty `argv` (a stage of only redirections, `> f`) runs nothing: POSIX still creates the
 /// file.
-fn run_command(argv: &[String]) {
+fn run_command(argv: &[String], depth: usize) {
     let Some(name) = argv.first() else {
         return;
     };
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     if builtins::is_builtin(name) {
-        if let Err(message) = builtins::run(name, &argv[1..]) {
+        if let Err(message) = builtins::run(name, &argv[1..], depth) {
             shell_err(&message);
         }
     } else {
         // SAFETY: as `run`'s doc comment says of the statics it uses.
         let vol = unsafe { static_ref!(VOL) };
-        launch(vol, &argv);
+        launch(vol, &argv, depth);
     }
+}
+
+/// How many scripts may be nested (a script's own line launching another script, and so on) before
+/// `run_script_content` refuses to go further -- protects the 1 MiB kernel stack from a script that
+/// (directly or indirectly) sources or runs itself. Deliberately not `FrameStack::depth`: that only
+/// grows for *scoped* nesting (`./script`, `sh script`), and `source`/`.` -- unscoped by design, so a
+/// sourced script's `cd` sticks -- never pushes a frame at all, so it would miss exactly the
+/// recursion (`source` sourcing itself) most likely to happen.
+const MAX_SCRIPT_DEPTH: usize = 16;
+
+/// Runs `content` (a script's lines) as if each were typed at the prompt: blank lines and `#`
+/// comments already do nothing and a failing line reports and the script continues, both already
+/// `run_line_inner`'s ordinary behavior for a bad or failing line, so nothing special is needed here
+/// beyond feeding it every line. `scoped` pushes a frame first (`./script`, `sh script`: what a real
+/// child shell process would isolate) so the script's own `cd`s and redirects don't leak past it;
+/// unscoped (`source`/`.`) runs against the current frame, so they do. The caller has already found
+/// and read the file (finding it works differently for each caller: `launch.rs`'s `./file` fallback
+/// already has the bytes it peeked at for the ELF-magic check; `source`/`sh`, in `builtins.rs`,
+/// resolve `path` against the working directory, unlike launching a program, and need no exec bit).
+pub(crate) fn run_script_content(content: &str, scoped: bool, depth: usize) -> Result<(), String> {
+    if depth >= MAX_SCRIPT_DEPTH {
+        return Err(String::from("too many levels of scripts"));
+    }
+    let run_lines = || {
+        for line in content.lines() {
+            run_line_inner(line, depth + 1);
+        }
+    };
+    if scoped {
+        shell_state::frames().with_scope(|_frames| run_lines());
+    } else {
+        run_lines();
+    }
+    Ok(())
 }
 
 /// Reports one line of text as this segment's stderr: wherever the current frame's `stdio[2]` points

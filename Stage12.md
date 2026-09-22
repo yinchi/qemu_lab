@@ -18,7 +18,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 6 | Working directory and the shell-state frame stack | done |
 | 7 | Lexer, `run_line`, bash wording | done |
 | 8 | Redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`) | done |
-| 9 | Scripts and scopes | -- |
+| 9 | Scripts and scopes | done |
 | 10 | `mkdir`, `rm -r`, `mv` | -- |
 | 11 | Pipes via temp files | -- |
 | 12 | Line editing and history | -- |
@@ -85,8 +85,8 @@ src/
 │   └── argplan.rs (P)   elfparse.rs (P)   usermem.rs (P)   frame_stack.rs (P)   shell_state.rs (the FRAMES static, cwd, chdir)   elf.rs (maps the window)   process.rs
 ├── syscall/           mod.rs: dispatch and the fault path
 │   └── fd.rs          the fd table
-└── shell/             mod.rs: PROMPT, start_prompt, run_line and run (the read-eval loop), shell_err (redirect-aware reporting)
-    └── launch.rs (find_program, launch)   lexer.rs (P)   syntax.rs (P: the parser)   builtins.rs (cd)
+└── shell/             mod.rs: PROMPT, start_prompt, run_line and run (the read-eval loop), shell_err (redirect-aware reporting), run_script_content
+    └── launch.rs (find_program, launch)   lexer.rs (P)   syntax.rs (P: the parser)   builtins.rs (cd, source/./sh)
 ```
 
 Cycles found and removed by the move: `fd` <-> `files` (the open-file limit now lives in `fs::files`, and `fd` sizes its
@@ -781,7 +781,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
   `mtools` check on `both.txt` and `listing.txt`. `cases/syntax.py` (Step 7) updated in place: its old
   "redirection is not supported yet" assertions now assert that redirection actually runs.
 
-### Step 9: scripts and scopes (`shell.rs`)
+### Step 9: scripts and scopes (`shell.rs`) (done)
 - `run_script(path, scoped)`: read the file, feed each line through `run_line` (recursion in the same interpreter,
   not a new process). `scoped` => `with_scope` (push_copy/pop) so `cd` and any redirect held by the script don't leak;
   unscoped runs against the current frame. A redirect on the invoking line (`./s.sh > out`, `source s.sh > out`) is
@@ -799,6 +799,59 @@ has a "first thing to unmask" hazard). This step removes that structure.
   `pwd` unchanged; `source cdbin.sh` moves it; nested scripts (inner `cd` doesn't leak outward; outer's doesn't leak
   past its pop); recursion depth cap error; script with a redirect `./s.sh > out` (scope-wide, shell-owned handle,
   file contains all lines' output) leaves the redirect gone after pop; missing/non-exec script errors.
+
+**As built.**
+- `shell/mod.rs` (no separate `shell.rs`): `run_line_inner(line, depth)` is the interpreter, `run_line(line)`
+  its depth-0 entry point for the prompt. `run_script_content(content, scoped, depth)` is the whole of "a script":
+  feed every line back through `run_line_inner(line, depth + 1)`, `with_scope`-wrapped if `scoped`. Blank lines,
+  `#` comments and a failing line needed no special handling at all -- `run_line_inner` (via `syntax::parse`)
+  already treats the first two as no-ops and the third as "report via `shell_err` and return", so a script that
+  is just "every line, in order, through the same interpreter the prompt uses" gets both behaviors for free.
+  `MAX_SCRIPT_DEPTH = 16`, checked once at the top of `run_script_content`: a **plain counter threaded as a
+  parameter**, deliberately not `FrameStack::depth` (which the plan's Step 6 text had reserved for this) --
+  `depth` only grows for *scoped* nesting, and `source`/`.` (unscoped by design, so their `cd` sticks) never
+  push a frame at all, so `FrameStack::depth` would miss exactly the recursion (`source` sourcing itself) most
+  likely to actually happen. `FrameStack::depth`'s doc comment now says so and it stays unused outside its own
+  tests -- not removed, since it's still a coherent, harmless part of the type alongside `push_copy`/`pop`.
+- **Invocation, three forms, one interpreter.** `source`/`.` and `sh` are builtins (`builtins.rs`): `is_builtin`
+  now matches all four names, and `run(name, args, depth)` (gained the `depth` parameter) dispatches to a new
+  `run_script_file(cmd, path, scoped, depth)` for the three of them, which resolves `path` against the working
+  directory (`shell_state::absolute`, exactly like a redirect target -- no `/bin` search, and unlike
+  `launch`'s `find_program`, no exec-bit check) and reads it, then hands the content to `run_script_content`.
+  `./FILE` is not a builtin at all -- it is `launch.rs`'s existing exec-bit-checked, ELF-loading path, extended:
+  once the exec bit and size are checked and the file is read, `launch` now checks for ELF magic *before*
+  handing the bytes to `process::run_program`; if magic is missing, `run_as_script_fallback` decides between
+  "binary garbage" (a NUL in the first `SCRIPT_PROBE_LEN` = 128 bytes -- `cannot execute binary file: Exec
+  format error`) and "looks like a script" (`run_script_content(content, true, depth)`, scoped, same as `sh`).
+  A malformed-but-ELF-shaped file (the existing `MALFORMED_ELFS` fixtures: real magic, broken further in)
+  never reaches this fallback at all -- magic is present, so it goes to `process::run_program` exactly as
+  before Step 9, keeping the older, plainer `cannot execute: Exec format error` wording for that case.
+  Extra arguments are rejected identically on all three forms (`source f x` / `sh f x` / `./f x`), each with
+  its own wording (`"{cmd}: too many arguments"` for the builtins, `"{name}: too many arguments"` for `./`) --
+  there being no positional parameters is the same fact everywhere, so the check is the same shape everywhere.
+- **A real consequence for an existing test, anticipated by Step 1's own text but not caught until now:**
+  `test/cases/launch.py`'s `NOT_PROGRAMS` included `tests/notes.txt` (plain text, no ELF magic) expecting
+  `cannot execute: Exec format error` -- exactly the Step-1-era behavior Step 9's `ENOEXEC` fallback replaces.
+  Given the exec bit, `notes.txt` is now run as a (harmless, garbled -- its prose isn't shell syntax) script
+  instead of refused. Fixed by narrowing `NOT_PROGRAMS` to `tests/data.bin` (genuine binary, still refused,
+  now with the more specific "binary file" wording) and leaving the text-fallback behavior itself to
+  `scripts.py`'s own purpose-built fixtures, rather than asserting `notes.txt`'s exact (accidental, prose-
+  dependent) transcript here.
+- **Fixtures (`disk/tests/`, plain checked-in text, matching `notes.txt`/`hello.txt`'s own convention):**
+  `cdbin.sh` (`cd /bin`); `outer.sh`/`inner.sh` (nesting: outer `cd /fonts`, runs `/tests/inner.sh` by absolute
+  path so it doesn't depend on the invoking working directory, `pwd`; inner `cd /bin`, `pwd`); `redir.sh` (two
+  `echo`s, for the scope-wide-redirect test); `bad.sh` (a `#!/bin/sh` line, a good `echo`, a failing command, a
+  second `echo`, to prove both "`#!` is a comment" and "a failing line doesn't stop the script" in one fixture);
+  `recur.sh` (one line, `source /tests/recur.sh`, for the depth cap -- unscoped so `FrameStack::depth` genuinely
+  cannot see it, confirming the separate-counter decision above was load-bearing, not just defensive).
+- **Tests:** `cases/scripts.py` (new) -- missing/non-executable scripts on all three invocation forms (`source`/
+  `.`/`sh` need no exec bit and report their own "not found"; `./` does need it, `Permission denied`, the
+  ordinary launch check, not script-specific); `./cdbin.sh` scoped (cwd unaffected) vs `source`/`.` unscoped
+  (cwd moves and stays moved); `sh` scoped without the exec bit; extra arguments refused on all three, cwd
+  unaffected; nested `./outer.sh` (inner's `cd` doesn't leak out, outer's doesn't leak past its own pop);
+  `./redir.sh > out.txt` captures both lines, and the redirect is gone (back to the console) immediately after;
+  `./bad.sh` runs its good lines around the failing one; `source recur.sh` stops cleanly at the depth cap (no
+  hang, no fault) and the shell is still alive afterward. `cases/launch.py` updated in place (see above).
 
 ### Step 10: `mkdir`, `rm`, `mv` (`files.rs`, `syscall.rs`, `abi`, `userlib`, `progs_r12`)
 - Syscalls over `hadris-fat`'s `create_dir`/`delete`/`rename` (first confirm exact APIs and their limits, e.g. delete of

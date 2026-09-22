@@ -37,15 +37,31 @@ fn find_program(name: &str) -> Result<FileEntry, &'static str> {
     }
 }
 
+/// The four bytes every ELF file starts with.
+const ELF_MAGIC: &[u8] = b"\x7fELF";
+
+/// How many leading bytes decide whether a non-ELF, exec-bit file is "binary" or "looks like a
+/// script" -- bash's own `ENOEXEC` fallback heuristic (a NUL anywhere in that prefix means binary).
+const SCRIPT_PROBE_LEN: usize = 128;
+
 /// Runs the program `argv[0]` names -- see `find_program` -- with `argv` as its whole argument
-/// list. Reports (in bash's wording) if:
+/// list. `depth` is `run_line`'s script-nesting count, passed to `run_script_content` if `argv[0]`
+/// turns out to be a script rather than a program (see below). Reports (in bash's wording) if:
 ///
 /// - The program is not found (`command not found`).
 /// - The program is a directory.
 /// - The program is not marked as executable (`Permission denied`).
 /// - The program is too large to be executed, or fails to load (`cannot execute: Exec format error`).
 /// - The program exits with a nonzero status (`exit N`, standing in for `$?`).
-pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str]) {
+///
+/// An exec-bit file with no ELF magic is bash's `ENOEXEC` fallback, not an error: if its first
+/// `SCRIPT_PROBE_LEN` bytes contain no NUL it "looks like" a script and is run as one, scoped like a
+/// real child shell process (`./script` -- unlike `sh script`/`source script`, in `builtins.rs`, this
+/// path already has the exec bit checked, so nothing further is needed there); genuine binary garbage
+/// still reports `cannot execute binary file: Exec format error`. A script has no positional
+/// parameters (there are no variables yet), so extra arguments are rejected the same way `sh` rejects
+/// them, not silently ignored.
+pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) {
     let name = argv[0];
     let prog_entry = match find_program(name) {
         Ok(entry) => entry,
@@ -71,14 +87,19 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str]) {
         return;
     }
 
-    let elf_bytes = match read_file_checked(vol, &prog_entry) {
+    let file_bytes = match read_file_checked(vol, &prog_entry) {
         Ok(bytes) => bytes,
         Err(e) => {
             shell_err(&alloc::format!("{name}: {}", errmsg(e)));
             return;
         }
     };
-    match process::run_program(&elf_bytes, argv) {
+
+    if !file_bytes.starts_with(ELF_MAGIC) {
+        run_as_script_fallback(name, &file_bytes, argv, depth);
+        return;
+    }
+    match process::run_program(&file_bytes, argv) {
         Ok(0) => {}
         Ok(code) => shell_err(&alloc::format!("exit {code}")),
         Err(e) if e.errno() == E2BIG => shell_err(&alloc::format!("{name}: {}", errmsg(E2BIG))),
@@ -86,5 +107,31 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str]) {
             "{name}: cannot execute: {}",
             errmsg(e.errno())
         )),
+    }
+}
+
+/// `launch`'s `ENOEXEC` fallback: `file_bytes` has already been read and found to lack ELF magic.
+fn run_as_script_fallback(name: &str, file_bytes: &[u8], argv: &[&str], depth: usize) {
+    let probe_len = file_bytes.len().min(SCRIPT_PROBE_LEN);
+    if file_bytes[..probe_len].contains(&0) {
+        shell_err(&alloc::format!(
+            "{name}: cannot execute binary file: {}",
+            errmsg(ENOEXEC)
+        ));
+        return;
+    }
+    if argv.len() > 1 {
+        shell_err(&alloc::format!("{name}: too many arguments"));
+        return;
+    }
+    let content = match core::str::from_utf8(file_bytes) {
+        Ok(content) => content,
+        Err(_) => {
+            shell_err(&alloc::format!("{name}: not valid UTF-8"));
+            return;
+        }
+    };
+    if let Err(e) = crate::shell::run_script_content(content, true, depth) {
+        shell_err(&alloc::format!("{name}: {e}"));
     }
 }
