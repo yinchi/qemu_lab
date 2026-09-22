@@ -9,6 +9,10 @@
 /// Reserved, not implemented: `chdir`. Its number is held here so a later stage adding it (once the
 /// working directory is per-process state -- see `Stage12.md`) doesn't have to pick one.
 pub const SYS_CHDIR: usize = 49;
+/// `getcwd(buf, len)`: copies the working directory's absolute path (no terminating NUL) into `buf` and
+/// returns its length, or `ERANGE` if `buf` is too small. (Not Linux's convention, which also writes a
+/// NUL and returns the length including it; the number is Linux's.)
+pub const SYS_GETCWD: usize = 17;
 pub const SYS_CHMOD: usize = 53;
 pub const SYS_OPEN: usize = 56;
 pub const SYS_CLOSE: usize = 57;
@@ -43,5 +47,10 @@ mod tests {
     #[test]
     fn ioctl_is_linuxs_number() {
         assert_eq!(SYS_IOCTL, 29);
+    }
+
+    #[test]
+    fn getcwd_is_linuxs_number() {
+        assert_eq!(SYS_GETCWD, 17);
     }
 }

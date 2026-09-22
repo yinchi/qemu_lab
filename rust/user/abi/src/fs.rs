@@ -14,6 +14,8 @@ pub const O_WRONLY: usize = 1;
 
 /// Longest name a directory record can carry (FAT's long-filename limit).
 pub const NAME_MAX: usize = 255;
+/// The longest path, in bytes, that `open`, `chmod` and `getcwd` deal with.
+pub const PATH_MAX: usize = 4096;
 /// Size of one record `getdents` fills in: `size: u32` (little-endian), `attrs: u8`, `name_len: u8`,
 /// then `NAME_MAX` bytes of name, NUL-padded.
 pub const DIRENT_SIZE: usize = 4 + 1 + 1 + NAME_MAX;

@@ -1,5 +1,5 @@
 //! Everything a program does with a file descriptor or a path: `read`, `write`, `open`, `close`,
-//! `getdents` (and decoding what it returns), `chmod` and `ioctl`. Each is a thin wrapper over one syscall
+//! `getdents` (and decoding what it returns), `chmod`, `getcwd` and `ioctl`. Each is a thin wrapper over one syscall
 //! (see `syscall.rs`); the errors they return are negated errno values (`abi::errno`).
 //!
 //! The one addition is a small stdout buffer (`write_stdout`, `flush_stdout`): a `write!` makes one
@@ -8,7 +8,7 @@
 //! flushing it first (see `write`).
 
 use abi::syscall::{
-    SYS_CHMOD, SYS_CLOSE, SYS_GETDENTS, SYS_IOCTL, SYS_OPEN, SYS_READ, SYS_WRITE,
+    SYS_CHMOD, SYS_CLOSE, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_OPEN, SYS_READ, SYS_WRITE,
 };
 
 // `O_*` flags, directory-record layout and attribute bits: the definitions live in the shared `abi`
@@ -16,7 +16,7 @@ use abi::syscall::{
 // `userlib::O_RDONLY`, `userlib::ATTR_EXEC`, ... exactly as before.
 pub use abi::ioctl::CONSOLE_CLEAR;
 pub use abi::fs::{
-    ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, NAME_MAX, O_RDONLY, O_WRONLY,
+    ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, NAME_MAX, O_RDONLY, O_WRONLY, PATH_MAX,
 };
 
 /// Writes `buf` to the file descriptor `fd`. Returns the number of bytes
@@ -154,4 +154,10 @@ pub fn chmod(path: &str, set: u8, clear: u8) -> isize {
 /// error: `ENOTTY` if `fd` doesn't understand the request, `EBADF` if it isn't open.
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> isize {
     syscall!(SYS_IOCTL, fd, request, arg)
+}
+
+/// Copies the working directory's absolute path (no terminating NUL) into `buf`. Returns its length, or a
+/// negative error: `ERANGE` if `buf` is too small.
+pub fn getcwd(buf: &mut [u8]) -> isize {
+    syscall!(SYS_GETCWD, buf.as_mut_ptr() as usize, buf.len())
 }

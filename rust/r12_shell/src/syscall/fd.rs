@@ -11,13 +11,15 @@
 use crate::console::utf8::Utf8Decoder;
 use crate::console::{BG, FG};
 use crate::exec::elf;
+use crate::exec::frame_stack::StdioBinding;
+use crate::exec::shell_state;
 use crate::fs::files;
 use crate::keyboard::stdin;
 use crate::platform::base_addresses::{USER_BASE, USER_SIZE};
 use crate::platform::globals::{CONSOLE, GPU};
 use crate::platform::uart::{uart_clear_screen, uart_write};
 use crate::static_mut_ref;
-use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY};
+use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY, ERANGE};
 use abi::fs::{O_RDONLY, O_WRONLY};
 use abi::ioctl::CONSOLE_CLEAR;
 
@@ -51,9 +53,14 @@ pub fn reset_for_launch() {
     stdin::reset();
     let table = table();
     *table = [None; MAX_FDS];
-    table[0] = Some(FileDescriptor::Keyboard);
-    table[1] = Some(FileDescriptor::Console);
-    table[2] = Some(FileDescriptor::Console);
+    // Each standard stream is whatever the shell's current frame binds it to.
+    for (n, slot) in table.iter_mut().take(3).enumerate() {
+        *slot = Some(match (shell_state::stdio(n), n) {
+            (StdioBinding::File(handle), _) => FileDescriptor::File(handle),
+            (StdioBinding::Default, 0) => FileDescriptor::Keyboard,
+            (StdioBinding::Default, _) => FileDescriptor::Console,
+        });
+    }
 }
 
 /// Closes whatever the program that just ended left open, which finishes any file it was still
@@ -236,7 +243,7 @@ pub fn read(fd: usize, ptr: usize, len: usize) -> isize {
 /// number (never one of the standard three) or a negative error.
 pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
     let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
-    let path = match user_path(ptr, len) {
+    let path = match user_path(ptr, len).and_then(shell_state::absolute) {
         Ok(path) => path,
         Err(e) => return e,
     };
@@ -254,7 +261,7 @@ pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
     else {
         return EMFILE;
     };
-    match files::open(path, write) {
+    match files::open(&path, write) {
         Ok(handle) => {
             table[fd] = Some(FileDescriptor::File(handle));
             fd as isize
@@ -280,6 +287,23 @@ pub fn ioctl(fd: usize, request: usize, _arg: usize) -> isize {
         }
         _ => ENOTTY,
     }
+}
+
+/// Copies the working directory's absolute path into the user buffer `ptr`/`len` (no terminating NUL) and
+/// returns its length; `ERANGE` if the buffer is too small, `EFAULT` if it is not writable user memory.
+pub fn getcwd(ptr: usize, len: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // writes a user buffer: clear PAN while it does
+    let cwd = shell_state::cwd();
+    if cwd.len() > len {
+        return ERANGE;
+    }
+    if !validate(ptr, len, true) {
+        return EFAULT;
+    }
+    // SAFETY: validated above to lie entirely within writable user memory.
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, cwd.len()) };
+    buf.copy_from_slice(cwd.as_bytes());
+    cwd.len() as isize
 }
 
 /// Closes `fd`. Closing a standard fd is allowed (it just leaves that slot empty).
@@ -312,12 +336,12 @@ pub fn getdents(fd: usize, ptr: usize, len: usize) -> isize {
 /// `files::chmod` for which bits are allowed.
 pub fn chmod(ptr: usize, len: usize, set: usize, clear: usize) -> isize {
     let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
-    let path = match user_path(ptr, len) {
+    let path = match user_path(ptr, len).and_then(shell_state::absolute) {
         Ok(path) => path,
         Err(e) => return e,
     };
     let (Ok(set), Ok(clear)) = (u8::try_from(set), u8::try_from(clear)) else {
         return EINVAL;
     };
-    files::chmod(path, set, clear)
+    files::chmod(&path, set, clear)
 }

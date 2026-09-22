@@ -4,6 +4,7 @@
 
 pub mod blkio;
 pub mod files;
+pub mod path;
 
 use abi::errno::EIO;
 use hadris_fat::sync::{DirectoryEntry, FatDir, FatVolume, FatVolumeReadExt, FileEntry};

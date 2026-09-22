@@ -58,7 +58,7 @@ def run(ctx):
 
     # --- syscall error values ---
     check("probe without a subcommand", s.run("tests/probe.exe"),
-          "tests/probe.exe\nusage: probe sys-unknown|bad-ptr|fds|args|exit|poke|poke-w|user-ptrs|ioctl|sp|stack|frag|frag-raw|bs-wide|interleave ...\nexit 2\n")
+          "tests/probe.exe\nusage: probe sys-unknown|bad-ptr|fds|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...\nexit 2\n")
     check("unknown syscall is ENOSYS", s.run("tests/probe.exe sys-unknown"),
           "tests/probe.exe sys-unknown\nunknown syscall: -38\n")
     check("ioctl on a closed fd is EBADF", s.run("tests/probe.exe ioctl 3 1"),

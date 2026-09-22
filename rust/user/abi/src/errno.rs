@@ -30,6 +30,8 @@ pub const EMFILE: isize = -24;
 pub const ENOTTY: isize = -25;
 /// No space left on device.
 pub const ENOSPC: isize = -28;
+/// Numerical result out of range -- here: the buffer is too small for the result.
+pub const ERANGE: isize = -34;
 /// File name too long.
 pub const ENAMETOOLONG: isize = -36;
 /// Function not implemented.
@@ -54,6 +56,7 @@ pub fn errmsg(code: isize) -> &'static str {
         EMFILE => "Too many open files",
         ENOTTY => "Inappropriate ioctl for device",
         ENOSPC => "No space left on device",
+        ERANGE => "Numerical result out of range",
         ENAMETOOLONG => "File name too long",
         ENOSYS => "Function not implemented",
         ENOTEMPTY => "Directory not empty",
@@ -78,8 +81,8 @@ mod tests {
     #[test]
     fn new_values_are_linux_numbers() {
         assert_eq!(
-            [E2BIG, ENOEXEC, EFAULT, EEXIST, ENOTTY, ENOSPC, ENAMETOOLONG, ENOSYS, ENOTEMPTY],
-            [-7, -8, -14, -17, -25, -28, -36, -38, -39]
+            [E2BIG, ENOEXEC, EFAULT, EEXIST, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY],
+            [-7, -8, -14, -17, -25, -28, -34, -36, -38, -39]
         );
     }
 
@@ -87,7 +90,7 @@ mod tests {
     fn every_error_has_a_message() {
         for code in [
             ENOENT, EIO, E2BIG, ENOEXEC, EBADF, EACCES, EFAULT, EEXIST, ENOTDIR, EISDIR, EINVAL,
-            EMFILE, ENOTTY, ENOSPC, ENAMETOOLONG, ENOSYS, ENOTEMPTY,
+            EMFILE, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY,
         ] {
             assert_ne!(errmsg(code), "Unknown error", "{code}");
         }

@@ -22,3 +22,7 @@ pub mod usermem;
 pub mod input_layout;
 #[path = "../../src/keyboard/ring_buffer.rs"]
 pub mod ring_buffer;
+#[path = "../../src/fs/path.rs"]
+pub mod path;
+#[path = "../../src/exec/frame_stack.rs"]
+pub mod frame_stack;

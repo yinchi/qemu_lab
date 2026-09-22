@@ -15,6 +15,8 @@
 //!                      each must be refused (-14), none may fault the kernel
 //!   probe ioctl FD REQ  the `ioctl` syscall on FD with request REQ, no argument -- for the errors
 //!                      (0 is the keyboard, 3 is not open, 1 is the console, whose CLEAR would clear the screen)
+//!   probe getcwd N     the `getcwd` syscall with an N-byte buffer (N <= 4096): prints its return value and,
+//!                      if it succeeded, the path
 //!   probe sp            prints the stack pointer `main` runs with
 //!   probe stack KIB     legitimately uses KIB KiB of stack (recursion, one KiB per frame) and prints a checksum
 //!   probe bs-wide       a wide glyph, backspace, then `X`: `X` must land on the glyph's left cell
@@ -126,6 +128,20 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
                 _ => usage_exit("probe ioctl FD REQUEST"),
             }
         }
+        Some("getcwd") => match args.next().and_then(progs::atoi) {
+            Some(n) if n <= 4096 => {
+                let mut buf = [0u8; 4096];
+                let len = userlib::getcwd(&mut buf[..n]);
+                if len >= 0 {
+                    let path = core::str::from_utf8(&buf[..len as usize]).unwrap_or("?");
+                    let _ = writeln!(out, "getcwd({n}): {len} {path}");
+                } else {
+                    let _ = writeln!(out, "getcwd({n}): {len}");
+                }
+                0
+            }
+            _ => usage_exit("probe getcwd N (N <= 4096)"),
+        },
         Some("sp") => {
             let sp: usize;
             // SAFETY: reads a register.
@@ -158,7 +174,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit|poke|poke-w|user-ptrs|ioctl|sp|stack|frag|frag-raw|bs-wide|interleave ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
             2
         }
     }

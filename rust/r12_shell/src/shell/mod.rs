@@ -10,6 +10,7 @@
 //! fresh one is drawn, is shell policy.
 
 pub mod argv;
+pub mod builtins;
 pub mod launch;
 
 use crate::console::Console;
@@ -66,6 +67,13 @@ pub fn run() -> ! {
                 LineOutcome::Edited => needs_flush = true,
                 LineOutcome::Finished(text) => {
                     match Argv::parse(&text) {
+                        Ok(argv) if builtins::is_builtin(argv.program()) => {
+                            if let Err(message) =
+                                builtins::run(argv.program(), &argv.as_argv()[1..])
+                            {
+                                report(console, &message);
+                            }
+                        }
                         Ok(argv) => {
                             // SAFETY: see this function's doc comment.
                             let vol = unsafe { static_ref!(VOL) };

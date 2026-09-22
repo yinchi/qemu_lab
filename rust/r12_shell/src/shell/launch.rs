@@ -9,7 +9,7 @@ use hadris_fat::sync::{FatVolume, FileEntry};
 use super::argv::Argv;
 use crate::HEAP_SIZE;
 use crate::console::{BG, Console, FG};
-use crate::exec::process;
+use crate::exec::{process, shell_state};
 use crate::fs::blkio::BlkIo;
 use crate::fs::{files, read_file_checked};
 use crate::platform::uart::{uart_ensure_newline, uart_write};
@@ -18,24 +18,22 @@ use crate::platform::uart::{uart_ensure_newline, uart_write};
 /// executable rather than risking an allocation failure (which would panic the kernel).
 const MAX_PROGRAM_SIZE: usize = HEAP_SIZE / 2;
 
-/// Finds the file a command word names. A word containing `/` is a path, used as typed.
-///
-/// QUIRK, resolved by `Stage12.md`'s Step 6: there is no working directory yet, so every path is
-/// resolved from the root of the disk -- `tests/probe.exe` and `/tests/probe.exe` are the same file,
-/// and a leading `./` or any `.`/`..` component matches nothing. Once `cd` exists, a path without a
-/// leading `/` resolves against the working directory instead. A bare name is looked up in
-/// `bin/` (nowhere else -- no `PATH`-style search), trying the bare name first and then `name.exe`,
-/// Cygwin's own lookup order, so `cat` finds `bin/cat.exe` without the `.exe` ever being typed.
-/// `Err` carries the text to report after `name: `.
+/// Finds the file a command word names. A word containing `/` is a path, relative to the working
+/// directory unless it starts with `/`. A bare name is looked up in `/bin` (nowhere else -- no
+/// `PATH`-style search, and independent of the working directory), trying the bare name first and
+/// then `name.exe`, Cygwin's own lookup order, so `cat` finds `bin/cat.exe` without the `.exe` ever
+/// being typed. `Err` carries the text to report after `name: `.
 fn find_program(name: &str) -> Result<FileEntry, &'static str> {
     if name.contains('/') {
-        return files::lookup(name).map_err(errmsg);
+        return shell_state::absolute(name)
+            .and_then(|path| files::lookup(&path))
+            .map_err(errmsg);
     }
-    match files::lookup(&alloc::format!("bin/{name}")) {
+    match files::lookup(&alloc::format!("/bin/{name}")) {
         Err(ENOENT | ENOTDIR) => {}
         found => return found.map_err(errmsg),
     }
-    match files::lookup(&alloc::format!("bin/{name}.exe")) {
+    match files::lookup(&alloc::format!("/bin/{name}.exe")) {
         Err(ENOENT | ENOTDIR) => Err("not found"),
         found => found.map_err(errmsg),
     }

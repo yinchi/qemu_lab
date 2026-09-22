@@ -34,6 +34,7 @@ use crate::arch::{
 };
 use crate::console::{BG, Console};
 use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
+use crate::exec::{frame_stack::FrameStack, shell_state::FRAMES};
 use crate::fs::{
     blkio::{BlkIo, VOL},
     find_entry_checked,
@@ -201,6 +202,7 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
         KEY_STATE = Some(init_keys);
         LOCK_STATE = Some(init_locks);
         LINE_DISCIPLINE = Some(line_discipline);
+        FRAMES = Some(FrameStack::new());
         VOL = Some(vol);
     }
     KEYBOARD_SPI.store(kb_spi, Ordering::Relaxed);

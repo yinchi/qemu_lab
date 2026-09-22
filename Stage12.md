@@ -15,7 +15,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 4b | Wrapped input: replace the sliding window | done |
 | 4c | `clear`: an `ioctl` syscall, and program tiers | done |
 | 5 | Eval loop out of IRQ context (token queue) | done |
-| 6 | Working directory and the shell-state frame stack | -- |
+| 6 | Working directory and the shell-state frame stack | done |
 | 7 | Lexer, `run_line`, bash wording | -- |
 | 8 | Redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`) | -- |
 | 9 | Scripts and scopes | -- |
@@ -76,17 +76,17 @@ src/
 │   └── virtio/        mod.rs: find_mmio_transport (shared slot probing)
 │       └── hal.rs (was virtio_hal.rs)   blk.rs   gpu.rs (returns a FramebufferInfo)   input.rs (was keyboard.rs: raw events)
 ├── fs/                mod.rs: find_entry_checked, read_file_checked
-│   └── blkio.rs (was fat_io.rs; also the VOL static)   files.rs (open-file table, lookup, resolve; owns MAX_OPEN_FILES)
+│   └── blkio.rs (was fat_io.rs; also the VOL static)   files.rs (open-file table, lookup, resolve; owns MAX_OPEN_FILES)   path.rs (P: abspath)
 ├── console/           mod.rs: Console, FG/BG
 │   └── framebuffer.rs (the Framebuffer struct, out of console.rs)   font.rs (glyph_for, widths)   cells.rs (P)   utf8.rs (P)   input_layout.rs (P)
 ├── keyboard/          mod.rs
 │   └── keymap.rs   tokens.rs   events.rs (was input.rs)   line.rs (LineBuffer, plus the LINE/INPUT_ROW statics)   stdin.rs
 ├── exec/              mod.rs
-│   └── argplan.rs (P)   elfparse.rs (P)   usermem.rs (P)   elf.rs (maps the window)   process.rs
+│   └── argplan.rs (P)   elfparse.rs (P)   usermem.rs (P)   frame_stack.rs (P)   shell_state.rs (the FRAMES static, cwd, chdir)   elf.rs (maps the window)   process.rs
 ├── syscall/           mod.rs: dispatch and the fault path
 │   └── fd.rs          the fd table
-└── shell/             mod.rs: PROMPT and handle_keyboard_irq (the loop, for now)
-    └── launch.rs (find_program, launch, report)   argv.rs
+└── shell/             mod.rs: PROMPT, start_prompt and run (the read-eval loop)
+    └── launch.rs (find_program, launch, report)   argv.rs   builtins.rs (cd)
 ```
 
 Cycles found and removed by the move: `fd` <-> `files` (the open-file limit now lives in `fs::files`, and `fd` sizes its
@@ -551,7 +551,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
 
 ## Phase 2: the shell
 
-### Step 6: working directory and the shell-state frame stack (`shell_state.rs`, `files.rs`, `fd.rs`)
+### Step 6: working directory and the shell-state frame stack (`shell_state.rs`, `files.rs`, `fd.rs`) (done)
 - `struct ShellFrame { cwd: String, stdio: [StdioBinding; 3] }`, `enum StdioBinding { Default, File(handle) }`;
   `static mut FRAMES: Vec<ShellFrame>` never empty; `push_copy()`, `pop()`, `top()`, `top_mut()`. A comment marks
   where Stage 16 adds `env`. **Two distinct scoping operations (not one):**
@@ -592,6 +592,31 @@ has a "first thing to unmask" hazard). This step removes that structure.
   `abi` with a comment, and the ROADMAP prerequisite table lists it as arriving with per-process state.
 - **Tests:** `cd /bin`+`pwd`; relative `ls`/`cat` after `cd`; `cd ..` at root; `cd` to a file / missing dir errors and
   leaves cwd unchanged; `cd` with `.`/`..` mixes; `chmod` and `open` honor cwd.
+
+**As built.**
+- **Where things live.** The frame stack is in `exec/`, not `shell/` as the plan's file name suggested: `syscall/` reads it (the working directory for every
+  relative path a program opens, the stream bindings for each launch) and `shell/` changes it, and the layering only lets a module use ones below its own.
+  `exec/frame_stack.rs` (pure, 8 host tests): `ShellFrame { cwd, stdio }`, `StdioBinding { Default, File(handle) }`, `FrameStack` with `top`/`top_mut`,
+  `push_copy`/`pop` (the base frame is never popped), and the two scoping operations, `with_scope` (the whole frame is discarded afterwards) and `with_stdio`
+  (only the stream bindings are restored, so a `cd` inside a redirect sticks). Both take a closure over the stack, so early returns unwind correctly. `exec/shell_state.rs`:
+  the `FRAMES` static, `cwd()`, `absolute(path)`, `chdir(path)` and `stdio(n)`. There is one stack, not one per program.
+- **Paths.** `fs/path.rs` (pure, 9 host tests): `abspath(cwd, path)`, exactly as planned -- lexical, `..` at the root stays at the root, `.` and empty components vanish,
+  a trailing `/` is ignored, an empty path is `ENOENT`, a component over `NAME_MAX` or a path over `PATH_MAX` (4096, now in `abi::fs`) is `ENAMETOOLONG`.
+  `files.rs` now takes only absolute paths and `syscall/fd.rs`'s `open`/`chmod` (and `launch`) resolve against the working directory first; `files::check_directory`
+  is what `cd` validates with. A bare command name still looks in `/bin`, whatever the working directory. Step 1's root-relative quirk is gone.
+- **`getcwd`.** `SYS_GETCWD = 17`; copies the path without a NUL and returns its length, `ERANGE` (new, -34, "Numerical result out of range") if the buffer is too small.
+  `userlib::getcwd`. There is still no `chdir` syscall (its number stays reserved), for the reason in the plan.
+- **`cd`** is `shell/builtins.rs` (`is_builtin`, `run`), dispatched in `shell::run` before `launch`; Step 7's `run_line` will take it over. With no operand it goes to `/`;
+  `cd -`, `-L`, `-P` and other options, and more than one operand, are refused with a one-line error; errors leave the directory alone. The `pwd` program and an `ls` that lists
+  the working directory when given no operand live in `user/progs_r12` (the base tier's `ls` defaults to `/` and r09-r11 still use it -- the first use of the tiers'
+  override rule, in a full copy of `ls.rs` with one line changed).
+- **Deviations from the plan.** `shell_err` and the handle-ownership marking in `files::close_all` are not built: both exist for redirected streams, which arrive in Step 8;
+  `cd`'s errors use `report`, which is what `shell_err` reduces to with default streams. `fd::reset_for_launch` does read each stream from the top frame's binding. The parts of the
+  frame API only Steps 8-9 call (`with_stdio`, `with_scope`, `push_copy`, `pop`, `depth`, `StdioBinding::File`) are host-tested but carry an explicit `allow(dead_code)`, as
+  `tokens.rs` does. The `docs/progs.md` rows for `pwd` and the changed `ls` are left for Step 13, as for `clear`.
+- **Tests:** `cases/step06_cwd.py` (about 50 checks) -- `pwd` at the root; `cd` with `..`, `.`, `/bin/../fonts`, `--`, no operand, at the root; every error (missing, a file, through a file, two operands, `-`, `-L`,
+  `-x`, a 256-byte name) leaving the directory unchanged; from `/tests`: `cat` and `cp` with relative paths and `..`, `chmod` relative, `./probe.exe` and `../tests/probe.exe` launched by
+  path while a bare `probe.exe` is not found; `getcwd` with room, exactly enough, too little and nothing (`probe getcwd N`); `pwd -L`, `pwd -x`, `pwd a`. `core_utils`'s `bin` listing gained `pwd`.
 
 ### Step 7: command-line lexer and `run_line` (`argv.rs` -> `lexer.rs`/`shell.rs`)
 - `shlex::split` loses quoting info (`echo "|"` would look like a pipe, `a>b` stays one word). Replace with a small

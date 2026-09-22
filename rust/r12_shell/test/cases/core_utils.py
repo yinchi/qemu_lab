@@ -11,7 +11,7 @@ import subprocess
 
 from harness import CTRL_D, BACKSPACE, dir_attr, mcopy_out, text_bands
 
-BINARIES = "cat chmod clear cp crash echo false head hello hexdump ls tail true wc".split()
+BINARIES = "cat chmod clear cp crash echo false head hello hexdump ls pwd tail true wc".split()
 
 
 def run(ctx):

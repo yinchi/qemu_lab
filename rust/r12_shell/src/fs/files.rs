@@ -2,10 +2,10 @@
 //! `write`: turns a path from a user program into an open file on Stage 8's FAT filesystem.
 //! `syscall/fd.rs` owns the small fd numbers a program sees; this module owns what they refer to.
 //!
-//! Paths are absolute or root-relative -- `bin/cat.exe` and `/bin/cat.exe` mean the same thing,
-//! since there is no working directory until Stage 12's shell introduces one. Components are
-//! matched exactly (case-sensitively, same as `find_entry_checked`); `.`/`..` aren't special, so they
-//! simply fail to match anything.
+//! The paths this module takes are absolute and normalized (`fs::path::abspath` produces them from what a
+//! user typed and the working directory): `/`, or `/` and components. Components are matched exactly
+//! (case-sensitively, same as `find_entry_checked`); `.`/`..` never appear, having been resolved
+//! lexically already.
 //!
 //! Writes are deliberately narrow, matching what `cp` needs: opening for write creates the file
 //! if it's missing and always starts from offset 0, and `hadris-fat`'s `FileWriter` truncates
@@ -94,7 +94,13 @@ fn resolve(dirs: &[&str]) -> Result<Dir, isize> {
     Ok(dir)
 }
 
-/// Finds the file or directory entry at `path` (absolute or root-relative), without opening it --
+/// Whether `path` names a directory that exists: `Ok(())`, or `ENOENT`/`ENOTDIR`/`EIO`. The root is one.
+/// What `cd` checks before it moves.
+pub fn check_directory(path: &str) -> Result<(), isize> {
+    resolve(&components(path)).map(|_| ())
+}
+
+/// Finds the file or directory entry at `path`, without opening it --
 /// what the launcher uses to locate a program. `EISDIR` for the root itself, which has no entry.
 pub fn lookup(path: &str) -> Result<hadris_fat::sync::FileEntry, isize> {
     let comps = components(path);
