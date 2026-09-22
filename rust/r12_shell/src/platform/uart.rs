@@ -104,6 +104,21 @@ impl Uart {
 /// Whether the UART is at the start of a line, so `uart_ensure_newline` knows if it owes one.
 static UART_AT_LINE_START: AtomicBool = AtomicBool::new(true);
 
+/// The current value of `UART_AT_LINE_START` -- for `testhooks::report_and_reset` (`syscall/fd.rs`)
+/// to save before its own diagnostic line and restore after: the harness strips that line from the
+/// transcript entirely, so it must leave no trace on this tracking either, or a real program line
+/// right before it that did *not* end in a newline would wrongly look like it had one.
+#[cfg(feature = "testhooks")]
+pub fn uart_at_line_start() -> bool {
+    UART_AT_LINE_START.load(Ordering::Relaxed)
+}
+
+/// Restores a value `uart_at_line_start` read earlier -- see there.
+#[cfg(feature = "testhooks")]
+pub fn set_uart_at_line_start(at_line_start: bool) {
+    UART_AT_LINE_START.store(at_line_start, Ordering::Relaxed);
+}
+
 /// Writes `bytes` to `UART0`, converting `\n` to `\r\n` (a serial line's convention, same as
 /// the kernel's own messages), and remembers whether that left it at the start of a line.
 /// This mirrors what programs print to the console (and what's typed to them), so a serial log

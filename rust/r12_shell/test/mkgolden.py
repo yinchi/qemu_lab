@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Records the golden transcript for `cases/step04_line_discipline.py` from an older stage's kernel.
+"""Records the golden transcript for `cases/line_discipline.py` from an older stage's kernel.
 
 Usage: mkgolden.py <kernel.elf> <disk.img> <out.json>
 e.g.   mkgolden.py ../../r11_busybox/r11_busybox.elf ../../r11_busybox/disk.img golden/step04_r11.json
@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 
-from cases.step04_line_discipline import golden_session
+from cases.line_discipline import golden_session
 from harness import Session
 
 

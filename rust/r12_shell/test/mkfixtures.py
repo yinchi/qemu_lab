@@ -7,7 +7,7 @@ Usage: mkfixtures.py <bin-dir> <tests-dir>
 
 Every output is a `.exe` under `disk/tests/` (gitignored, like the test programs). The kernel must refuse
 each malformed one with `cannot execute: Exec format error` rather than panic -- see
-`cases/step01_launch.py` -- and run `bigpad.exe` (a valid program followed by 3 MiB of zeros, which the
+`cases/launch.py` -- and run `bigpad.exe` (a valid program followed by 3 MiB of zeros, which the
 loader ignores) as it would `hello`.
 """
 

@@ -1,17 +1,16 @@
 //! Starting a program from a command line: finding the file a command word names, checking that it
-//! may run, running it, and reporting what went wrong (or its nonzero exit status) to the UART and
-//! the console.
+//! may run, running it, and reporting what went wrong (or its nonzero exit status) -- via
+//! `shell_err` (`shell/mod.rs`), same as any other shell-reported error, so it is redirectable.
 
 use abi::errno::{E2BIG, EACCES, EISDIR, ENOENT, ENOEXEC, ENOTDIR, errmsg};
 use abi::fs::ATTR_EXEC;
 use hadris_fat::sync::{FatVolume, FileEntry};
 
 use crate::HEAP_SIZE;
-use crate::console::{BG, Console, FG};
 use crate::exec::{process, shell_state};
 use crate::fs::blkio::BlkIo;
 use crate::fs::{files, read_file_checked};
-use crate::platform::uart::{uart_ensure_newline, uart_write};
+use crate::shell::shell_err;
 
 /// The largest executable `launch` will read into memory: anything bigger is refused as not
 /// executable rather than risking an allocation failure (which would panic the kernel).
@@ -46,65 +45,46 @@ fn find_program(name: &str) -> Result<FileEntry, &'static str> {
 /// - The program is not marked as executable (`Permission denied`).
 /// - The program is too large to be executed, or fails to load (`cannot execute: Exec format error`).
 /// - The program exits with a nonzero status (`exit N`, standing in for `$?`).
-pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], console: &mut Console) {
+pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str]) {
     let name = argv[0];
     let prog_entry = match find_program(name) {
         Ok(entry) => entry,
         Err(why) => {
-            report(console, &alloc::format!("{name}: {why}"));
+            shell_err(&alloc::format!("{name}: {why}"));
             return;
         }
     };
 
     if prog_entry.is_directory() {
-        report(console, &alloc::format!("{name}: {}", errmsg(EISDIR)));
+        shell_err(&alloc::format!("{name}: {}", errmsg(EISDIR)));
         return;
     }
     if prog_entry.attributes().bits() & ATTR_EXEC == 0 {
-        report(console, &alloc::format!("{name}: {}", errmsg(EACCES)));
+        shell_err(&alloc::format!("{name}: {}", errmsg(EACCES)));
         return;
     }
     if prog_entry.len() as usize > MAX_PROGRAM_SIZE {
-        report(
-            console,
-            &alloc::format!("{name}: cannot execute: {}", errmsg(ENOEXEC)),
-        );
+        shell_err(&alloc::format!(
+            "{name}: cannot execute: {}",
+            errmsg(ENOEXEC)
+        ));
         return;
     }
 
     let elf_bytes = match read_file_checked(vol, &prog_entry) {
         Ok(bytes) => bytes,
         Err(e) => {
-            report(console, &alloc::format!("{name}: {}", errmsg(e)));
+            shell_err(&alloc::format!("{name}: {}", errmsg(e)));
             return;
         }
     };
     match process::run_program(&elf_bytes, argv) {
         Ok(0) => {}
-        Ok(code) => report(console, &alloc::format!("exit {code}")),
-        Err(e) if e.errno() == E2BIG => {
-            report(console, &alloc::format!("{name}: {}", errmsg(E2BIG)))
-        }
-        Err(e) => report(
-            console,
-            &alloc::format!("{name}: cannot execute: {}", errmsg(e.errno())),
-        ),
+        Ok(code) => shell_err(&alloc::format!("exit {code}")),
+        Err(e) if e.errno() == E2BIG => shell_err(&alloc::format!("{name}: {}", errmsg(E2BIG))),
+        Err(e) => shell_err(&alloc::format!(
+            "{name}: cannot execute: {}",
+            errmsg(e.errno())
+        )),
     }
-}
-
-/// Reports one line of text to both UART and the console -- used for the errors `launch` (and
-/// `Argv::parse` failing) can report, so a typo'd or unbuilt command is visible on screen, not
-/// only in the UART log a user may not even have open. Starts a new row/line first if a program's
-/// last output left the cursor mid-line.
-pub fn report(console: &mut Console, msg: &str) {
-    uart_ensure_newline();
-    uart_write(msg.as_bytes());
-    uart_write(b"\n");
-    if console.cursor().1 != 0 {
-        console.write_char('\n', FG, BG);
-    }
-    for c in msg.chars() {
-        console.write_char(c, FG, BG);
-    }
-    console.write_char('\n', FG, BG);
 }

@@ -20,7 +20,7 @@ use crate::platform::globals::{CONSOLE, GPU};
 use crate::platform::uart::{uart_clear_screen, uart_write};
 use crate::static_mut_ref;
 use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY, ERANGE};
-use abi::fs::{O_RDONLY, O_WRONLY};
+use abi::fs::{O_APPEND, O_RDONLY, O_WRONLY};
 use abi::ioctl::CONSOLE_CLEAR;
 
 /// How many fds a program may have open at once, the three standard ones included: every fd above
@@ -153,7 +153,13 @@ mod testhooks {
     pub fn report_and_reset() {
         // SAFETY: as above.
         let n = unsafe { core::mem::replace(&mut *(&raw mut FLUSHES), 0) };
+        // Save and restore the line-start flag around this line: the harness strips it from the
+        // transcript entirely (see `TESTHOOK_LINE` in `test/harness.py`), so it must be invisible to
+        // `uart_ensure_newline`'s bookkeeping too, or a real line right before it that did *not* end
+        // in a newline would wrongly look like it already had one once this line is stripped back out.
+        let was_at_line_start = crate::platform::uart::uart_at_line_start();
         uart_write(alloc::format!("[testhooks] console_flushes={n}\n").as_bytes());
+        crate::platform::uart::set_uart_at_line_start(was_at_line_start);
     }
 }
 
@@ -247,7 +253,8 @@ pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
         Ok(path) => path,
         Err(e) => return e,
     };
-    let write = match flags {
+    let append = flags & O_APPEND != 0;
+    let write = match flags & !O_APPEND {
         O_RDONLY => false,
         O_WRONLY => true,
         _ => return EINVAL,
@@ -261,7 +268,7 @@ pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
     else {
         return EMFILE;
     };
-    match files::open(&path, write) {
+    match files::open(&path, write, append) {
         Ok(handle) => {
             table[fd] = Some(FileDescriptor::File(handle));
             fd as isize

@@ -17,7 +17,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 5 | Eval loop out of IRQ context (token queue) | done |
 | 6 | Working directory and the shell-state frame stack | done |
 | 7 | Lexer, `run_line`, bash wording | done |
-| 8 | Redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`) | -- |
+| 8 | Redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`) | done |
 | 9 | Scripts and scopes | -- |
 | 10 | `mkdir`, `rm -r`, `mv` | -- |
 | 11 | Pipes via temp files | -- |
@@ -85,8 +85,8 @@ src/
 │   └── argplan.rs (P)   elfparse.rs (P)   usermem.rs (P)   frame_stack.rs (P)   shell_state.rs (the FRAMES static, cwd, chdir)   elf.rs (maps the window)   process.rs
 ├── syscall/           mod.rs: dispatch and the fault path
 │   └── fd.rs          the fd table
-└── shell/             mod.rs: PROMPT, start_prompt, run_line and run (the read-eval loop)
-    └── launch.rs (find_program, launch, report)   lexer.rs (P)   syntax.rs (P: the parser)   builtins.rs (cd)
+└── shell/             mod.rs: PROMPT, start_prompt, run_line and run (the read-eval loop), shell_err (redirect-aware reporting)
+    └── launch.rs (find_program, launch)   lexer.rs (P)   syntax.rs (P: the parser)   builtins.rs (cd)
 ```
 
 Cycles found and removed by the move: `fd` <-> `files` (the open-file limit now lives in `fs::files`, and `fd` sizes its
@@ -659,15 +659,42 @@ has a "first thing to unmask" hazard). This step removes that structure.
 - `shell/syntax.rs` (pure, 12 host tests): `parse(line) -> Result<Option<Pipeline>, SyntaxError>`, with `Pipeline { stages: Vec<Command { argv, redirs }> }` and `Redirection { In, Out { fd, path, append }, Dup { fd, target } }` kept in the
   order typed. Errors -- an unterminated quote or trailing backslash, an operator with no file name, `>&` with anything but 1 or 2, an empty stage (`| a`, `a |`) -- read as sentences (`syntax error: no file name after `>``). A
   stage of only redirections (`> f`) parses; running it is Step 8's. It is a single pass with one token of lookahead (a redirection takes the next word) and no backtracking.
+- **Built on `peg`, not scanned by hand.** Both modules above are `peg::parser!` grammars (rules as typed
+  Rust closures, not an opaque generated tree), one rule per production in `rust/docs/shell.ebnf` --
+  chosen over hand-written scanning so the grammar document and the code can't drift apart unnoticed, and
+  over `pest` (tried first) because `pest`'s error type carries only a byte position: recovering our
+  specific `LexError`/`SyntaxError` variants and bash-style wording from that would need a second,
+  disconnected pass re-examining the input at that position, undoing the point of a generated parser.
+  `peg`'s `{? Err("sentinel") }` action blocks instead let a rule fail with its own message at the exact
+  point it detects the problem, co-located with the syntax it's rejecting; `classify()` (one in each
+  module) is then a flat, mechanical sentinel -> enum conversion, not a second guess at what went wrong.
+  `shell_syntax` (in `syntax.rs`) runs over a token slice, not `&str` -- but `peg`'s built-in `[T]` slice
+  support needs `Copy` elements, and `Token::Word` holds an owned `String`, so it actually runs over
+  `SynTok` (the same shape as `Token`, a word carrying its index into the original `&[Token]` instead of
+  the text), with `src: &[Token]` threaded as an ordinary rule parameter wherever a rule needs the real
+  text (`peg` rule parameters aren't implicitly shared across a grammar). Validated first as a
+  self-contained, unwired prototype (`peg_shell/`, deleted once it proved out) before touching real code.
+  One real bug found and fixed during that validation, before any of it reached `src/`: a `{? Err(...) }`
+  failing only backtracks *that* alternative, it does not abort the whole parse -- so `op_heredoc`/
+  `op_dupin`'s deliberate hard failures on `<<`/`<&` were silently being swallowed by `in_redir` matching
+  just the first `<` and leaving the second character to be mis-parsed as its own token, caught by
+  `lexer.rs`'s own tests (ported verbatim into the prototype) and fixed with a negative lookahead on
+  `in_redir` (`!['<' | '&']`) so nothing else can succeed at that position. New dependency: `peg = {
+  version = "0.8", default-features = false }` (confirmed `no_std`-capable by reading `peg-runtime`'s own
+  source), added to both `r12_shell`'s and `hosttests`' `Cargo.toml`; one porting-only wrinkle was that
+  `peg`'s generated code for `*`/`+` repetitions calls the `vec!` macro, which `alloc` (unlike `std`)
+  doesn't put in scope on its own, so both files needed an explicit `use alloc::vec;` alongside the
+  existing `use alloc::vec::Vec;`. No behavior or public-API change: same types, same `Display` wording,
+  same 14 + 12 host tests (ported verbatim from the hand-written versions), all still passing.
 - `shell::run_line` is the old `Finished` branch: parse, builtin or `launch`. **Pipes and redirections parse but are not run yet**: they report `pipes are not supported yet` / `redirection is not supported yet`, until Steps 11 and 8.
   `shell/argv.rs` and the `shlex` dependency are gone; `launch` takes the argument list directly.
 - **Bash wording:** `name: command not found` (was `not found`), `name: Permission denied` (was `not executable`), `cannot execute: Exec format error` as before; the `exit N` line stays. The tests were updated, and the r11 golden
   comparison applies the one substitution `not found` -> `command not found`, the only deliberate difference from r11's transcript.
-- **Tests:** `cases/step07_syntax.py` -- quoting end to end (`"a b"`, `'a b'`, `a\ b`, `"|"`, `'|'`, `\|`, quoted `<`/`>`/`>>`, backslashes inside each kind of quote, an empty argument arriving as one, adjacent quoting `a'b c'd`);
-  comments (`echo a #b`, `a#b`, `"#"`, `\#a`, a comment-only line); `$ * ? ~ {}` as text; pipes and redirections refused for now (including `2>b`, and `echo 2` as text); every syntax error reported with the prompt surviving; `;` and `&` refused.
+- **Tests:** `cases/syntax.py` -- quoting end to end (`"a b"`, `'a b'`, `a\ b`, `"|"`, `'|'`, `\|`, quoted `<`/`>`/`>>`, backslashes inside each kind of quote, an empty argument arriving as one, adjacent quoting `a'b c'd`);
+  comments (`echo a #b`, `a#b`, `"#"`, `\#a`, a comment-only line); `$ * ? ~ {}` as text; pipes refused for now (`2>b`, and `echo 2` as text); every syntax error reported with the prompt surviving; `;` and `&` refused.
 - **`home/`:** while running the tests a stray demo file at the root of `disk/` broke the hard-coded root listing, so the image gained a `home/` folder for hand-made files (Step 0 as-built, above); the listing is now `bin fonts home tests tmp`.
 
-### Step 8: redirection (`shell.rs`, `fd.rs`, `files.rs`)
+### Step 8: redirection (`shell.rs`, `fd.rs`, `files.rs`) (done)
 - `cmd > f`: shell opens `f` for write (via `abspath` and `resolve`; creates/truncates, same limits as `open`),
   `with_stdio`: bind stdio[1] to the handle, run, restore (not `push_copy`, which would discard state changes a
   redirected builtin makes). `cmd < f` symmetric on stdio[0] (reader). `cmd > f < g`
@@ -697,6 +724,62 @@ has a "first thing to unmask" hazard). This step removes that structure.
 - **Tests:** `ls > listing.txt` then `cat listing.txt` (and mtools check on the host image); `cat < file`; in and out
   together; `>` to an existing file replaces; `>` to a read-only file errors; `<` of missing file errors; `false > f`
   still reports `exit 1`; stdout redirect doesn't hide stderr.
+
+**As built.**
+- `shell/mod.rs` (no separate `shell.rs`): `run_line` -> `run_segment`, which opens a segment's
+  redirections in order -- left to right, each already in effect for the ones after it -- inside one
+  `frame_stack::with_stdio([None, None, None], |frames| { .. })` call, mutating `frames.top_mut().stdio`
+  directly per redirect (`apply_redirect`) rather than computing the whole triple up front, exactly so
+  that a later redirect's `Dup` sees earlier ones' effect and so that an error at any point -- a failed
+  open, or the command itself -- is reported through whatever's already bound. `Redirection::Dup` is a
+  plain copy of a `StdioBinding` (a `usize` handle, `Copy`); nothing is duplicated or re-opened. Shell-
+  opened handles are collected in a local `Vec` and closed once, after the `with_stdio` call returns.
+  `launch`/`report` lost their `console: &mut Console` parameter entirely: all shell-reported text now
+  goes through a new `shell_err(msg)`, which checks `shell_state::stdio(2)` and writes to the console
+  (+ UART) or to the redirected file, so a launch failure, a builtin's own error, and a program's `exit
+  N` status are all redirectable exactly like a program's own stderr -- `cmd 2> e` catches every one.
+- `fs/files.rs`: `open_write(path, append)` picks `FileWriter::new_append` or the truncating writer;
+  `open(path, write, append)` threads it through (the `open` syscall in `syscall/fd.rs` parses
+  `O_APPEND` out of `flags`, so this is available to programs too, not just shell redirects, lifting
+  the earlier "no append" restriction). `abi::fs::O_APPEND` = `0o2000` (Linux's value), re-exported
+  from `userlib`.
+- **A real bug, not anticipated in Step 6's plan text becoming load-bearing until now:**
+  `files::close_all()` (run after every program exits, to commit whatever it left open) closed *every*
+  open handle indiscriminately, including ones the shell itself had opened for a redirect -- so a
+  redirected `exit N` status, reported after the one program in the segment had already exited and
+  triggered `close_all`, silently vanished (write to an already-closed handle, discarded `EBADF`).
+  Fixed with `files::mark_shell_owned(handle)` (a `SHELL_OWNED: [bool; MAX_OPEN_FILES]` side table)
+  that `close_all` now skips; the shell closes its own handles itself, once the whole segment is done
+  with them, not whenever the one program that happened to run under them exits.
+  Discovered because writing `cmd 2> e` where `cmd` is a *launched program* (not a builtin, which never
+  goes through `close_all` at all) needs the exit-status write to land in `e` too.
+- **A second, unrelated latent bug the above exposed:** `testhooks::report_and_reset()`
+  (`syscall/fd.rs`, compiled only for `just test`) writes its own `[testhooks] console_flushes=N\n`
+  diagnostic to UART after a program's real output; that line's own trailing newline was satisfying
+  `uart_ensure_newline`'s line-start tracking, so a program's actual last line -- if it didn't itself
+  end in a newline -- never got the corrective newline `start_prompt` is supposed to add before the
+  next prompt. Invisible as long as every test's last console-bound output already ended in `\n`, which
+  every test before Step 8 happened to. Fixed by having `report_and_reset` save and restore
+  `platform/uart.rs`'s line-start flag around its own write (`uart_at_line_start`/
+  `set_uart_at_line_start`, both `#[cfg(feature = "testhooks")]`), so the diagnostic line is invisible
+  to that bookkeeping the same way the harness already makes it invisible to the transcript text. This
+  also fixed a stale expectation in `cases/console.py`'s Step 2 binary-output test, which had been
+  unknowingly asserting the buggy (no corrective newline) behavior.
+- **Deferred, not gaps in Step 8 itself:** `source`/`sh`/`./script` redirection (`source s.sh > out`
+  etc.) needs Step 9's scripts to exist first, so those specific T8.5a cases aren't tested yet --
+  everything else in T8.5a (redirecting `cd`, a failed redirect skipping a builtin) is. A dedicated
+  large-file redirect stress test (T8.6) and an interleaved-append-with-reads size check (T8.7) weren't
+  written separately -- both exercise the same `FileWriter`/`finish()` path `cp` already proves
+  elsewhere, and `fsck.fat -n` runs on the final image after every session regardless.
+- **Tests:** `cases/redirection.py` (new) -- `>`/`>>`/`<` truncate/append/read and combinations; error
+  cases (missing input, a directory target, a read-only target) leave the command unrun; `false > f`
+  still reports `exit 1` under the redirect; a redirected stdout doesn't hide stderr and vice versa,
+  including that the exit-status line follows whichever stream it's really attached to; `cd`
+  redirected (creates/truncates and still changes directory; a failed redirect skips it entirely;
+  its own error is redirectable); `2>`, `>&`/`2>&1` and that redirect order changes the result
+  (`probe interleave`, already existing, was the right tool -- no new test program needed). Host-side
+  `mtools` check on `both.txt` and `listing.txt`. `cases/syntax.py` (Step 7) updated in place: its old
+  "redirection is not supported yet" assertions now assert that redirection actually runs.
 
 ### Step 9: scripts and scopes (`shell.rs`)
 - `run_script(path, scoped)`: read the file, feed each line through `run_line` (recursion in the same interpreter,

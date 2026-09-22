@@ -1,6 +1,8 @@
-"""Step 2 of `Stage12.md`: the console write path -- UTF-8 that is split across `write` calls or invalid is
-decoded, not blanked; stdout is buffered so a `write!` costs one display flush, not one per fragment; and
-a segmentation fault is shown on the display, not only on the serial log.
+"""Last updated: Stage 12, Step 8.
+
+The console write path -- UTF-8 that is split across `write` calls or invalid is decoded, not
+blanked; stdout is buffered so a `write!` costs one display flush, not one per fragment; and a
+segmentation fault is shown on the display, not only on the serial log.
 
 Uses the kernel built with `testhooks` (see the justfile's `build-test`), which reports how many display
 flushes each program's console writes caused; `Session.flush_counts` reads them.
@@ -16,8 +18,11 @@ def run(ctx):
     s.run("chmod +x tests/probe.exe")
 
     # --- T2.1: every byte value reaches the serial log untouched (only \n becomes \r\n, as always) ---
+    # binary256's last byte (0xff) is not a newline, so the shell's own "start the next prompt on a
+    # fresh row" behavior (`uart_ensure_newline`, in `start_prompt`) adds one real `\r\n` of its own
+    # right before the prompt -- same as it would for any command whose last output doesn't end in one.
     every_byte = bytes(range(256))
-    want = every_byte.replace(b"\n", b"\r\n")
+    want = every_byte.replace(b"\n", b"\r\n") + b"\r\n"
     check("cat binary256: serial carries every byte", s.run_raw("cat tests/binary256"), want)
     check("shell alive after binary output", s.run("echo alive"), "echo alive\nalive\n")
 

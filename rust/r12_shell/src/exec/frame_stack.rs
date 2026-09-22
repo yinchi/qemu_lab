@@ -26,8 +26,6 @@ pub enum StdioBinding {
     Default,
     /// An open file, by its handle in the open-file table. A non-owning reference: whoever opened the
     /// file closes it, and copying a frame copies the reference, not the file.
-    // Constructed by redirection (Step 8).
-    #[allow(dead_code)]
     File(usize),
 }
 
@@ -104,7 +102,6 @@ impl FrameStack {
     /// Runs `f` with the streams named in `overrides` (`Some(binding)` replaces stream `n`, `None` leaves
     /// it) rebound on the current frame, then puts the streams back. Only the streams are restored: a
     /// working-directory change made inside `f` is kept.
-    #[allow(dead_code)] // redirection (Step 8)
     pub fn with_stdio<R>(
         &mut self,
         overrides: [Option<StdioBinding>; 3],

@@ -1,5 +1,7 @@
-"""Step 3 of `Stage12.md`: the MMU is really on, and the user window is laid out as program image, then
-an unmapped gap and 64 KiB guard, then a 1 MiB stack (see the kernel's `platform/base_addresses.rs`).
+"""Last updated: Stage 12, Step 3.
+
+The MMU is really on, and the user window is laid out as program image, then an unmapped gap and
+64 KiB guard, then a 1 MiB stack (see the kernel's `platform/base_addresses.rs`).
 
 `probe poke ADDR` / `poke-w ADDR` read or write one byte at an address: a page the program has no right
 to faults, which the kernel reports as `Segmentation fault` and exit status 139.

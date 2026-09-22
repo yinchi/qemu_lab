@@ -1,5 +1,7 @@
-"""Step 5 of `Stage12.md`: keys are queued by the keyboard interrupt and read later, so a program runs with
-interrupts on and keys pressed while it runs are kept, in order, for the next reader.
+"""Last updated: Stage 12, Step 5.
+
+Keys are queued by the keyboard interrupt and read later, so a program runs with interrupts on and
+keys pressed while it runs are kept, in order, for the next reader.
 
 `spin N` (a test program) busy-waits N seconds without reading anything -- long enough to type during. This
 kernel build (`testhooks`) has a 16-key queue so the overflow path can be reached by typing a few dozen keys.

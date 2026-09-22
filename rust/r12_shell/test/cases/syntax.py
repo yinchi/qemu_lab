@@ -1,8 +1,11 @@
-"""Step 7 of `Stage12.md`: a command line is lexed and parsed (POSIX quoting, `#` comments, pipes and redirections
-recognised) instead of split by `shlex`, and errors use bash's wording. Pipes and redirections parse but are not
-run yet (Steps 8 and 11), and say so; what the parser accepts is tested exhaustively on the host, so this
-module checks the shell end to end: what reaches a program's `argv`, and that a bad line is reported while the
-prompt survives.
+"""Last updated: Stage 12, Step 8.
+
+A command line is lexed and parsed (POSIX quoting, `#` comments, pipes and redirections recognised)
+instead of split by `shlex`, and errors use bash's wording. Pipes parse but are not run yet
+(Step 11), and say so; redirections run for real (Step 8, tested thoroughly in `redirection.py`) --
+what's checked here is only that they parse. What the parser accepts is tested exhaustively on the
+host, so this module checks the shell end to end: what reaches a program's `argv`, and that a bad
+line is reported while the prompt survives.
 """
 
 
@@ -44,10 +47,12 @@ def run(ctx):
     # --- $ * ? ~ { } are ordinary text for now ---
     echo("echo $x * ? ~ {a,b}", "$x * ? ~ {a,b}")
 
-    # --- pipes and redirections are recognised, and refused for now ---
+    # --- pipes parse but are not run yet; redirections do run (see redirection.py) ---
     check("a pipe is not run yet", s.run("echo a | cat"), "echo a | cat\npipes are not supported yet\n")
-    check("a redirection is not run yet", s.run("echo a>b"), "echo a>b\nredirection is not supported yet\n")
-    check("...with a descriptor number", s.run("echo a 2>b"), "echo a 2>b\nredirection is not supported yet\n")
+    check("a redirection parses and runs", s.run("echo a>synredir.txt"), "echo a>synredir.txt\n")
+    check("...and took effect", s.run("cat synredir.txt"), "cat synredir.txt\na\n")
+    check("...with a descriptor number", s.run("echo a 2>synredir2.txt"),
+          "echo a 2>synredir2.txt\na\n")  # stdout unaffected: echo never writes to fd 2
     check("a digit that is not a descriptor is text", s.run("echo 2"), "echo 2\n2\n")
 
     # --- syntax errors are reported and the prompt survives ---

@@ -1,4 +1,6 @@
-"""Step 4 of `Stage12.md`: one line discipline for both the shell's prompt and a program's `read(0)`.
+"""Last updated: Stage 12, Step 4.
+
+One line discipline for both the shell's prompt and a program's `read(0)`.
 
 `golden_session` is one scripted session of prompt editing and stdin reading whose serial transcript
 was captured from r11 (`golden/step04_r11.json`, made by `mkgolden.py`). Step 4 moves code without

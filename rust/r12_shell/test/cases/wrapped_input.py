@@ -1,5 +1,7 @@
-"""Step 4b of `Stage12.md`: a typed line longer than the row wraps onto the rows below instead of scrolling
-sideways, at the prompt and in a program's `read(0)`, and the screen scrolls with it at the bottom.
+"""Last updated: Stage 12, Step 4.
+
+A typed line longer than the row wraps onto the rows below instead of scrolling sideways, at the
+prompt and in a program's `read(0)`, and the screen scrolls with it at the bottom.
 
 The display is 80x30 cells. Lines are typed without Enter first so the screen can be inspected while the
 line is still being edited.

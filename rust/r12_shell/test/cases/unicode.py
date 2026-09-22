@@ -1,6 +1,8 @@
-"""Step 2b of `Stage12.md`: the console draws Unicode with Unifont -- wide glyphs take two cells, invalid
-bytes and characters the font lacks draw U+FFFD, zero-width code points draw nothing, and Backspace
-moves over a whole character. Compares what is drawn on the display, cell row against cell row.
+"""Last updated: Stage 12, Step 2.
+
+The console draws Unicode with Unifont -- wide glyphs take two cells, invalid bytes and characters
+the font lacks draw U+FFFD, zero-width code points draw nothing, and Backspace moves over a whole
+character. Compares what is drawn on the display, cell row against cell row.
 
 The fixtures are UTF-8 files under `/tests/` (`unicode-mix.txt` is deliberately not all valid UTF-8).
 """

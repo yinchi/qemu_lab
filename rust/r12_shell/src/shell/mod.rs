@@ -14,14 +14,24 @@ pub mod launch;
 pub mod lexer;
 pub mod syntax;
 
-use crate::console::Console;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use abi::errno::errmsg;
+
+use crate::console::{BG, Console, FG};
+use crate::exec::frame_stack::{FrameStack, StdioBinding};
+use crate::exec::shell_state;
 use crate::fs::blkio::VOL;
+use crate::fs::files;
 use crate::keyboard::line_discipline::{LINE_DISCIPLINE, LineDiscipline, LineOutcome, Mode};
 use crate::keyboard::queue;
 use crate::platform::globals::{CONSOLE, GPU};
 use crate::platform::uart::{uart_ensure_newline, uart_write};
 use crate::{static_mut_ref, static_ref};
-use launch::{launch, report};
+use launch::launch;
+use syntax::{Redirection, Segment};
 
 /// The prompt shown before the line being typed -- fixed text with no relation to the line's own
 /// content, so it's structurally impossible for Backspace (which only ever pops the line buffer, see
@@ -39,39 +49,138 @@ pub fn start_prompt(discipline: &mut LineDiscipline, console: &mut Console) {
 }
 
 /// Runs one typed line: parses it (`syntax.rs`) and executes it -- a builtin (`builtins.rs`) or a program
-/// (`launch.rs`) -- reporting whatever went wrong as one line of text. A blank line or a comment does
-/// nothing, quietly, as in any shell. Pipes and redirections parse but are not run yet, and say so.
-pub fn run_line(line: &str, console: &mut Console) {
+/// (`launch.rs`) -- reporting whatever went wrong via `shell_err`. A blank line or a comment does
+/// nothing, quietly, as in any shell. Pipes parse but are not run yet, and say so.
+pub fn run_line(line: &str) {
     let pipeline = match syntax::parse(line) {
         Ok(Some(pipeline)) => pipeline,
         Ok(None) => return,
         Err(error) => {
-            report(console, &alloc::format!("syntax error: {error}"));
+            shell_err(&format!("syntax error: {error}"));
             return;
         }
     };
     if pipeline.len() > 1 {
-        report(console, "pipes are not supported yet");
+        shell_err("pipes are not supported yet");
         return;
     }
-    let segment = &pipeline[0];
-    if !segment.redirs.is_empty() {
-        report(console, "redirection is not supported yet");
-        return;
+    run_segment(&pipeline[0]);
+}
+
+/// Runs one segment: opens its redirections in order -- left to right, each already in effect for
+/// the ones after it, so `2>&1 > f` and `> f 2>&1` differ -- then the command itself, all under one
+/// `with_stdio` scope. That scope is why a builtin's own state change (`cd`) still sticks under a
+/// redirect, why a failed redirect leaves exactly the earlier ones of the same line in effect, and
+/// why the error message for that failure (and any launch error) is itself subject to whichever
+/// redirects already succeeded -- `cmd 2> e < missing` reports the missing-file error into `e`, not
+/// the console. Shell-opened handles are closed once the scope ends, committing anything written.
+fn run_segment(segment: &Segment) {
+    let mut opened = Vec::new();
+    shell_state::frames().with_stdio([None, None, None], |frames| {
+        for redir in &segment.redirs {
+            if !apply_redirect(frames, redir, &mut opened) {
+                return; // shell_err already reported; the command does not run
+            }
+        }
+        run_command(&segment.argv);
+    });
+    for handle in opened {
+        files::close(handle);
     }
-    let argv: alloc::vec::Vec<&str> = segment
-        .argv
-        .iter()
-        .map(alloc::string::String::as_str)
-        .collect();
-    if builtins::is_builtin(argv[0]) {
-        if let Err(message) = builtins::run(argv[0], &argv[1..]) {
-            report(console, &message);
+}
+
+/// Opens and binds one redirection on `frames`' top frame, recording any handle it opened in
+/// `opened` so `run_segment` can close it afterward. Returns whether it succeeded; on failure it has
+/// already reported the error via `shell_err`.
+fn apply_redirect(frames: &mut FrameStack, redir: &Redirection, opened: &mut Vec<usize>) -> bool {
+    match redir {
+        Redirection::In(path) => match open_redirect_target(path, false, false) {
+            Ok(handle) => {
+                opened.push(handle);
+                frames.top_mut().stdio[0] = StdioBinding::File(handle);
+                true
+            }
+            Err(msg) => {
+                shell_err(&msg);
+                false
+            }
+        },
+        Redirection::Out { fd, path, append } => match open_redirect_target(path, true, *append) {
+            Ok(handle) => {
+                opened.push(handle);
+                frames.top_mut().stdio[*fd as usize] = StdioBinding::File(handle);
+                true
+            }
+            Err(msg) => {
+                shell_err(&msg);
+                false
+            }
+        },
+        Redirection::Dup { fd, target } => {
+            let binding = frames.top().stdio[*target as usize];
+            frames.top_mut().stdio[*fd as usize] = binding;
+            true
+        }
+    }
+}
+
+/// Resolves `path` against the working directory and opens it for a redirection, in bash's wording
+/// on failure. Marks the handle shell-owned (`files::mark_shell_owned`) so it survives whatever
+/// program runs under this redirect exiting, for `run_segment` to close once the whole segment does.
+fn open_redirect_target(path: &str, write: bool, append: bool) -> Result<usize, String> {
+    let abspath = shell_state::absolute(path).map_err(|e| format!("{path}: {}", errmsg(e)))?;
+    let handle =
+        files::open(&abspath, write, append).map_err(|e| format!("{path}: {}", errmsg(e)))?;
+    files::mark_shell_owned(handle);
+    Ok(handle)
+}
+
+/// Runs a segment's command -- once its redirections (if any) are already bound -- as a builtin or a
+/// program. Empty `argv` (a stage of only redirections, `> f`) runs nothing: POSIX still creates the
+/// file.
+fn run_command(argv: &[String]) {
+    let Some(name) = argv.first() else {
+        return;
+    };
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    if builtins::is_builtin(name) {
+        if let Err(message) = builtins::run(name, &argv[1..]) {
+            shell_err(&message);
         }
     } else {
         // SAFETY: as `run`'s doc comment says of the statics it uses.
         let vol = unsafe { static_ref!(VOL) };
-        launch(vol, &argv, console);
+        launch(vol, &argv);
+    }
+}
+
+/// Reports one line of text as this segment's stderr: wherever the current frame's `stdio[2]` points
+/// -- the console (and the UART transcript, for the test harness) by default, or a redirected file,
+/// exactly like a program's own stderr. Used for syntax errors, a builtin's own errors and launch
+/// failures alike, so e.g. `cmd 2> e` captures all of them the same way bash does. Starts a new
+/// console row first if something else left the cursor mid-line.
+pub fn shell_err(msg: &str) {
+    match shell_state::stdio(2) {
+        StdioBinding::Default => {
+            uart_ensure_newline();
+            uart_write(msg.as_bytes());
+            uart_write(b"\n");
+            // SAFETY: as `run`'s doc comment says of the statics it uses.
+            unsafe {
+                let console = static_mut_ref!(CONSOLE);
+                if console.cursor().1 != 0 {
+                    console.write_char('\n', FG, BG);
+                }
+                for c in msg.chars() {
+                    console.write_char(c, FG, BG);
+                }
+                console.write_char('\n', FG, BG);
+            }
+        }
+        StdioBinding::File(handle) => {
+            let _ = files::write(handle, msg.as_bytes());
+            let _ = files::write(handle, b"\n");
+        }
     }
 }
 
@@ -103,7 +212,7 @@ pub fn run() -> ! {
                 LineOutcome::Ignored | LineOutcome::EndOfFile => {}
                 LineOutcome::Edited => needs_flush = true,
                 LineOutcome::Finished(text) => {
-                    run_line(&text, console);
+                    run_line(&text);
                     start_prompt(discipline, console);
                     needs_flush = true;
                 }

@@ -1,5 +1,7 @@
-"""Step 1 of `Stage12.md`: launching by path, files that aren't programs, the syscall error values, the
-fd limit, and how `argv` is laid out on the new program's stack.
+"""Last updated: Stage 12, Step 1.
+
+Launching by path, files that aren't programs, the syscall error values, the fd limit, and how
+`argv` is laid out on the new program's stack.
 
 Test programs and fixtures live under `/tests/` (see `../README.md`); the kernel marks only `bin/`
 executable at boot, so this module starts by giving the ones it needs the exec bit with `chmod +x`

@@ -1,6 +1,8 @@
-"""Step 6 of `Stage12.md`: a working directory. `cd` is a builtin, `pwd` a program over the `getcwd` syscall,
-and every relative path -- a program's `open`/`chmod` and a command word containing `/` -- is resolved
-against it. A bare command name is still looked up in `/bin`, wherever the shell is.
+"""Last updated: Stage 12, Step 6.
+
+A working directory. `cd` is a builtin, `pwd` a program over the `getcwd` syscall, and every relative
+path -- a program's `open`/`chmod` and a command word containing `/` -- is resolved against it. A
+bare command name is still looked up in `/bin`, wherever the shell is.
 
 Every case ends back at `/`, since the working directory is shell state that later cases inherit.
 """

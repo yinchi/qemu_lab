@@ -9,6 +9,10 @@ pub const O_RDONLY: usize = 0;
 /// Write-only flag for the `flags` argument of the `SYS_OPEN` syscall. Creates the file if it
 /// doesn't exist, and always starts it empty.
 pub const O_WRONLY: usize = 1;
+/// Combined with `O_WRONLY` (`O_WRONLY | O_APPEND`): creates the file if it doesn't exist, but
+/// starts writing at its current end instead of emptying it first. Linux's value, so it stays clear
+/// of `O_RDONLY`/`O_WRONLY`.
+pub const O_APPEND: usize = 0o2000;
 
 // --- Directory records (getdents) --------------------------------------------------------------
 
@@ -39,6 +43,7 @@ mod tests {
     #[test]
     fn values_match_the_pre_abi_copies() {
         assert_eq!((O_RDONLY, O_WRONLY), (0, 1));
+        assert_eq!(O_APPEND, 0o2000);
         assert_eq!((NAME_MAX, DIRENT_SIZE), (255, 261));
         assert_eq!(
             [ATTR_READ_ONLY, ATTR_VOLUME_LABEL, ATTR_DIRECTORY, ATTR_EXEC],
