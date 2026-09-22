@@ -14,6 +14,7 @@ checks a couple of them straight off the image, once QEMU has exited.
 
 def run(ctx):
     s, check = ctx.s, ctx.check
+    s.run("chmod +x tests/probe.exe")  # self-sufficient, same reason as cwd.py's own copy of this line
 
     check("start from /tests", s.run("cd /tests"), "cd /tests\n")
 

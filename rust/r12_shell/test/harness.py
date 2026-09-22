@@ -13,7 +13,18 @@ import socket
 import subprocess
 import time
 
-KEY_DELAY = 0.05  # seconds between keys; QEMU queues them, this just avoids flooding
+# Seconds between keys. QEMU's own monitor round trip for `sendkey` is sub-millisecond regardless of
+# this value -- what actually gates it is the guest's own interrupt-handling-and-redraw pipeline, which
+# drains the keyboard queue at roughly 35-40ms per key no matter how fast keys are sent (measured by
+# sending a burst with no delay at all and timing how long the guest took to catch up). Below that rate,
+# keys just pile up in the queue instead of the guest going any faster; below about 10ms on this
+# machine, they pile up faster than the guest can drain them and the 16-slot test-build queue
+# (`keyboard/queue.rs`'s `CAPACITY` under `testhooks`) overflows, which can drop the Enter that finishes
+# a long typed line and hang the session waiting for a prompt that never comes. This value trades away
+# some of that margin for speed (down from an original, untested 50ms) but keeps real headroom above the
+# observed failure point, since going lower than the guest's own ~35-40ms/key ceiling buys nothing --
+# it's not the bottleneck once you're below it.
+KEY_DELAY = 0.025
 HOLD_MS = 20  # how long QEMU holds each key down
 TIMEOUT = 20  # seconds to wait for a prompt/text before giving up
 
@@ -137,6 +148,29 @@ class Session:
         rows = [[tuple(data[(y * width + x) * 3:(y * width + x) * 3 + 3]) for x in range(width)]
                 for y in range(height)]
         return width, height, rows
+
+    def screendump_settled(self, stable_for=0.2):
+        """Like `screendump`, but waits until the display stops changing for at least `stable_for`
+        seconds before returning a capture. A bare `screendump` captures whatever is in the framebuffer
+        at that instant, and nothing guarantees the guest has finished reacting to the caller's last
+        `type`/`keys`/`run` by then -- those only wait for QEMU to acknowledge the last keystroke (or,
+        for `run`, for the *serial* transcript to show the next prompt), not for the guest's own redraw
+        and virtio-gpu's own, separately-scheduled flush to the host to have actually happened. Two
+        captures matching by coincidence -- both catching the same mid-draw or pre-flush frame,
+        especially under the contention several concurrent QEMU sessions create -- would be a false
+        "settled" signal; requiring the match to hold for a whole time window, not just one comparison,
+        rules that out."""
+        deadline = time.time() + TIMEOUT
+        previous = self.screendump()
+        stable_since = time.time()
+        while time.time() < deadline:
+            current = self.screendump()
+            if current != previous:
+                previous = current
+                stable_since = time.time()
+            elif time.time() - stable_since >= stable_for:
+                return current
+        raise TimeoutError("display did not settle")
 
     def run_raw(self, command):
         """Like `run`, but returns the bytes the command sent to the serial port, exactly -- for output

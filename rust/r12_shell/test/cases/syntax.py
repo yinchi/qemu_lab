@@ -11,6 +11,7 @@ line is reported while the prompt survives.
 
 def run(ctx):
     s, check = ctx.s, ctx.check
+    s.run("chmod +x tests/probe.exe")  # self-sufficient, same reason as cwd.py's own copy of this line
 
     def echo(line, output):
         check(f"echo: {line}", s.run(line), f"{line}\n{output}\n")

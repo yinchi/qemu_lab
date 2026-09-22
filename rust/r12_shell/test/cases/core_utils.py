@@ -98,7 +98,7 @@ def run(ctx):
     # --- clear: the screen is emptied and the prompt comes back at the top ---
     s.run("cat tests/hello.txt")  # something on screen to clear
     check("clear: the serial terminal is cleared too", s.run("clear"), "clear\n\x1b[H\x1b[2J")
-    bands = text_bands(s.screendump())
+    bands = text_bands(s.screendump_settled())
     check("clear: only the new prompt is on screen, on the first row", [row for row, _ in bands], [0])
 
     # --- stdin: a program reading typed lines (Backspace absorbed, Ctrl+D ends) ---

@@ -30,9 +30,9 @@ def run(ctx):
     text = ctx.fixture("utf8-boundary.txt")
     check("cat utf8-boundary: serial transcript", s.run("cat tests/utf8-boundary.txt"),
           "cat tests/utf8-boundary.txt\n" + text)
-    split = text_bands(s.screendump())
+    split = text_bands(s.screendump_settled())
     s.run("cat tests/utf8-line.txt")
-    whole = text_bands(s.screendump())
+    whole = text_bands(s.screendump_settled())
     # The last band is the prompt; the one above it is the fixture's last line.
     check("split character is drawn like the unsplit one", split[-2][1] == whole[-2][1], True)
     check("...and is not the '<invalid utf8>' placeholder", split[-2][1] == split[-3][1], False)
@@ -49,12 +49,12 @@ def run(ctx):
 
     # --- the segmentation fault message is on the display as well as the serial log ---
     s.run("echo Segmentation")
-    reference = text_bands(s.screendump())[-2][1]
+    reference = text_bands(s.screendump_settled())[-2][1]
     crash = s.run("crash")
     check("crash: serial message unchanged", "Segmentation fault (address 0xffff800000000000" in crash, True)
     columns = len("Segmentation") * 8
     shown = any(
         [line[:columns] for line in band] == [line[:columns] for line in reference]
-        for _row, band in text_bands(s.screendump())
+        for _row, band in text_bands(s.screendump_settled())
     )
     check("crash: 'Segmentation' is on the display", shown, True)

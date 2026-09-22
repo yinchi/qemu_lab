@@ -84,7 +84,7 @@ def run(ctx):
 
     # --- T4.6: output longer than the screen scrolls, and the prompt lands on the last row ---
     s.run("cat tests/utf8-boundary.txt")
-    bands = text_bands(s.screendump())
+    bands = text_bands(s.screendump_settled())
     rows = 480 // 16
     check("after scrolling output, the prompt is on the last row", bands[-1][0], rows - 1)
     check("...and output fills the rows above it", bands[-2][0], rows - 2)

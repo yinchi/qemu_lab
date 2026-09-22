@@ -26,6 +26,7 @@ def wait_for_end(s, text):
 def run(ctx):
     s, check = ctx.s, ctx.check
     s.run("chmod +x tests/spin.exe")
+    s.run("chmod +x tests/bigpad.exe")  # self-sufficient, same reason as cwd.py's own copy of this line
 
     # --- T5.1: keys typed while a program runs (and never reads) are run afterwards, in order, once each ---
     s.type("tests/spin.exe 3\n")

@@ -22,13 +22,13 @@ def run(ctx):
 
     # Put the prompt on the bottom row, so the long line below has to scroll the screen.
     s.run("cat tests/utf8-boundary.txt")
-    bands = text_bands(s.screendump())
+    bands = text_bands(s.screendump_settled())
     check("the prompt starts on the last row", bands[-1][0], ROWS - 1)
 
     # --- a 202-cell line (prompt + `echo ` + 195 characters): 80 + 80 + 42 cells, three rows ---
     typed = "z" * 195
     s.type("echo " + typed)
-    bands = text_bands(s.screendump())
+    bands = text_bands(s.screendump_settled())
     rows = [row for row, _ in bands[-3:]]
     check("a long line wraps onto three consecutive rows, scrolling the screen", rows, [ROWS - 3, ROWS - 2, ROWS - 1])
     first, second, third = (band for _, band in bands[-3:])
@@ -39,7 +39,7 @@ def run(ctx):
 
     # --- Backspace back across the row boundary: the rows the line no longer needs are cleared ---
     s.keys([BACKSPACE] * 125)  # 202 - 125 = 77 cells: one row
-    bands = text_bands(s.screendump())
+    bands = text_bands(s.screendump_settled())
     check("a shortened line leaves no stale rows behind", bands[-1][0], ROWS - 3)
     check("...and is one row", cell_blank(bands[-1][1], 76), False)
 
@@ -53,7 +53,7 @@ def run(ctx):
     s.wait_until(lambda t: t.endswith("cat\n"), "cat to start")
     line = "q" * 100
     s.type(line)
-    bands = text_bands(s.screendump())
+    bands = text_bands(s.screendump_settled())
     rows = [row for row, _ in bands[-2:]]
     check("read(0): a 100-character line takes two consecutive rows", rows[1] - rows[0], 1)
     check("read(0): the first row is full and starts with the first character",

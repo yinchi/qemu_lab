@@ -12,6 +12,8 @@ NOT_FOUND = "No such file or directory"
 
 def run(ctx):
     s, check = ctx.s, ctx.check
+    s.run("chmod +x tests/probe.exe")  # self-sufficient: this module must not depend on an earlier
+    # one (possibly in a different parallel group/session) having already done this.
     hello_txt = ctx.fixture("hello.txt")
 
     def cd(path, expect_error=None):
