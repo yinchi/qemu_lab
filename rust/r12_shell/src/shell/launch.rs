@@ -2,11 +2,10 @@
 //! may run, running it, and reporting what went wrong (or its nonzero exit status) to the UART and
 //! the console.
 
-use abi::errno::{E2BIG, EISDIR, ENOENT, ENOEXEC, ENOTDIR, errmsg};
+use abi::errno::{E2BIG, EACCES, EISDIR, ENOENT, ENOEXEC, ENOTDIR, errmsg};
 use abi::fs::ATTR_EXEC;
 use hadris_fat::sync::{FatVolume, FileEntry};
 
-use super::argv::Argv;
 use crate::HEAP_SIZE;
 use crate::console::{BG, Console, FG};
 use crate::exec::{process, shell_state};
@@ -34,22 +33,21 @@ fn find_program(name: &str) -> Result<FileEntry, &'static str> {
         found => return found.map_err(errmsg),
     }
     match files::lookup(&alloc::format!("/bin/{name}.exe")) {
-        Err(ENOENT | ENOTDIR) => Err("not found"),
+        Err(ENOENT | ENOTDIR) => Err("command not found"),
         found => found.map_err(errmsg),
     }
 }
 
-/// Runs the program `argv.program()` names -- see `find_program` -- with `argv`'s full argument
-/// list. Reports an error if:
+/// Runs the program `argv[0]` names -- see `find_program` -- with `argv` as its whole argument
+/// list. Reports (in bash's wording) if:
 ///
-/// - The program is not found.
+/// - The program is not found (`command not found`).
 /// - The program is a directory.
-/// - The program is not marked as executable.
-/// - The program is too large to be executed.
-/// - The program fails to load.
-/// - The program exits with a nonzero status.
-pub fn launch(vol: &FatVolume<BlkIo>, argv: &Argv, console: &mut Console) {
-    let name = argv.program();
+/// - The program is not marked as executable (`Permission denied`).
+/// - The program is too large to be executed, or fails to load (`cannot execute: Exec format error`).
+/// - The program exits with a nonzero status (`exit N`, standing in for `$?`).
+pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], console: &mut Console) {
+    let name = argv[0];
     let prog_entry = match find_program(name) {
         Ok(entry) => entry,
         Err(why) => {
@@ -63,7 +61,7 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &Argv, console: &mut Console) {
         return;
     }
     if prog_entry.attributes().bits() & ATTR_EXEC == 0 {
-        report(console, &alloc::format!("{name}: not executable"));
+        report(console, &alloc::format!("{name}: {}", errmsg(EACCES)));
         return;
     }
     if prog_entry.len() as usize > MAX_PROGRAM_SIZE {
@@ -81,7 +79,7 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &Argv, console: &mut Console) {
             return;
         }
     };
-    match process::run_program(&elf_bytes, &argv.as_argv()) {
+    match process::run_program(&elf_bytes, argv) {
         Ok(0) => {}
         Ok(code) => report(console, &alloc::format!("exit {code}")),
         Err(e) if e.errno() == E2BIG => {

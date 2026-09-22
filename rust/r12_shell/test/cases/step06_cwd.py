@@ -51,7 +51,7 @@ def run(ctx):
     check("a bare command name is found in /bin from anywhere", (s.run("cd /tests"), s.run("echo hi")),
           ("cd /tests\n", "echo hi\nhi\n"))
     check("a bare name is not looked up in the working directory", s.run("probe.exe"),
-          "probe.exe\nprobe.exe: not found\n")
+          "probe.exe\nprobe.exe: command not found\n")
     check("cat opens a relative path", s.run("cat hello.txt"), "cat hello.txt\n" + hello_txt)
     check("...and a path with ..", s.run("cat ../tests/hello.txt"), "cat ../tests/hello.txt\n" + hello_txt)
     check("cp creates its output relative to the working directory",

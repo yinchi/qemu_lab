@@ -33,7 +33,7 @@ def run(ctx):
     )
 
     # --- launcher ---
-    check("unknown program", s.run("nosuch"), "nosuch\nnosuch: not found\n")
+    check("unknown program", s.run("nosuch"), "nosuch\nnosuch: command not found\n")
 
     # --- cat / ls ---
     check("cat file", s.run("cat tests/hello.txt"), "cat tests/hello.txt\n" + hello_txt)
@@ -44,8 +44,8 @@ def run(ctx):
     check("cat missing", s.run("cat tests/nosuch.txt"),
           "cat tests/nosuch.txt\ncat: tests/nosuch.txt: No such file or directory\nexit 1\n")
     check("cat directory", s.run("cat tests/docs"), "cat tests/docs\ncat: tests/docs: Is a directory\nexit 1\n")
-    check("ls", s.run("ls"), "ls\nbin\nfonts\ntests\ntmp\n")
-    check("ls -F", s.run("ls -F"), "ls -F\nbin/\nfonts/\ntests/\ntmp/\n")
+    check("ls", s.run("ls"), "ls\nbin\nfonts\nhome\ntests\ntmp\n")
+    check("ls -F", s.run("ls -F"), "ls -F\nbin/\nfonts/\nhome/\ntests/\ntmp/\n")
     check("ls -F bin", s.run("ls -F bin"), "ls -F bin\n" + "".join(f"{n}.exe*\n" for n in BINARIES))
     check("ls file", s.run("ls tests/hello.txt"),
           "ls tests/hello.txt\nls: tests/hello.txt: Not a directory\nexit 1\n")
@@ -84,7 +84,7 @@ def run(ctx):
 
     # --- chmod ---
     check("chmod -x", s.run("chmod -x bin/hello.exe"), "chmod -x bin/hello.exe\n")
-    check("run without exec bit", s.run("hello"), "hello\nhello: not executable\n")
+    check("run without exec bit", s.run("hello"), "hello\nhello: Permission denied\n")
     check("chmod +x", s.run("chmod +x bin/hello.exe"), "chmod +x bin/hello.exe\n")
     check("run with exec bit", s.run("hello"), "hello\nhello from userspace\n")
     check("chmod -w", s.run("chmod -w tests/copy.txt"), "chmod -w tests/copy.txt\n")

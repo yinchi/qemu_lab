@@ -9,9 +9,10 @@
 //! and echoes a line, given whatever prefix to draw before it; what the prompt says, and when a
 //! fresh one is drawn, is shell policy.
 
-pub mod argv;
 pub mod builtins;
 pub mod launch;
+pub mod lexer;
+pub mod syntax;
 
 use crate::console::Console;
 use crate::fs::blkio::VOL;
@@ -20,7 +21,6 @@ use crate::keyboard::queue;
 use crate::platform::globals::{CONSOLE, GPU};
 use crate::platform::uart::{uart_ensure_newline, uart_write};
 use crate::{static_mut_ref, static_ref};
-use argv::{Argv, ParseError};
 use launch::{launch, report};
 
 /// The prompt shown before the line being typed -- fixed text with no relation to the line's own
@@ -36,6 +36,43 @@ pub fn start_prompt(discipline: &mut LineDiscipline, console: &mut Console) {
     discipline.redraw(console);
     uart_ensure_newline();
     uart_write(PROMPT.as_bytes());
+}
+
+/// Runs one typed line: parses it (`syntax.rs`) and executes it -- a builtin (`builtins.rs`) or a program
+/// (`launch.rs`) -- reporting whatever went wrong as one line of text. A blank line or a comment does
+/// nothing, quietly, as in any shell. Pipes and redirections parse but are not run yet, and say so.
+pub fn run_line(line: &str, console: &mut Console) {
+    let pipeline = match syntax::parse(line) {
+        Ok(Some(pipeline)) => pipeline,
+        Ok(None) => return,
+        Err(error) => {
+            report(console, &alloc::format!("syntax error: {error}"));
+            return;
+        }
+    };
+    if pipeline.len() > 1 {
+        report(console, "pipes are not supported yet");
+        return;
+    }
+    let segment = &pipeline[0];
+    if !segment.redirs.is_empty() {
+        report(console, "redirection is not supported yet");
+        return;
+    }
+    let argv: alloc::vec::Vec<&str> = segment
+        .argv
+        .iter()
+        .map(alloc::string::String::as_str)
+        .collect();
+    if builtins::is_builtin(argv[0]) {
+        if let Err(message) = builtins::run(argv[0], &argv[1..]) {
+            report(console, &message);
+        }
+    } else {
+        // SAFETY: as `run`'s doc comment says of the statics it uses.
+        let vol = unsafe { static_ref!(VOL) };
+        launch(vol, &argv, console);
+    }
 }
 
 /// The read-eval loop: takes each key press from the token queue, hands it to the line discipline
@@ -66,26 +103,7 @@ pub fn run() -> ! {
                 LineOutcome::Ignored | LineOutcome::EndOfFile => {}
                 LineOutcome::Edited => needs_flush = true,
                 LineOutcome::Finished(text) => {
-                    match Argv::parse(&text) {
-                        Ok(argv) if builtins::is_builtin(argv.program()) => {
-                            if let Err(message) =
-                                builtins::run(argv.program(), &argv.as_argv()[1..])
-                            {
-                                report(console, &message);
-                            }
-                        }
-                        Ok(argv) => {
-                            // SAFETY: see this function's doc comment.
-                            let vol = unsafe { static_ref!(VOL) };
-                            launch(vol, &argv, console);
-                        }
-                        // A blank line (just Enter with nothing typed) isn't an error --
-                        // nothing to log, same as any real shell.
-                        Err(ParseError::Empty) => {}
-                        Err(ParseError::Malformed) => {
-                            report(console, &alloc::format!("Malformed input: {text:?}"));
-                        }
-                    }
+                    run_line(&text, console);
                     start_prompt(discipline, console);
                     needs_flush = true;
                 }

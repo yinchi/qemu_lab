@@ -28,7 +28,7 @@ def run(ctx):
 
     # --- the exec bit is enforced for a path, as for a bare name ---
     check("path without the exec bit", s.run("tests/probe.exe"),
-          "tests/probe.exe\ntests/probe.exe: not executable\n")
+          "tests/probe.exe\ntests/probe.exe: Permission denied\n")
 
     for name in ["probe.exe", "bigpad.exe"] + MALFORMED_ELFS:
         s.run(f"chmod +x tests/{name}")
@@ -36,7 +36,7 @@ def run(ctx):
         s.run(f"chmod +x {path}")
 
     # --- lookup errors ---
-    check("bare name unchanged", s.run("nosuch"), "nosuch\nnosuch: not found\n")
+    check("bare name unchanged", s.run("nosuch"), "nosuch\nnosuch: command not found\n")
     check("path: missing file", s.run("tests/nosuch.exe"),
           "tests/nosuch.exe\ntests/nosuch.exe: No such file or directory\n")
     check("path: missing directory", s.run("nosuch/x"), "nosuch/x\nnosuch/x: No such file or directory\n")

@@ -38,9 +38,9 @@ def run(ctx):
     s.type("z" * 30)  # the queue holds 16
     wait_for_end(s, "spun 4\n> ")
     s.type("\n")
-    out = wait_for_end(s, "not found\n> ")
+    out = wait_for_end(s, "command not found\n> ")
     check("overflow: the first 16 keys survive, the rest are dropped", out,
-          "zzzzzzzzzzzzzzzz\nzzzzzzzzzzzzzzzz: not found\n")
+          "zzzzzzzzzzzzzzzz\nzzzzzzzzzzzzzzzz: command not found\n")
     check("overflow: one note on the serial log for the burst", s.log().count(NOTE), 1)
     check("overflow: the shell is responsive", s.run("echo alive"), "echo alive\nalive\n")
 

@@ -76,6 +76,8 @@ def run(ctx):
         golden = json.load(f)
     for (label, got), (want_label, want) in zip(golden_session(s), golden):
         assert label == want_label, (label, want_label)
+        # The one deliberate difference from r11: Step 7 switched the launcher's messages to bash's wording.
+        want = want.replace(": not found\n", ": command not found\n")
         check(f"golden (r11): {label}", got, want)
 
     # --- T4.6: output longer than the screen scrolls, and the prompt lands on the last row ---

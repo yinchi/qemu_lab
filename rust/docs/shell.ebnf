@@ -1,0 +1,63 @@
+(* Notation: "-" is set subtraction on characters; otherwise standard EBNF ([ ] optional, ( ) group,
+   *, + repetition, | alternation, ?...? a character class too large to spell out). A match is always
+   extended as far as it can go before being treated as decided (maximal munch) -- equivalently, of
+   two alternatives that could both start matching at the same position, whichever matches more
+   wins. *)
+
+char        ::= ? any single character ? ;
+whitespace  ::= ? any Unicode whitespace character ? ;
+
+squote      ::= "'" ;
+dquote      ::= "\"" ;
+slash       ::= "\\" ;
+
+squote_char ::= char - "'" ;
+squoted     ::= squote squote_char* squote ;
+(* no escaping inside single quotes *)
+
+dquote_escape    ::= slash (dquote | slash | "$" | "`") ;
+(* an escaped character inside double quotes *)
+dquote_backslash ::= slash (char - dquote - slash - "$" - "`") ;
+(* a bare slash followed by a literal character, excluding the four above *)
+dquote_char      ::= (char - dquote - slash) | dquote_escape | dquote_backslash ;
+dquoted          ::= dquote dquote_char* dquote ;
+
+escape        ::= slash char ;
+(* outside any quote, "\\" escapes exactly the next character, whatever it is *)
+
+unquoted_start ::= char - whitespace - dquote - squote - slash - "|" - "<" - ">" - "#"
+                        - ";" - "&" - "(" - ")" ;
+(* non-whitespace characters that can start an unquoted word. Omits characters that have special
+meaning in the shell, such as quotes, backslashes, pipes, redirection symbols, and comment
+markers. *)
+unquoted_tail  ::= unquoted_start | "#" ;
+(* "#" may continue a word already started but never starts one *)
+unquoted       ::= unquoted_start unquoted_tail* ;
+
+piece       ::= dquoted | squoted | escape ;
+(* a quoted or escaped piece of text *)
+tail        ::= piece unquoted_tail* ;
+(* a tail is a piece followed by zero or more unquoted_tail characters *)
+token       ::= unquoted tail* | tail+ ;
+(* If the first part of a token is unquoted, it cannot start with # in addition to the other
+   special characters *)
+
+comment     ::= "#" char* ;
+
+redir_op     ::= in_redir | out_redir | append_redir | dup_redir ;
+in_redir     ::= [ "0" ] "<" ;
+out_redir    ::= [ "1" | "2" ] ">" ;
+append_redir ::= [ "1" | "2" ] ">>" ;
+dup_redir    ::= [ "1" | "2" ] ">&" ;
+
+segment     ::= (whitespace | token | redir_op token | comment)* ;
+(* words and redirections interleave in any order/count; a redirection with no operand ("cmd >"
+   at end of input) or two "<"/"&" with nothing valid between them ("<<", "<&") simply fail to
+   match anything at that position, leaving input unconsumed -- a syntax error, same as any other
+   unparseable leftover. `comment` consumes everything after it, so nothing follows one. A segment
+   with neither a token nor a redir_op (blank, or only a comment) is rejected after parsing, not
+   excluded here. *)
+
+pipeline    ::= segment ("|" segment)* ;
+(* maximal munch ensures a comment consumes everything after it, so it is always part of the last
+   segment. *)

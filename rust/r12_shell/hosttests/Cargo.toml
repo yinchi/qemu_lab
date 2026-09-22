@@ -9,5 +9,6 @@ edition = "2024"
 [workspace]
 
 [dependencies]
+peg = { version = "0.8", default-features = false }
 unifont = "1.1"
 abi = { path = "../../user/abi" }

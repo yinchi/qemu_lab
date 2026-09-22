@@ -16,7 +16,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 4c | `clear`: an `ioctl` syscall, and program tiers | done |
 | 5 | Eval loop out of IRQ context (token queue) | done |
 | 6 | Working directory and the shell-state frame stack | done |
-| 7 | Lexer, `run_line`, bash wording | -- |
+| 7 | Lexer, `run_line`, bash wording | done |
 | 8 | Redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`) | -- |
 | 9 | Scripts and scopes | -- |
 | 10 | `mkdir`, `rm -r`, `mv` | -- |
@@ -85,8 +85,8 @@ src/
 │   └── argplan.rs (P)   elfparse.rs (P)   usermem.rs (P)   frame_stack.rs (P)   shell_state.rs (the FRAMES static, cwd, chdir)   elf.rs (maps the window)   process.rs
 ├── syscall/           mod.rs: dispatch and the fault path
 │   └── fd.rs          the fd table
-└── shell/             mod.rs: PROMPT, start_prompt and run (the read-eval loop)
-    └── launch.rs (find_program, launch, report)   argv.rs   builtins.rs (cd)
+└── shell/             mod.rs: PROMPT, start_prompt, run_line and run (the read-eval loop)
+    └── launch.rs (find_program, launch, report)   lexer.rs (P)   syntax.rs (P: the parser)   builtins.rs (cd)
 ```
 
 Cycles found and removed by the move: `fd` <-> `files` (the open-file limit now lives in `fs::files`, and `fd` sizes its
@@ -124,7 +124,9 @@ example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` 
   check); `hosttests/` crate skeleton; `just test-host` / `just test-qemu` / `just test`; `test/README.md`.
 - **Docs:** this file, and ROADMAP.md's Stage 12 reduced to a summary with the forward-connection edits.
 - **Done:** `just test` passes; the only expectation changes from r11 are the paths (fixtures live under `tests/`) and the root listing, which is now
-  `bin`, `fonts`, `tests`, `tmp`; `git status` shows nothing under `rust/r06..r11`.
+  `bin`, `fonts`, `home`, `tests`, `tmp`; `git status` shows nothing under `rust/r06..r11`.
+- **`home/` (added at Step 7):** the place for hand-made files -- demo text, scratch material -- so the root listing the tests check stays fixed. Nothing under
+  `home/` is a test fixture (those live in `tests/`); today it holds `utf8-demo.txt`, a page of multilingual text for looking at the Unicode console.
 
 ## Phase 1: fixes and restructuring of existing functionality
 
@@ -618,7 +620,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
   `-x`, a 256-byte name) leaving the directory unchanged; from `/tests`: `cat` and `cp` with relative paths and `..`, `chmod` relative, `./probe.exe` and `../tests/probe.exe` launched by
   path while a bare `probe.exe` is not found; `getcwd` with room, exactly enough, too little and nothing (`probe getcwd N`); `pwd -L`, `pwd -x`, `pwd a`. `core_utils`'s `bin` listing gained `pwd`.
 
-### Step 7: command-line lexer and `run_line` (`argv.rs` -> `lexer.rs`/`shell.rs`)
+### Step 7: command-line lexer and `run_line` (`argv.rs` -> `lexer.rs`/`shell.rs`) (done)
 - `shlex::split` loses quoting info (`echo "|"` would look like a pipe, `a>b` stays one word). Replace with a small
   lexer producing `Word{text, quoted}`, `Pipe`, and redirection tokens `Redir { fd, op }` with `op` = `In` (`<`),
   `Out` (`>`), `Append` (`>>`), `Dup` (`>&N`), keeping the existing quote/backslash rules for words (unterminated
@@ -631,7 +633,8 @@ has a "first thing to unmask" hazard). This step removes that structure.
   `2>&` with anything but `1`/`2`, empty pipeline stage, ...). No `&&`/`;` (documented as unsupported).
 - **Quoting and comments follow POSIX:** single quotes are fully literal; double quotes keep everything literal except
   that backslash escapes only `"` and `\` (and `$`/backtick, which have no meaning yet -- `\$` inside double quotes yields
-  `$`, so this stays compatible when Stage 16 adds `$VAR`); unquoted backslash escapes the next character; a `#` starts a
+  `$`, so this stays compatible *if* a later stage ever adds `$VAR` expansion; the roadmap does not currently commit to
+  that -- Stage 16 adds `envp` inheritance and `export`, not command-line expansion); unquoted backslash escapes the next character; a `#` starts a
   comment **only at the start of a word** (`echo a#b` prints `a#b`, `echo a #b` prints `a`). `$`, backtick, `*`, `?`,
   `~` and `{}` are ordinary characters for now (no expansion/globbing until later stages; documented).
 - **Messages (bash wording; decided), applied here after the Step 4-5 golden comparisons:** unknown command ->
@@ -643,6 +646,26 @@ has a "first thing to unmask" hazard). This step removes that structure.
   else run the pipeline. Plain single commands behave exactly as before.
 - **Tests:** quoting cases (`echo "a b"`, `echo '|'`, `echo a\ b`), `a>b` splitting, malformed input reports error and
   prompt survives, every r11 command still works via the new path.
+
+**As built.**
+- `shell/lexer.rs` (pure, 14 host tests): a single scan over the line with one word being built. Tokens are `Word { text, quoted }`, `Pipe` and `Redir { fd, op }` (`In`, `Out`, `Append`, `DupOut`). Quoted or
+  escaped characters never become operators -- the decision is made while scanning, which is what `shlex` could not do (it has no operators, and drops whether a word was quoted). The rules are exactly the
+  plan's: POSIX single and double quotes (a backslash in double quotes escapes only `"`, `\`, `$` and a backtick), `#` a comment only at the start of a word, the fd-number prefix only for an unquoted, unescaped
+  `1`/`2` before `>` (or `0` before `<`), and `$ ` `` ` `` `* ? ~ { }` ordinary. `;`, `&`, `(`, `)`, `<<` and `<&` are refused, not taken for text.
+  fd numbers above 2 are never recognized (not a Step-8 gap -- stays true once redirection runs): `ShellFrame::stdio`
+  (Step 6) is a fixed 3-slot array, so `cmd 3> f` lexes as the word `3` plus an ordinary (fd-1) redirect, not a
+  redirection of fd 3, unlike POSIX's `IO_NUMBER` (any digit string). The full grammar -- kept in sync with the code,
+  not duplicated in prose here -- lives in `rust/docs/shell.ebnf`.
+- `shell/syntax.rs` (pure, 12 host tests): `parse(line) -> Result<Option<Pipeline>, SyntaxError>`, with `Pipeline { stages: Vec<Command { argv, redirs }> }` and `Redirection { In, Out { fd, path, append }, Dup { fd, target } }` kept in the
+  order typed. Errors -- an unterminated quote or trailing backslash, an operator with no file name, `>&` with anything but 1 or 2, an empty stage (`| a`, `a |`) -- read as sentences (`syntax error: no file name after `>``). A
+  stage of only redirections (`> f`) parses; running it is Step 8's. It is a single pass with one token of lookahead (a redirection takes the next word) and no backtracking.
+- `shell::run_line` is the old `Finished` branch: parse, builtin or `launch`. **Pipes and redirections parse but are not run yet**: they report `pipes are not supported yet` / `redirection is not supported yet`, until Steps 11 and 8.
+  `shell/argv.rs` and the `shlex` dependency are gone; `launch` takes the argument list directly.
+- **Bash wording:** `name: command not found` (was `not found`), `name: Permission denied` (was `not executable`), `cannot execute: Exec format error` as before; the `exit N` line stays. The tests were updated, and the r11 golden
+  comparison applies the one substitution `not found` -> `command not found`, the only deliberate difference from r11's transcript.
+- **Tests:** `cases/step07_syntax.py` -- quoting end to end (`"a b"`, `'a b'`, `a\ b`, `"|"`, `'|'`, `\|`, quoted `<`/`>`/`>>`, backslashes inside each kind of quote, an empty argument arriving as one, adjacent quoting `a'b c'd`);
+  comments (`echo a #b`, `a#b`, `"#"`, `\#a`, a comment-only line); `$ * ? ~ {}` as text; pipes and redirections refused for now (including `2>b`, and `echo 2` as text); every syntax error reported with the prompt surviving; `;` and `&` refused.
+- **`home/`:** while running the tests a stray demo file at the root of `disk/` broke the hard-coded root listing, so the image gained a `home/` folder for hand-made files (Step 0 as-built, above); the listing is now `bin fonts home tests tmp`.
 
 ### Step 8: redirection (`shell.rs`, `fd.rs`, `files.rs`)
 - `cmd > f`: shell opens `f` for write (via `abspath` and `resolve`; creates/truncates, same limits as `open`),
@@ -839,7 +862,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
   the `.exe` files) so no binary blobs are checked in.
 
 ### Per-step tests (expected results are exact strings/behaviors unless noted)
-**Step 0.** T0.1 every r11 utility case passes on r12 as `cases/core_utils.py` (fixture paths under `tests/`; the root listing is `bin fonts tests tmp`). T0.2 the built image is 64 MiB FAT16, `fsck.fat -n` clean.
+**Step 0.** T0.1 every r11 utility case passes on r12 as `cases/core_utils.py` (fixture paths under `tests/`; the root listing is `bin fonts home tests tmp`). T0.2 the built image is 64 MiB FAT16, `fsck.fat -n` clean.
 T0.3 `git status` shows nothing under `rust/r09..r11`. T0.4 `just test-host` runs (zero tests is acceptable here).
 
 **Step 1.** T1.1 `chmod +x /tests/binary256` then `/tests/binary256` -> `...: cannot execute: Exec format error`, prompt returns,
@@ -1005,7 +1028,7 @@ history; prompt `> `.
 `clear pwd mkdir rm mv` (new, in `progs_r12`), plus Stage 9's `hello`/`crash`; all with rows in `docs/progs.md`. **Test programs and fixtures**
 live only in `r12_shell/test/progs/` -> `disk/tests/` (`probe overflow spin` + fixtures), documented in
 `r12_shell/test/README.md`; the shared `abi` crate sits beside `userlib` as a library, not a binary.
-**Disk and memory:** 64 MiB FAT16 (`bin/ fonts/ tmp/` + fixtures), gitignored image; kernel heap 16 MiB, DMA pool 2 MiB,
+**Disk and memory:** 64 MiB FAT16 (`bin/ fonts/ home/ tests/ tmp/`), gitignored image; kernel heap 16 MiB, DMA pool 2 MiB,
 kernel stack 1 MiB, user window unchanged at 2 MiB (variable size is Stage 17).
 **Docs/repo:** ROADMAP Stage 12 restructured with the Steps and the userspace-`sh` prerequisite table; Stages 13/16/19/22/23/24
 notes updated; `docs/progs.md` (+ a shell section or `docs/shell.md`); r09-r11 untouched and still building.
