@@ -14,6 +14,11 @@ def run(ctx):
     check("three-stage chain", s.run("cat tests/hello.txt | head -n 3 | wc -l"),
           "cat tests/hello.txt | head -n 3 | wc -l\n3\n")
     check("ls | wc -l", s.run("ls tests/docs | wc -l"), "ls tests/docs | wc -l\n1\n")
+    check("tee taps a pipeline's data while still passing it through",
+          s.run("echo hello | tee tests/pipetee.txt | cat"),
+          "echo hello | tee tests/pipetee.txt | cat\nhello\n")
+    check("...and the file got a copy of it too", s.run("cat tests/pipetee.txt"),
+          "cat tests/pipetee.txt\nhello\n")
 
     # ================================================================= exit status: last stage only
     check("false | true reports nothing (pipeline status is true's)",

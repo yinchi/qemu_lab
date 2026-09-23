@@ -193,9 +193,15 @@ def main():
         check("cat directory", s.run("cat docs"), "cat docs\ncat: docs: Is a directory\nexit 1\n")
         check("ls", s.run("ls"), "ls\nbin\ndocs\nfonts\ndata.bin\nhello.txt\n")
         check("ls -F", s.run("ls -F"), "ls -F\nbin/\ndocs/\nfonts/\ndata.bin\nhello.txt\n")
+        # `bin/` is the one directory on the image that's *meant* to grow as core utilities are
+        # added, unlike the fixed fixture directories elsewhere -- so the expected list is derived
+        # from what `just disk` actually staged (host-side `disk/bin/`), not a hand-maintained one
+        # that would otherwise need editing (or force a new program out of the shared tier) every
+        # time a program is added. Alphabetical to match `folder_to_img.sh`'s own sort-then-copy
+        # order, which is what ends up as the FAT on-disk order `ls` reports.
+        bin_names = sorted(n[:-4] for n in os.listdir(os.path.join(disk_dir, "bin")) if n.endswith(".exe"))
         check("ls -F bin", s.run("ls -F bin"),
-              "ls -F bin\n" + "".join(f"{n}.exe*\n" for n in
-                  "cat chmod cp crash echo false head hello hexdump ls tail true wc".split()))
+              "ls -F bin\n" + "".join(f"{n}.exe*\n" for n in bin_names))
         check("ls file", s.run("ls hello.txt"), "ls hello.txt\nls: hello.txt: Not a directory\nexit 1\n")
         check("ls bad option", s.run("ls -x"), "ls -x\nls: unknown option: -x\nexit 1\n")
 

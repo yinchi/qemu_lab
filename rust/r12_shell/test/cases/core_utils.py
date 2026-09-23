@@ -11,8 +11,6 @@ import subprocess
 
 from harness import CTRL_D, BACKSPACE, dir_attr, mcopy_out, text_bands
 
-BINARIES = "cat chmod clear cp crash echo false head hello hexdump ls mkdir mv pwd rm stat tail true wc".split()
-
 
 def run(ctx):
     s, check = ctx.s, ctx.check
@@ -46,7 +44,12 @@ def run(ctx):
     check("cat directory", s.run("cat tests/docs"), "cat tests/docs\ncat: tests/docs: Is a directory\nexit 1\n")
     check("ls", s.run("ls"), "ls\nbin\nfonts\nhome\ntests\ntmp\n")
     check("ls -F", s.run("ls -F"), "ls -F\nbin/\nfonts/\nhome/\ntests/\ntmp/\n")
-    check("ls -F bin", s.run("ls -F bin"), "ls -F bin\n" + "".join(f"{n}.exe*\n" for n in BINARIES))
+    # `bin/` is the one directory meant to grow as core utilities are added (unlike the fixed
+    # fixtures under `tests/`), so the expected list is derived from what `just disk` actually
+    # staged rather than a hand-maintained one -- alphabetical, matching `folder_to_img.sh`'s own
+    # sort-then-copy order, which is what ends up as the FAT on-disk order `ls` reports.
+    bin_names = sorted(n[:-4] for n in os.listdir(ctx.bin_dir) if n.endswith(".exe"))
+    check("ls -F bin", s.run("ls -F bin"), "ls -F bin\n" + "".join(f"{n}.exe*\n" for n in bin_names))
     check("ls file", s.run("ls tests/hello.txt"),
           "ls tests/hello.txt\nls: tests/hello.txt: Not a directory\nexit 1\n")
     check("ls bad option", s.run("ls -x"), "ls -x\nls: unknown option: -x\nexit 1\n")
@@ -94,6 +97,26 @@ def run(ctx):
           "chmod 755 tests/copy.txt\nchmod: 755: invalid mode\nexit 1\n")
     check("chmod missing", s.run("chmod +x tests/nosuch"),
           "chmod +x tests/nosuch\nchmod: tests/nosuch: No such file or directory\nexit 1\n")
+
+    # --- tee ---
+    check("tee copies stdin to stdout and a file", s.run("tee tests/tee1.txt < tests/hello.txt"),
+          "tee tests/tee1.txt < tests/hello.txt\n" + hello_txt)
+    check("...the file has the same content", s.run("cat tests/tee1.txt"), "cat tests/tee1.txt\n" + hello_txt)
+    check("tee -a appends instead of truncating", s.run("tee -a tests/tee1.txt < tests/hello.txt"),
+          "tee -a tests/tee1.txt < tests/hello.txt\n" + hello_txt)
+    check("...the file now has it twice", s.run("cat tests/tee1.txt"), "cat tests/tee1.txt\n" + hello_txt * 2)
+    check("tee with several files writes to all of them",
+          s.run("tee tests/tee2.txt tests/tee3.txt < tests/hello.txt"),
+          "tee tests/tee2.txt tests/tee3.txt < tests/hello.txt\n" + hello_txt)
+    check("...first file", s.run("cat tests/tee2.txt"), "cat tests/tee2.txt\n" + hello_txt)
+    check("...second file", s.run("cat tests/tee3.txt"), "cat tests/tee3.txt\n" + hello_txt)
+    check("tee still passes stdin through even if a file can't be opened",
+          s.run("tee tests/nosuchdir/x.txt < tests/hello.txt"),
+          "tee tests/nosuchdir/x.txt < tests/hello.txt\n"
+          "tee: tests/nosuchdir/x.txt: No such file or directory\n" + hello_txt + "exit 1\n")
+    check("tee --help", s.run("tee --help"), "tee --help\n"
+          "usage: tee [-a] [file...]\n"
+          "  -a  append to each file instead of truncating it\n")
 
     # --- clear: the screen is emptied and the prompt comes back at the top ---
     s.run("cat tests/hello.txt")  # something on screen to clear

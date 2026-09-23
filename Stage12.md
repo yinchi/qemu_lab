@@ -21,6 +21,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 9 | Scripts and scopes | done |
 | 10 | Add/enhance user programs (`mkdir`/`rm`/`mv`/`stat`, multi-operand, flags, `--help`) | done |
 | 11 | Pipes via temp files | done |
+| 11b | `tee`, and fixing the `ls -F bin` test's own fragility | done |
 | 12 | Line editing and history | -- |
 | 13 | Docs, roadmap, full regression | -- |
 
@@ -1096,6 +1097,51 @@ bullet, added during that reading, not assumed beforehand).
   `exit N` auto-print convention is retired, not kept alongside it, matching real bash (nothing prints
   automatically; checking `$?` becomes explicit). `Stage12.md`'s own scattered `"...which needs variables"`
   cross-references were tightened to name Stage 16 directly.
+
+### Step 11b: `tee`, and fixing `ls -F bin`'s own fragility (`user/progs`, both stages' test suites) (done)
+An extra, prompted by "can we handle `tee` currently?" once Step 11 made it actually useful (its whole point is
+tapping a pipeline's data to a file while still passing it through -- `cmd1 | tee log.txt | cmd2`), and by what
+adding it exposed about an existing test's design.
+
+- **`tee [-a] [file...]` needs no new syscall.** `open`/`read`/`write`/`close` are all it takes -- the same
+  primitives `cp` has used since Stage 11. Copies stdin to stdout and to every named file at once (POSIX allows
+  zero file operands, an odd-but-valid way to copy stdin to stdout, so that's not a usage error here either);
+  `-a` is a plain `O_APPEND` on open, matching how `>>`/`cp` already work. Destination files are opened up front
+  (before any read), held open for the whole copy, and held in a fixed-size array (`MAX_FILES = 8`, generous for
+  realistic use) rather than a `Vec` -- no heap in EL0, same constraint `progs::PathBuf` was built around at Step
+  10. A file that fails to open (or later fails to write to) is reported once and skipped from then on; stdin
+  still passes through to stdout and every other file regardless -- continuing past one bad operand rather than
+  aborting, the same convention `mkdir`/`rm`/`mv`/`cp`/`chmod` already established.
+- **Placement: the shared `user/progs` tier, not `progs_r12`.** Unlike `mkdir`/`rm`/`mv`/`stat`/`cp`'s and
+  `chmod`'s multi-operand forms (Step 10) and `head`/`tail -c` (Step 11), `tee` depends on nothing r09-r11's older
+  kernels lack -- it was placed in the shared tier on exactly that basis, since nothing about it is actually
+  Stage-12-specific.
+- **This surfaced a real, previously-undiscussed tension, not just a mechanical repeat of Step 10's lesson.**
+  Adding *any* new shared-tier program changes what `ls -F bin` lists, and r11's own copy of that test hardcodes
+  the full expected list -- so even a program with zero functional incompatibility with r11 still breaks that one
+  test. Step 4c and Step 10 had both resolved this the same way (move the new program to `progs_r12`, so r11 is
+  never touched at all), which would have worked here too, but examining *why* the test breaks every time turned
+  up the actual problem: **`bin/` is the one directory on the image deliberately meant to grow as core utilities
+  are added -- unlike `tests/`'s fixed fixture files, hardcoding its exact contents is fragile by construction,
+  not just an unlucky coincidence that keeps recurring.** Fixed at the source instead of worked around again:
+  both `r11_busybox/test/run_tests.py` and `r12_shell/test/cases/core_utils.py`'s `"ls -F bin"` checks now derive
+  the expected list from what `just disk` actually staged on the host (`os.listdir` on `disk/bin/`, sorted to
+  match `folder_to_img.sh`'s own sort-then-copy order, which is what ends up as the FAT on-disk order `ls`
+  reports) instead of a hand-maintained Python list. `Context` (`test/harness.py`) gained a `bin_dir` alongside
+  the existing `tests_dir`, documented as the one directory expected to grow, for `user_progs.py`'s own
+  multi-directory `ls` test to reuse rather than re-deriving it a third time.
+- **This is a one-time robustness fix to the test's own design, not an ongoing content-sync exception to "r09-r11
+  are not touched."** r11's actual behavior is provably unchanged (rebuilt and its full `just test` passes,
+  unchanged, before and after); only how one test computes its *expectation* changed, and it now never needs
+  touching again for this specific reason, for any future program landing in the shared tier, in this stage or
+  any later one that reuses the pattern. Given this, the earlier question of "hand-edit r11's list vs. move `tee`
+  to `progs_r12` anyway" no longer applies -- a third option (fix the test itself) made both of the original ones
+  unnecessary.
+- **Tests:** `core_utils.py` -- stdin-to-stdout-and-a-file (via `<`, not a pipe, so this doesn't depend on Step
+  11 to test `tee` on its own), `-a` appending, several files at once, a file that can't be opened still lets
+  stdin through and reports its own error, `--help`. `pipes.py` -- one pipeline-context test (`echo hello | tee
+  f | cat` shows `hello` *and* leaves a copy in `f`), the behavior `tee` actually exists for. `docs/progs.md`
+  gained `tee`'s row.
 
 ### Step 12: line editing and history (`keyboard/line.rs`/`line_discipline.rs`, `console/mod.rs`)
 - Cursor-aware buffer (Stage 5's insert/remove at a position, adapted -- no CSI parsing, no ANSI redraw), driven by

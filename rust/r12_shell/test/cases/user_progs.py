@@ -7,9 +7,8 @@ Fixtures: `disk/tests/hello.txt`, `disk/tests/notes.txt`, `disk/tests/docs/examp
 `disk/tests/tree/` (new: a 3-level directory tree for `rm -r`) -- `a.txt`, `sub1/b.txt`, `sub1/sub2/c.txt`.
 """
 
+import os
 from datetime import datetime
-
-from cases.core_utils import BINARIES
 
 # `folder_to_img.sh` pins mtools' timestamps to this Unix time (2026-01-01T00:00:00Z) for
 # reproducible builds; mtools converts it to *local* time when stamping FAT dates (there's no
@@ -179,8 +178,9 @@ def run(ctx):
           f"{n_lines} {n_words} {n_bytes} tests/notes.txt\n"
           f"{h_lines + n_lines} {h_words + n_words} {h_bytes + n_bytes} total\n")
 
+    bin_names = sorted(n[:-4] for n in os.listdir(ctx.bin_dir) if n.endswith(".exe"))
     check("ls with several directory operands", s.run("ls tests/docs bin"),
-          "ls tests/docs bin\ntests/docs:\nexample.txt\n\nbin:\n" + "".join(f"{n}.exe\n" for n in BINARIES))
+          "ls tests/docs bin\ntests/docs:\nexample.txt\n\nbin:\n" + "".join(f"{n}.exe\n" for n in bin_names))
 
     ex_size = len(example_txt)
     check("ls -l", s.run("ls -l tests/docs"),
