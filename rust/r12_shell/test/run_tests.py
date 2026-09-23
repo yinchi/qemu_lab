@@ -36,7 +36,7 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power
+from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing
 from harness import Context, Session
 
 GROUPS = [
@@ -55,6 +55,7 @@ GROUPS = [
     [user_progs],
     [pipes],
     [power],
+    [line_editing],
 ]
 
 

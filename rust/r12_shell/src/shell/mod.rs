@@ -402,7 +402,11 @@ pub fn run() -> ! {
             let (discipline, console) =
                 unsafe { (static_mut_ref!(LINE_DISCIPLINE), static_mut_ref!(CONSOLE)) };
             match discipline.handle(token, console) {
-                LineOutcome::Ignored | LineOutcome::EndOfFile => {}
+                // `Partial` (Ctrl+D on a non-empty line) is `Mode::Canonical`-only -- see
+                // `line_discipline.rs` -- and this loop always runs in `Mode::Prompt`, so it can
+                // never actually happen here; matched anyway since `LineOutcome` has no wildcard
+                // arm elsewhere in this crate either.
+                LineOutcome::Ignored | LineOutcome::EndOfFile | LineOutcome::Partial(_) => {}
                 LineOutcome::Edited => needs_flush = true,
                 LineOutcome::Finished(text) => {
                     run_line(&text);

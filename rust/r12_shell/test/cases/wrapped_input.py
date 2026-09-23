@@ -34,8 +34,10 @@ def run(ctx):
     first, second, third = (band for _, band in bands[-3:])
     check("the start of the line (the prompt) is still visible", cell_blank(first, 0), False)
     check("the first two rows are full", (cell_blank(first, COLS - 1), cell_blank(second, COLS - 1)), (False, False))
-    check("the last row holds the remaining 42 cells",
-          (cell_blank(third, 41), cell_blank(third, 42)), (False, True))
+    # Cell 42 is the cursor (Step 12: drawn right after the last typed character), not blank as it
+    # was before cursor rendering existed -- cell 43, past it, still is.
+    check("the last row holds the remaining 42 cells, then the cursor",
+          (cell_blank(third, 41), cell_blank(third, 42), cell_blank(third, 43)), (False, False, True))
 
     # --- Backspace back across the row boundary: the rows the line no longer needs are cleared ---
     s.keys([BACKSPACE] * 125)  # 202 - 125 = 77 cells: one row

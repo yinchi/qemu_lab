@@ -16,17 +16,31 @@ pub mod elfparse;
 pub mod font;
 #[path = "../../src/exec/frame_stack.rs"]
 pub mod frame_stack;
+#[path = "../../src/keyboard/history.rs"]
+pub mod history;
 #[path = "../../src/console/input_layout.rs"]
 pub mod input_layout;
+// `line.rs` uses `super::tokens`, which in turn uses `super::keymap` (for `Token::char()`'s
+// `KEY_NAMES` lookup, only exercised by tests that hold Ctrl -- see `line.rs`'s `feed` doc
+// comment) and `crate::static_ref!` (from `util.rs`) -- pulled in below so the whole module tree
+// still compiles here, not because these tests populate `KEY_NAMES` themselves.
+#[path = "../../src/keyboard/keymap.rs"]
+pub mod keymap;
 #[path = "../../src/shell/lexer.rs"]
 pub mod lexer;
+#[path = "../../src/keyboard/line.rs"]
+pub mod line;
 #[path = "../../src/fs/path.rs"]
 pub mod path;
 #[path = "../../src/keyboard/ring_buffer.rs"]
 pub mod ring_buffer;
 #[path = "../../src/shell/syntax.rs"]
 pub mod syntax;
+#[path = "../../src/keyboard/tokens.rs"]
+pub mod tokens;
 #[path = "../../src/exec/usermem.rs"]
 pub mod usermem;
 #[path = "../../src/console/utf8.rs"]
 pub mod utf8;
+#[path = "../../src/util.rs"]
+pub mod util;

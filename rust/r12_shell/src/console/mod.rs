@@ -150,6 +150,16 @@ impl Console {
         self.cursor.end_glyph(width, self.cols);
     }
 
+    /// Draws `c`'s glyph at an explicit `(row, col)`, without touching the cursor -- for
+    /// position-addressed writes (the Step 12 line editor's cursor-cell redraw) rather than
+    /// cursor-relative typing. Unlike `write_char`, `c` is drawn as-is: no `\n`/`\r`/`\t`/backspace
+    /// special-casing, since callers here always mean "put this glyph in this cell."
+    pub fn put_char_at(&mut self, row: usize, col: usize, c: char, fg: u32, bg: u32) {
+        let glyph = glyph_for(c);
+        let width = if glyph.is_fullwidth() { 2 } else { 1 };
+        self.draw_glyph(row, col, glyph, width, fg, bg);
+    }
+
     /// Scrolls the console up by one row.
     ///
     /// The pixels are all the console keeps of what is on screen (plus which cells are half a wide

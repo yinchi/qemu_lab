@@ -32,6 +32,24 @@ pub const KEY_SPACE: u16 = 57;
 // Ctrl+D on an empty line is `read(0)`'s end-of-file -- see `stdin.rs`.
 pub const KEY_D: u16 = 32;
 
+// Step 12 (`Stage12.md`): cursor movement, history, and readline-style Ctrl combinations --
+// `Mode::Prompt` only, see `line.rs`'s "Token handling by mode" table.
+pub const KEY_HOME: u16 = 102;
+pub const KEY_UP: u16 = 103;
+pub const KEY_LEFT: u16 = 105;
+pub const KEY_RIGHT: u16 = 106;
+pub const KEY_END: u16 = 107;
+pub const KEY_DOWN: u16 = 108;
+pub const KEY_DELETE: u16 = 111;
+/// Ctrl+A: move to the start of the line.
+pub const KEY_A: u16 = 30;
+/// Ctrl+E: move to the end of the line.
+pub const KEY_E: u16 = 18;
+/// Ctrl+U: erase from the cursor to the start of the line (both modes -- see `line.rs`).
+pub const KEY_U: u16 = 22;
+/// Ctrl+K: erase from the cursor to the end of the line.
+pub const KEY_K: u16 = 37;
+
 const KEY_LCTRL: u16 = 29;
 const KEY_LSHIFT: u16 = 42;
 const KEY_LALT: u16 = 56;

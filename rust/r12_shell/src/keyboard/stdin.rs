@@ -9,7 +9,9 @@
 //! queue and are read like any other, in order.
 //!
 //! Ctrl+D on an empty line is end-of-file (`read` returns 0), so a program reading until EOF
-//! (`cat` with no arguments) has a way to stop. On a non-empty line it does nothing.
+//! (`cat` with no arguments) has a way to stop. On a non-empty line it delivers what's typed so far
+//! without a trailing newline instead (POSIX canonical mode's actual rule) -- a further Ctrl+D on
+//! the now-empty line is then EOF, same as ever.
 
 use alloc::vec::Vec;
 
@@ -47,10 +49,9 @@ pub fn read(buf: &mut [u8]) -> isize {
     let (pending, pos) = unsafe { (&mut *(&raw mut PENDING), &mut *(&raw mut PENDING_POS)) };
 
     if *pos >= pending.len() {
-        let Some(mut line) = read_line() else {
+        let Some(line) = read_line() else {
             return 0;
         };
-        line.push(b'\n');
         *pending = line;
         *pos = 0;
     }
@@ -61,8 +62,10 @@ pub fn read(buf: &mut [u8]) -> isize {
     n as isize
 }
 
-/// Blocks until Enter finishes a line (returned without its newline), echoing what's typed at
-/// the console's current row as it goes; `None` on Ctrl+D with nothing typed.
+/// Blocks until Enter finishes a line, or Ctrl+D delivers what's typed so far -- either way, what's
+/// returned already has whatever trailing newline `read`'s caller should see (one for Enter, none
+/// for Ctrl+D's partial delivery), echoing what's typed at the console's current row as it goes;
+/// `None` on Ctrl+D with nothing typed.
 fn read_line() -> Option<Vec<u8>> {
     // SAFETY: the shell's loop is inside `launch` (it called us, through the program), so nothing
     // else uses these statics -- and the interrupt handler never does (see `queue.rs`).
@@ -75,8 +78,11 @@ fn read_line() -> Option<Vec<u8>> {
     };
 
     // Start typing on a fresh row if the program left its cursor mid-line; nothing goes before the
-    // line.
+    // line. Draws the (empty) line and its cursor immediately, same as `start_prompt` does for the
+    // shell's own prompt -- otherwise the cursor wouldn't show until the first keystroke.
     discipline.begin(console, "", Mode::Canonical);
+    discipline.redraw(console);
+    gpu.flush();
 
     loop {
         // IRQs are masked inside a syscall, so the device's events wait there until we fetch them.
@@ -87,6 +93,14 @@ fn read_line() -> Option<Vec<u8>> {
                 LineOutcome::Ignored => {}
                 LineOutcome::Edited => gpu.flush(),
                 LineOutcome::Finished(text) => {
+                    gpu.flush();
+                    let mut bytes = text.into_bytes();
+                    bytes.push(b'\n');
+                    return Some(bytes);
+                }
+                LineOutcome::Partial(text) => {
+                    // Unlike `EndOfFile`, the reading program keeps running and may not touch the
+                    // display again for a while -- see `LineOutcome::Partial`'s doc comment.
                     gpu.flush();
                     return Some(text.into_bytes());
                 }

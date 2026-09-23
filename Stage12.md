@@ -23,7 +23,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 11 | Pipes via temp files | done |
 | 11b | `tee`, and fixing the `ls -F bin` test's own fragility | done |
 | 11c | `poweroff`/`reboot` via PSCI | done |
-| 12 | Line editing and history | -- |
+| 12 | Line editing and history | done |
 | 13 | Docs, roadmap, full regression | -- |
 
 ## Goal
@@ -1197,6 +1197,103 @@ inserted with the same `11b` numbering convention for exactly that reason (Step 
 - **Tests (via `sendkey` incl. arrow/home/end/delete):** insert mid-line, delete, Home/End, Up/Down through several
   commands and back to the pending line, long-line scrolling window, Backspace at column 0, history doesn't record
   `read(0)` input, `cat` stdin editing.
+
+**As built.** Matches the plan closely -- confirmed before writing anything that evdev tokens for Left/Right/Up/
+Down/Home/End/Delete already flowed through the token queue untouched (no CSI parsing needed, ever), that
+`Mode::Prompt`/`Mode::Canonical` already existed, and that pinning `Mode::Canonical`'s cursor at the end makes
+Backspace/Delete/Ctrl+U correct in both modes with no special-casing -- all exactly as planned. Several real
+issues turned up only once actual keystrokes went through QEMU, not from reading the code:
+
+- **A gap the plan's own table already claimed was built, wasn't:** `stdin.rs`'s doc comment still said Ctrl+D
+  "does nothing" on a non-empty line, r11's original behavior -- the POSIX partial-delivery refinement was
+  decided (see the plan text above) but never implemented. Built here: `LineOutcome` gained `Partial(String)`,
+  `LineBuffer::take()` (shared with `Finished`'s own buffer-clearing), and `stdin.rs`'s `read`/`read_line` moved
+  the newline push out of `read` and into `read_line` per-case (`Finished` pushes one, `Partial` doesn't).
+- **`Mode` moved out of `line_discipline.rs` into `line.rs`** (re-exported from its old location, so every
+  external caller is unaffected), discovered while wiring `line.rs` into `hosttests`: `LineBuffer::feed` needs
+  `Mode` to gate movement keys, and `line_discipline.rs` is not host-testable (it touches `Console`/UART), so
+  putting `Mode` there would have made pure-logic `line.rs` depend on kernel-only code. `line.rs`'s `feed` was
+  also restructured so movement/Ctrl+A/E/K keys return `None` directly when the mode is wrong, rather than
+  falling through to the character-insertion arm -- both matches the "just absent from that mode's vocabulary"
+  framing better and avoids calling `Token::char()` from a host test, which unconditionally unwraps the
+  kernel-only `KEY_NAMES` static and panics outside a running kernel. Getting `line.rs` host-testable at all
+  needed `tokens.rs`, `keymap.rs`, and `util.rs` (for `static_ref!`) pulled into `hosttests` too, plus `bimap`
+  added to its `Cargo.toml`.
+- **A real crash, found by the existing `launch.py` suite** (not a new test -- a long `probe.exe args ...`
+  command line at the prompt): `console::put_char_at`'s bounds assert failed placing the cursor. Root cause: the
+  cursor-position mapper (promoted from the test-only `insertion_point`) resolved a pending wrap to "the start
+  of the next row" unconditionally, matching what a *future* character would need -- correct for a cursor
+  short of the end of the text (a real character really is drawn there), wrong for a cursor at the very end of
+  text that exactly fills the last column of the last row the screen has room for, where there is no real next
+  row to point at. Fixed in `console/input_layout.rs`'s `cursor_position`: only resolves the wrap when
+  `cursor < text.len()`; at the true end it stays on the row's last column, matching xterm's own deferred-wrap
+  rule (`cells.rs`'s `Cursor`) -- the *visible* cursor sits on the last-drawn glyph until another one actually
+  arrives, not already jumped ahead. Cost three of the eight pre-existing `insertion_point` test values (all at
+  an exact-row-fill boundary) and added a dedicated regression test at both layers (host: exactly filling a
+  row; QEMU: typing up to the last column of the actual screen, which is what originally panicked).
+- **Two cursor-rendering bugs, found by review of the diff, not by any test:** finishing a line (Enter, or
+  either Ctrl+D case in `Mode::Canonical`) left the last-drawn inverted cursor cell on screen forever, since
+  nothing redraws a finished line's row again -- fixed by un-inverting the cell at the cursor's position
+  (captured before `feed` clears the buffer) as part of finishing. And `stdin.rs`'s `read_line` didn't draw
+  anything until the first keystroke, unlike `start_prompt`'s own `begin` + `redraw`, so a program reading
+  stdin (`cat > foo`) showed no cursor on its fresh line until something was typed -- fixed by drawing (and
+  flushing) immediately, matching `start_prompt`. Refactored the shared "draw this cell inverted or not" logic
+  into one `draw_cell_at` taking an explicit `text`/`cursor` rather than always reading `self.buffer`, since the
+  finishing-line case needs the *pre-clear* text.
+- **History's edit-persistence question, resolved deliberately, not by default:** real bash keeps an edited
+  copy of a recalled entry alive across repeated Up/Down browsing within one session, only reverting once that
+  specific entry is actually submitted -- discovered while writing this section's docs, contradicting an
+  earlier (wrong) claim that bash discards the edit immediately on navigating away. Asked the user directly
+  rather than silently implementing either: kept the simpler design already in the plan (navigating away
+  discards the edit; `History` needs no shadow copy of the whole list), since it needs meaningfully less state
+  for a corner case the user themselves called "rather odd" about bash's own behavior. Documented as a
+  deliberate simplification in `history.rs`'s own doc comment, not an oversight.
+- **Files:** `keyboard/tokens.rs` (named constants for the new keys), `console/mod.rs` (`put_char_at`, a thin
+  position-addressed wrapper around the existing private `draw_glyph`), `console/input_layout.rs`
+  (`cursor_position`, generalized from `insertion_point` as above), `keyboard/line.rs` (cursor-aware
+  `LineBuffer`, `Mode`, `LineEvent::CursorMoved`), `keyboard/history.rs` (new: `History`, append-only,
+  duplicate-check narrow to the last entry, `CAPACITY = 64`), `keyboard/line_discipline.rs` (mode-aware
+  `handle`, `LineOutcome::Partial`, Up/Down interception, `draw_cell_at`/`draw_cursor`/`redraw_cursor`),
+  `keyboard/stdin.rs` (as above).
+- **Tests:** host (`hosttests`) -- `line.rs` (insert/backspace/delete-forward/movement/kill at every boundary,
+  mode-gating), `history.rs` (record/dedup/eviction/recall round-trips/`reset_recall`), `input_layout.rs`
+  (`cursor_position` at start/middle/wrapped/after-a-wide-character, plus the deferred-wrap regression above).
+  QEMU: `test/cases/line_editing.py` (new) -- insert/Backspace/Delete mid-line, Left/Right/Home/End no-ops at
+  the boundaries (screendump-differential, no hardcoded colors), Home/End/Ctrl+A/E/U/K exact results, the
+  exact-row-fill regression, history recall (capped-at-the-oldest via far more Up presses than history could
+  hold, duplicate suppression, empty lines, the pending line), the visible cursor landing on the right cell at
+  a wrap boundary (differential corner-pixel comparison), `Mode::Canonical` fully unaffected by any of the
+  above (`cat` reading stdin), and the Ctrl+D partial-delivery refinement end to end. Two existing tests needed
+  updating for genuinely new, correct behavior rather than a regression: `line_discipline.py`'s r11-golden
+  script no longer exercises Ctrl+D on a non-empty line (r11's "does nothing" no longer matches r12, by
+  design -- the new behavior has its own dedicated test instead) and `wrapped_input.py`'s "last row holds the
+  remaining 42 cells" check now accounts for the cursor itself occupying the cell right after the last typed
+  character, which nothing drew there before cursor rendering existed.
+
+**Token handling by mode** (copy into `docs/shell.md`/`docs/progs.md` in Step 13, alongside the grammar/builtins/
+scoping-rules content that section is already planned to cover):
+
+| Token | `Mode::Prompt` | `Mode::Canonical` |
+|---|---|---|
+| Printable character | insert at the cursor | insert at the cursor (append -- the cursor is always at the end here) |
+| Enter | finish the line, run it | finish the line, deliver it to the reading program |
+| Backspace | erase the character before the cursor | same operation -- erases the last character, since the cursor is always at the end here |
+| Delete | erase the character at/after the cursor | nothing -- no forward-delete in POSIX canonical mode (and nothing past the cursor to erase anyway) |
+| Left | move the cursor left one character | nothing |
+| Right | move the cursor right one character | nothing |
+| Home | move the cursor to the start of the line | nothing |
+| End | move the cursor to the end of the line | nothing |
+| Up | recall the previous history entry | nothing |
+| Down | recall the next history entry, or return to the in-progress line | nothing |
+| Ctrl+A | move the cursor to the start of the line | nothing |
+| Ctrl+E | move the cursor to the end of the line | nothing |
+| Ctrl+U | erase from the cursor to the start of the line | POSIX KILL: discard the whole line -- the same operation as Prompt's, since the cursor is always at the end here |
+| Ctrl+K | erase from the cursor to the end of the line | nothing -- no POSIX KILL-to-end character |
+| Ctrl+D | nothing -- the shell is init and never exits on EOF | end-of-file if the line is empty; on a non-empty line, delivers what's typed so far *without* a newline instead (a further Ctrl+D on the now-empty line is then EOF) |
+
+Ctrl+C/Ctrl+Z are deliberately absent from this table, not merely "nothing": the token queue's producer
+recognizes those before a token is ever queued (Stages 20-22), so `line.rs`/`line_discipline.rs` never see them
+at all, in either mode.
 
 ### Step 13: docs, roadmap, full regression
 - `Stage12.md` and the ROADMAP.md Stage 12 summary: reconcile with what was actually built (Steps as implemented,

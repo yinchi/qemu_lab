@@ -26,32 +26,36 @@
 
 use alloc::string::String;
 
+use super::history::History;
 use super::line::{LineBuffer, LineEvent};
-use super::tokens::{KEY_D, Token};
-use crate::console::input_layout::{fits_on_screen, rows_needed};
+pub use super::line::Mode;
+use super::tokens::{KEY_D, KEY_DOWN, KEY_UP, Token};
+use crate::console::input_layout::{cursor_position, fits_on_screen, rows_needed};
 use crate::console::{BG, Console, FG};
 use crate::platform::uart::uart_write;
-
-/// How a line is being read.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// The shell's prompt: Ctrl+D does nothing (the shell is init and never exits on end-of-file).
-    Prompt,
-    /// A program's `read(0)`, a tty's canonical mode: Ctrl+D on an empty line is end-of-file.
-    Canonical,
-}
 
 /// What handling one token did.
 pub enum LineOutcome {
     /// Nothing that shows: a modifier, a shortcut, an unbound key, Backspace on an empty line.
     Ignored,
-    /// The line changed and its row was redrawn; the display needs a flush.
+    /// The line changed (text or cursor) and was redrawn; the display needs a flush.
     Edited,
     /// Enter finished the line -- here is its text; the console has moved to the next row and the UART has
     /// the line. The display needs a flush.
     Finished(String),
-    /// Ctrl+D on an empty line in `Mode::Canonical`.
+    /// Ctrl+D on an empty line in `Mode::Canonical`. The line itself isn't redrawn (there was
+    /// nothing to show differently), only the visible cursor cell is un-inverted if it was showing
+    /// -- the caller flushes if it wants that visible right away; `read_line` doesn't, since the
+    /// program reading almost always exits or blocks right after, and the shell's next prompt
+    /// flushes on its way up regardless.
     EndOfFile,
+    /// Ctrl+D on a *non-empty* line in `Mode::Canonical`: here is what had been typed so far, with
+    /// no trailing newline -- POSIX's actual rule (a further Ctrl+D on the now-empty line is
+    /// `EndOfFile`). The line's text isn't redrawn (it stays on screen exactly as typed), but the
+    /// visible cursor cell (always at the end, in `Mode::Canonical`) is un-inverted, the same as
+    /// `Finished` -- unlike `EndOfFile`, the reading program keeps running afterward and may not
+    /// touch the display again for a while, so the caller should flush this one.
+    Partial(String),
 }
 
 /// The line being typed, on the console.
@@ -68,6 +72,9 @@ pub struct LineDiscipline {
     /// What is drawn before the line: the shell's prompt, or nothing for a program.
     prefix: &'static str,
     mode: Mode,
+    /// The shell prompt's command history (`Mode::Prompt`'s Up/Down; untouched in `Mode::Canonical`,
+    /// since a program's `read(0)` never records or recalls anything).
+    history: History,
 }
 
 /// The line discipline of the one console. Written once by `kernel_main`, before the keyboard's
@@ -84,12 +91,14 @@ impl LineDiscipline {
             height: 1,
             prefix: "",
             mode: Mode::Prompt,
+            history: History::new(),
         }
     }
 
     /// Starts a new line with `prefix` in front of it: on a fresh row if whatever ran before left the
     /// cursor mid-line, else on the cursor's own row. Draws nothing (see `redraw`); the buffer is empty
-    /// -- a finished line already emptied it.
+    /// -- a finished line already emptied it. Also ends any in-progress history browsing, so a stale
+    /// recall position from a previous line never leaks into this one.
     pub fn begin(&mut self, console: &mut Console, prefix: &'static str, mode: Mode) {
         if console.cursor().1 != 0 {
             console.write_char('\n', FG, BG);
@@ -98,12 +107,15 @@ impl LineDiscipline {
         self.height = 1;
         self.prefix = prefix;
         self.mode = mode;
+        self.history.reset_recall();
     }
 
     /// Draws the prefix and the line so far, from the line's first row down as far as it needs: the rows
     /// it used to occupy are cleared first, then the text is written the way any output is, so it wraps
     /// at the edge of the screen and scrolls it if it runs past the bottom -- after which the first row
-    /// is recomputed from where the cursor ended, because scrolling moved the line up.
+    /// is recomputed from where the cursor ended, because scrolling moved the line up. Finishes by
+    /// placing the visible cursor at its logical position (`self.buffer.cursor()`), which is not
+    /// necessarily where `write_char` just left the console's own cursor -- the user may have moved left.
     pub fn redraw(&mut self, console: &mut Console) {
         let height = rows_needed(self.prefix, self.buffer.as_str(), console.cols);
         let last_row = (self.row + self.height.max(height)).min(console.rows);
@@ -116,35 +128,108 @@ impl LineDiscipline {
         }
         self.row = console.cursor().0 + 1 - height;
         self.height = height;
+        self.draw_cursor(console);
+    }
+
+    /// Draws the cell at `cursor` (a byte offset, on a char boundary) within `text`, `inverted` or
+    /// in ordinary colors: whatever character is actually there, or a space past the end of `text`.
+    /// Wide glyphs need no special handling here: `cursor_position` always returns a glyph's *left*
+    /// anchor cell (never the right half of a wide one), and `put_char_at` already draws
+    /// width-aware, the same way ordinary typing does (see `console/mod.rs`). Takes `text`
+    /// explicitly rather than always reading `self.buffer`, since un-inverting a line's last cursor
+    /// cell when it finishes (`handle`'s `Finished` arm) needs the text as it was *before* `feed`
+    /// cleared the buffer -- `self.buffer.as_str()` is already empty by then.
+    fn draw_cell_at(&self, console: &mut Console, text: &str, cursor: usize, inverted: bool) {
+        let (rel_row, col) = cursor_position(self.prefix, text, cursor, console.cols);
+        let c = text[cursor..].chars().next().unwrap_or(' ');
+        let (fg, bg) = if inverted { (BG, FG) } else { (FG, BG) };
+        console.put_char_at(self.row + rel_row, col, c, fg, bg);
+    }
+
+    /// Draws the visible cursor (inverse video: `fg`/`bg` swapped) at its current logical position.
+    fn draw_cursor(&self, console: &mut Console) {
+        self.draw_cell_at(console, self.buffer.as_str(), self.buffer.cursor(), true);
+    }
+
+    /// A pure cursor move: un-inverts the old cursor cell (drawing it in ordinary colors), then
+    /// draws the new one -- two `put_char_at` calls, regardless of how far apart they are (e.g. End
+    /// pressed from row 0 landing on row 3 costs the same as a same-row move; see
+    /// `console/input_layout.rs`'s Home/End note). `old_cursor` is a byte offset into the *current*
+    /// text, valid because `LineEvent::CursorMoved` only ever fires when the text itself didn't change.
+    fn redraw_cursor(&self, console: &mut Console, old_cursor: usize) {
+        self.draw_cell_at(console, self.buffer.as_str(), old_cursor, false);
+        self.draw_cursor(console);
     }
 
     /// Handles one token. The caller flushes the display afterwards if the outcome says so.
     pub fn handle(&mut self, token: Token, console: &mut Console) -> LineOutcome {
-        if self.mode == Mode::Canonical
-            && token.ctrl
-            && token.code == KEY_D
-            && self.buffer.is_empty()
-        {
-            return LineOutcome::EndOfFile;
+        if self.mode == Mode::Canonical && token.ctrl && token.code == KEY_D {
+            // Un-invert wherever the cursor was last drawn -- same reason as the `Finished` arm
+            // below: nothing else redraws this row before the caller moves on (`read`'s next call,
+            // if any, starts a fresh one via `begin`), so a stale inverted cell would otherwise be
+            // left behind permanently.
+            let cursor = self.buffer.cursor();
+            return if self.buffer.is_empty() {
+                self.draw_cell_at(console, "", cursor, false);
+                LineOutcome::EndOfFile
+            } else {
+                let text = self.buffer.take();
+                self.draw_cell_at(console, &text, cursor, false);
+                LineOutcome::Partial(text)
+            };
         }
-        match self.buffer.feed(token) {
+
+        if self.mode == Mode::Prompt
+            && !token.ctrl
+            && !token.alt
+            && (token.code == KEY_UP || token.code == KEY_DOWN)
+        {
+            let recalled = if token.code == KEY_UP {
+                self.history.recall_prev(self.buffer.as_str())
+            } else {
+                self.history.recall_next()
+            };
+            return match recalled {
+                None => LineOutcome::Ignored,
+                Some(text) => {
+                    let text = String::from(text);
+                    self.buffer.set(&text);
+                    self.redraw(console);
+                    LineOutcome::Edited
+                }
+            };
+        }
+
+        let old_cursor = self.buffer.cursor();
+        match self.buffer.feed(token, self.mode) {
             None => LineOutcome::Ignored,
+            Some(LineEvent::CursorMoved) => {
+                self.redraw_cursor(console, old_cursor);
+                LineOutcome::Edited
+            }
             Some(LineEvent::Changed) => {
-                // A character that would make the line outgrow the screen is dropped (Backspace, the
-                // other way a line changes, only ever shortens it).
+                // A character that would make the line outgrow the screen is dropped -- the only
+                // way `Changed` can overflow, since every other edit it covers (Backspace, Delete,
+                // Ctrl+U/K) only ever shortens the line.
                 if !fits_on_screen(
                     self.prefix,
                     self.buffer.as_str(),
                     console.cols,
                     console.rows,
                 ) {
-                    self.buffer.pop();
+                    self.buffer.backspace();
                     return LineOutcome::Ignored;
                 }
                 self.redraw(console);
                 LineOutcome::Edited
             }
             Some(LineEvent::Finished(text)) => {
+                // Un-invert wherever the cursor was last drawn (usually the end, but Enter can be
+                // pressed with the cursor anywhere) -- `redraw` is never called again for a
+                // finished line (see this struct's `row` doc comment), so nothing else would.
+                self.draw_cell_at(console, &text, old_cursor, false);
+                self.history.record(&text);
+                self.history.reset_recall();
                 // The typed line goes to the UART here, once finished -- a readable transcript
                 // without echoing every keystroke -- and the console moves off the input row
                 // *before* anything else writes a byte, so a launched program's output (or an error

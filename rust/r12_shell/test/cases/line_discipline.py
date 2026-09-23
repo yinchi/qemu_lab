@@ -54,9 +54,10 @@ def golden_session(s):
     s.type("o\n")
     s.wait_until(lambda t: t.endswith("hello\nhello\n"), "cat to echo the line back")
     s.keys([BACKSPACE])  # nothing typed: no effect
-    s.type("ab")
-    s.keys([CTRL_D])  # not empty: does nothing
-    s.type("c\n")
+    # Not Ctrl+D-on-a-non-empty-line here: r11 ignored it, r12 doesn't (Step 12's POSIX partial-delivery
+    # refinement, tested on its own in `line_editing.py`) -- typing the line whole keeps this shared
+    # script's transcript identical on both, matching the r11-captured golden data below.
+    s.type("abc\n")
     s.wait_until(lambda t: t.endswith("abc\nabc\n"), "cat to echo abc")
     s.keys([CTRL_D])
     rec("cat: stdin", s.wait_prompt())
