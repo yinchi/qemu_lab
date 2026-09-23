@@ -22,6 +22,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 10 | Add/enhance user programs (`mkdir`/`rm`/`mv`/`stat`, multi-operand, flags, `--help`) | done |
 | 11 | Pipes via temp files | done |
 | 11b | `tee`, and fixing the `ls -F bin` test's own fragility | done |
+| 11c | `poweroff`/`reboot` via PSCI | done |
 | 12 | Line editing and history | -- |
 | 13 | Docs, roadmap, full regression | -- |
 
@@ -1142,6 +1143,41 @@ adding it exposed about an existing test's design.
   stdin through and reports its own error, `--help`. `pipes.py` -- one pipeline-context test (`echo hello | tee
   f | cat` shows `hello` *and* leaves a copy in `f`), the behavior `tee` actually exists for. `docs/progs.md`
   gained `tee`'s row.
+
+### Step 11c: `poweroff`/`reboot` via PSCI (`arch/psci.rs`, `syscall/power.rs`, `abi::reboot`, `user/progs_r12`) (done)
+Prompted by an out-of-band question ("does `virt` have a shutdown register?") rather than by the plan --
+inserted with the same `11b` numbering convention for exactly that reason (Step 12/13 stay the numbers
+`Stage12.md`'s own forward-references already use).
+
+- **PSCI, not `gpio-poweroff`.** `virt` implements PSCI (Power State Coordination Interface) above EL1 by
+  default, reached with a single `hvc #0` and no device discovery at all -- `SYSTEM_OFF` (`0x8400_0008`) and
+  `SYSTEM_RESET` (`0x8400_0009`) in `x0`. The GPIO-based alternative would mean parsing the DTB for a
+  controller's MMIO base and driving real device-register bits for zero benefit here, so it was never
+  seriously considered. `arch/psci.rs`'s two functions (`system_off`/`system_reset`) each fall through to the
+  existing `hang()` afterward -- pure defense (both PSCI calls are documented never to return), the same
+  fallback the panic handler already uses, not a new idiom.
+- **One syscall, not two.** `SYS_REBOOT = 142` -- Linux's real `reboot(2)` number, matching this project's
+  standing convention (every syscall number here is Linux's real aarch64 value). Its `cmd` argument is one of
+  `abi::reboot`'s `LINUX_REBOOT_CMD_POWER_OFF`/`_RESTART`; anything else is `EINVAL`, matching what real Linux
+  does for an unrecognized `cmd`. Simplified like every other syscall here that borrows a Linux shape
+  (`mkdirat`/`unlinkat`/`renameat`/`newfstatat` all drop a `dirfd`): no `magic1`/`magic2` (Linux's own guard
+  against an accidental reboot -- historical cruft with no functional purpose against callers this project
+  controls) and no `arg` (only `LINUX_REBOOT_CMD_RESTART2` reads it, unsupported, since nothing here does
+  kexec-style reboots).
+- **Two programs, not one `shutdown`.** Real `shutdown(8)` takes a mandatory `TIME` operand (`now`/`+N`/
+  `hh:mm`) this project can't honor faithfully -- no RTC exists until Stage 14 -- so a `shutdown` that quietly
+  assumed "now" would be a shim pretending to support scheduling it doesn't. `poweroff(8)`'s own shape fits
+  what's actually implemented instead: `poweroff [--reboot]` (default: power off; `--reboot` restarts instead)
+  plus a standalone `reboot` program equivalent to `poweroff --reboot` -- matching how util-linux/systemd
+  expose `reboot`/`poweroff` as genuinely separate binaries, not just `shutdown` aliases. Both live in
+  `progs_r12` (a new syscall r09-r11's kernels don't have), following Step 10's placement rule.
+- **Tests:** `power.py`, its own group (like every other module, one QEMU instance) -- `--help` on both,
+  `reboot`'s one error path (`-x`), then the two real PSCI calls last: `reboot` actually resets the board
+  (checked by the full boot banner reappearing on the serial log, not just a fresh prompt -- a plain shell
+  restart could never produce that on its own) and `poweroff` actually exits QEMU (`Session.qemu.poll() == 0`).
+  Both bypass `Session.run`/`wait_prompt`, which treat QEMU exiting mid-wait as a failure -- so this is the one
+  test module that talks to `Session` below that abstraction, and necessarily runs `poweroff` last, since
+  nothing runs after QEMU is gone. `docs/progs.md` gained both rows.
 
 ### Step 12: line editing and history (`keyboard/line.rs`/`line_discipline.rs`, `console/mod.rs`)
 - Cursor-aware buffer (Stage 5's insert/remove at a position, adapted -- no CSI parsing, no ANSI redraw), driven by

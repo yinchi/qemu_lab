@@ -7,6 +7,7 @@
 //! - [`ioctl`]: the request codes `SYS_IOCTL` takes.
 //! - [`fs`]: the fixed layouts and flags around files -- `open` flags, the `getdents` record, the
 //!   FAT attribute bits.
+//! - [`reboot`]: the `cmd` values `SYS_REBOOT` takes.
 //!
 //! Everything here is borrowed from Linux's aarch64 ABI *for familiarity only* -- this project makes
 //! no other Linux-compatibility claim. Syscall numbers are Linux's real ones; errors are negated
@@ -22,4 +23,5 @@
 pub mod errno;
 pub mod fs;
 pub mod ioctl;
+pub mod reboot;
 pub mod syscall;

@@ -3,6 +3,7 @@
 //! in `syscall/fd.rs`.
 
 pub mod fd;
+pub mod power;
 
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 
@@ -14,7 +15,7 @@ use crate::platform::uart::uart_ensure_newline;
 use abi::errno::ENOSYS;
 use abi::syscall::{
     SYS_CHMOD, SYS_CLOSE, SYS_EXIT, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT,
-    SYS_NEWFSTATAT, SYS_OPEN, SYS_READ, SYS_RENAMEAT, SYS_UNLINKAT, SYS_WRITE,
+    SYS_NEWFSTATAT, SYS_OPEN, SYS_READ, SYS_REBOOT, SYS_RENAMEAT, SYS_UNLINKAT, SYS_WRITE,
 };
 
 // The ESR_EL1 EC field values this handler decodes -- see sync_el0_handler for what each one
@@ -70,6 +71,7 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                 SYS_UNLINKAT => regs.x[0] = fd::unlink(a0, a1, a2) as u64,
                 SYS_RENAMEAT => regs.x[0] = fd::rename(a0, a1, a2, a3) as u64,
                 SYS_NEWFSTATAT => regs.x[0] = fd::stat(a0, a1, a2) as u64,
+                SYS_REBOOT => regs.x[0] = power::reboot(a0 as u32) as u64,
                 SYS_EXIT => {
                     // Never returns to kernel_exit's normal eret-back-to-EL0
                     // path -- resume_kernel (arch/context.s) restores the register

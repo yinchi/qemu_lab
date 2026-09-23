@@ -4,7 +4,10 @@
 
 use core::arch::asm;
 
-use abi::syscall::SYS_EXIT;
+use abi::syscall::{SYS_EXIT, SYS_REBOOT};
+
+/// The `cmd` values `reboot` takes, re-exported so programs write `userlib::LINUX_REBOOT_CMD_POWER_OFF`.
+pub use abi::reboot::{LINUX_REBOOT_CMD_POWER_OFF, LINUX_REBOOT_CMD_RESTART};
 
 core::arch::global_asm!(include_str!("start.s"));
 
@@ -31,6 +34,12 @@ pub extern "C" fn exit(code: i32) -> ! {
     loop {
         unsafe { asm!("wfe") }
     }
+}
+
+/// Powers off (`LINUX_REBOOT_CMD_POWER_OFF`) or restarts (`LINUX_REBOOT_CMD_RESTART`) the machine.
+/// Never returns on success; returns a negative error (`EINVAL`) if `cmd` isn't recognized.
+pub fn reboot(cmd: u32) -> isize {
+    syscall!(SYS_REBOOT, cmd as usize)
 }
 
 /// Mirrors `std::process::Termination`, simplified to what a syscall's

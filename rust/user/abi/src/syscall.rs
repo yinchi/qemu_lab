@@ -40,6 +40,13 @@ pub const SYS_RENAMEAT: usize = 38;
 /// as above -- no dirfd, no flags.
 pub const SYS_NEWFSTATAT: usize = 79;
 
+/// `reboot(cmd)`: powers off or restarts the machine via PSCI -- `cmd` is one of `abi::reboot`'s
+/// `LINUX_REBOOT_CMD_*` constants, `EINVAL` for anything else. Linux's number for `reboot(2)`,
+/// shape simplified like every other syscall here: no `magic1`/`magic2` (Linux's own guard against
+/// an accidental reboot, dropped as pure historical cruft with no functional purpose) and no `arg`
+/// (only `LINUX_REBOOT_CMD_RESTART2` reads it, unsupported).
+pub const SYS_REBOOT: usize = 142;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,5 +82,10 @@ mod tests {
             [SYS_MKDIRAT, SYS_UNLINKAT, SYS_RENAMEAT, SYS_NEWFSTATAT],
             [34, 35, 38, 79]
         );
+    }
+
+    #[test]
+    fn step12_number_is_linuxs_number() {
+        assert_eq!(SYS_REBOOT, 142);
     }
 }

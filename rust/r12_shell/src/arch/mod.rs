@@ -4,3 +4,4 @@
 pub mod gic;
 pub mod irq;
 pub mod mmu;
+pub mod psci;
