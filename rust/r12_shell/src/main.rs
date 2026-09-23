@@ -22,7 +22,7 @@ use core::panic::PanicInfo;
 use core::sync::atomic::Ordering;
 
 use aarch64_cpu::registers::{
-    CNTKCTL_EL1, DAIF, ELR_EL1, ESR_EL1, ReadWriteable, Readable, Writeable,
+    CNTKCTL_EL1, DAIF, ELR_EL1, ESR_EL1, FAR_EL1, ReadWriteable, Readable, Writeable,
 };
 use abi::fs::ATTR_EXEC;
 use arm_gic::{IntId, InterruptGroup, gicv2::GicV2};
@@ -53,7 +53,7 @@ use crate::platform::{
 /// `Vec` (capped at `shell::launch`'s `MAX_PROGRAM_SIZE`, half of this), `fs/files.rs` snapshots
 /// directory listings and holds open readers/writers (each with `hadris-fat`'s own buffers), and
 /// none of it is freed until the program is done. The heap is a static in `.bss`, so `arch/mmu.rs`
-/// maps it with the rest of the kernel image (`__data_start..__kernel_end`) and nothing else needs
+/// maps it with the rest of `.data`/`.bss` (`__data_start..__data_end`) and nothing else needs
 /// to know its size. The ceiling is not QEMU's RAM but the fixed user address: every user binary is
 /// linked at `0x44000000`, so the image (about 23 MiB with this heap and the Unifont tables, from
 /// `0x40000000`) must end below it -- which leaves an unmapped gap of roughly 41 MiB, where earlier
@@ -265,6 +265,16 @@ extern "C" fn unexpected_exception(v: usize) -> ! {
 
     let esr = ESR_EL1.get();
     let elr = ELR_EL1.get();
+    let far = FAR_EL1.get();
+    // A fault at an address in the unmapped guard below the kernel stack (`arch/mmu.rs`) is an
+    // overflow; `sync_el1h` runs this on a dedicated stack precisely so it can say so.
+    if v == 4 && mmu::in_stack_guard(far as usize) {
+        panic!(
+            "Kernel stack overflow: the stack ran into its guard\r\n\
+            FAR_EL1: {:#x}, ESR_EL1: {:#x}, ELR_EL1: {:#x}",
+            far, esr, elr
+        );
+    }
     panic!(
         "Unexpected exception occurred {}\r\n\
         ESR_EL1: {:#x}, ELR_EL1: {:#x}",

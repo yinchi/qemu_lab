@@ -13,7 +13,7 @@ SECTIONS
     Boundary symbols (__text_start etc.) mark each region for mmu.rs's MMU
     setup to map with distinct permissions -- RX for .text, RO for .rodata
     (and the eh_frame data, also read-only), RW+XN for everything from
-    .data through the stack. */
+    .data/.bss and (beyond an unmapped guard) the stack. */
 
 	__text_start = .;
 	.text : { *(.text.boot) *(.text*) }
@@ -41,11 +41,19 @@ SECTIONS
 	__data_start = .;
 	.data : { *(.data*) }
 	.bss : { *(.bss*) *(COMMON) }
+	. = ALIGN(4096);
+	__data_end = .;
 
-    /* Define a stack: the stack starts at its highest reserved address
-    and grows downwards */
+    /* The stack starts at its highest reserved address and grows downwards. Below it is a guard:
+    address space left unmapped by mmu.rs (which maps __data_start..__data_end and
+    __stack_bottom..__kernel_end, and nothing in between), so a stack overflow faults instead of
+    silently running into the end of .bss. Larger than any frame the kernel has, so a single large
+    frame can't step over it -- the same reasoning as the user stack's guard
+    (platform/base_addresses.rs). Page-aligned at both ends, since a mapping is per page. */
 
-	. = ALIGN(16);  /* Align the stack pointer to a 16-byte boundary */
+	__stack_guard = .;
+	. = . + 0x10000;  /* 64 KiB guard, unmapped */
+	__stack_bottom = .;
 	. = . + 0x100000; /* Allocate 1 MB for the stack */
 	stack_top = .;  /* Define the top of the stack */
 	__kernel_end = .;

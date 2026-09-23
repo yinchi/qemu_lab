@@ -15,7 +15,28 @@ use abi::errno::{EISDIR, errmsg};
 
 /// The builtin `name` is, if it is one.
 pub fn is_builtin(name: &str) -> bool {
+    #[cfg(feature = "testhooks")]
+    if name == OVERFLOW_KERNEL_STACK {
+        return true;
+    }
     matches!(name, "cd" | "source" | "." | "sh")
+}
+
+/// Test-only builtin (cargo feature `testhooks`): recurses until the kernel stack overflows into its
+/// guard, so `test/cases/stack_guard.py` can check the overflow is reported instead of corrupting
+/// memory. Nothing outside a test build has a command by this name.
+#[cfg(feature = "testhooks")]
+const OVERFLOW_KERNEL_STACK: &str = "__overflow_kernel_stack";
+
+/// One kernel stack frame of `overflow`: big enough to cross the 1 MiB stack in a few hundred calls,
+/// small enough (well under the 64 KiB guard) that no frame can step over the guard without touching it.
+#[cfg(feature = "testhooks")]
+#[allow(unconditional_recursion)]
+#[inline(never)]
+fn overflow(depth: usize) -> usize {
+    let frame = [depth as u8; 2048];
+    core::hint::black_box(&frame);
+    overflow(depth + 1) + frame[depth % 2048] as usize
 }
 
 /// Runs the builtin `name` (one `is_builtin` says yes to) with `args`, the words after it. `depth` is
@@ -34,6 +55,11 @@ pub fn run(name: &str, args: &[&str], depth: usize) -> Result<(), String> {
             [] => Err(String::from("sh: usage: sh FILE")),
             _ => Err(String::from("sh: too many arguments")),
         },
+        #[cfg(feature = "testhooks")]
+        OVERFLOW_KERNEL_STACK => {
+            core::hint::black_box(overflow(0));
+            Ok(())
+        }
         _ => unreachable!("`is_builtin` said {name} is not one"),
     }
 }

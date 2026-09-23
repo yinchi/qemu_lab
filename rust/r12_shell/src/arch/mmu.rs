@@ -1,6 +1,7 @@
 //! Builds the page tables and turns the MMU on: one shared identity-mapped table
 //! under `TTBR0_EL1` -- MMIO, the kernel image (split by `link.ld`'s
-//! boundary symbols into RX/RO/RW+XN regions), and a fixed EL0-accessible
+//! boundary symbols into RX/RO/RW+XN regions, the stack set apart from `.bss` by an unmapped
+//! guard), and a fixed EL0-accessible
 //! user window (filled in by the ELF loader) -- with `TTBR1_EL1` left unused. Stages 9-11 built the
 //! same tables but never configured `TCR_EL1` or set `SCTLR_EL1.M`, so translation stayed off and
 //! nothing was enforced (see `ROADMAP.md`'s Stage 9 warning and `Stage12.md`'s Step 3); this is
@@ -43,7 +44,17 @@ unsafe extern "C" {
     static __rodata_start: u8;
     static __rodata_end: u8;
     static __data_start: u8;
+    static __data_end: u8;
+    static __stack_guard: u8;
+    static __stack_bottom: u8;
     static __kernel_end: u8;
+}
+
+/// Whether `addr` lies in the unmapped guard below the kernel stack -- what a data abort's
+/// `FAR_EL1` says when the stack has overflowed (see `unexpected_exception`).
+pub fn in_stack_guard(addr: usize) -> bool {
+    // SAFETY: only the addresses of linker-defined boundary symbols are taken.
+    unsafe { (sym_addr(&__stack_guard)..sym_addr(&__stack_bottom)).contains(&addr) }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -162,7 +173,15 @@ pub fn enable(gicd: usize, gicc: usize) -> Hardening {
             .unwrap();
         idmap
             .map_range(
-                &MemoryRegion::new(sym_addr(&__data_start), sym_addr(&__kernel_end)),
+                &MemoryRegion::new(sym_addr(&__data_start), sym_addr(&__data_end)),
+                kernel_rw,
+            )
+            .unwrap();
+        // The stack, with the guard below it (`__stack_guard..__stack_bottom`) deliberately left
+        // unmapped: an overflow is a translation fault, not silent corruption of `.bss`.
+        idmap
+            .map_range(
+                &MemoryRegion::new(sym_addr(&__stack_bottom), sym_addr(&__kernel_end)),
                 kernel_rw,
             )
             .unwrap();

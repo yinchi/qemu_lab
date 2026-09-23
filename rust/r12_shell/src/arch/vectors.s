@@ -140,6 +140,13 @@ error_el1t:
 	bl	unexpected_exception
 
 sync_el1h:
+	/* A synchronous exception at EL1 is always fatal here, and the likeliest cause is the kernel
+	stack overflowing into its unmapped guard (see link.ld) -- in which case sp is unusable, and
+	kernel_entry's own pushes would just fault again. So report it from a dedicated stack instead.
+	(Clobbers x0 before kernel_entry saves it; not worth a scratch register on a path that only ever
+	prints a message and hangs.) */
+	ldr	x0, =EXCEPTION_STACK_TOP
+	mov	sp, x0
 	kernel_entry
 	mov	x0, #4
 	bl	unexpected_exception
@@ -190,3 +197,10 @@ error_el0_32:
 	kernel_entry
 	mov	x0, #15
 	bl	unexpected_exception
+
+/* The stack `sync_el1h` switches to. 64 KiB: room for the panic handler's message formatting. */
+.section .bss
+.balign 16
+	.skip 0x10000
+.global EXCEPTION_STACK_TOP
+EXCEPTION_STACK_TOP:
