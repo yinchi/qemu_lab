@@ -20,7 +20,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 8 | Redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`) | done |
 | 9 | Scripts and scopes | done |
 | 10 | Add/enhance user programs (`mkdir`/`rm`/`mv`/`stat`, multi-operand, flags, `--help`) | done |
-| 11 | Pipes via temp files | -- |
+| 11 | Pipes via temp files | done |
 | 12 | Line editing and history | -- |
 | 13 | Docs, roadmap, full regression | -- |
 
@@ -640,8 +640,9 @@ has a "first thing to unmask" hazard). This step removes that structure.
 - **Messages (bash wording; decided), applied here after the Step 4-5 golden comparisons:** unknown command ->
   `name: command not found` (was `name: not found`); missing exec bit -> `name: Permission denied` (was `not
   executable`); malformed ELF -> `name: cannot execute: Exec format error`. `docs/progs.md` and the tests are updated.
-  The `exit N` line stays (our stand-in for `$?`, which needs variables), printed for the *pipeline's* status only when
-  nonzero; a documented deviation from POSIX shells, which print nothing.
+  The `exit N` line stays (our stand-in for `$?` until Stage 16 adds real variables and retires this convention --
+  see `ROADMAP.md`'s Stage 16 section), printed for the *pipeline's* status only when nonzero; a documented
+  deviation from POSIX shells, which print nothing.
 - Extract the old `Finished` branch into `shell::run_line(&str)`: parse, dispatch builtins (`cd`, later `source`/`sh`),
   else run the pipeline. Plain single commands behave exactly as before.
 - **Tests:** quoting cases (`echo "a b"`, `echo '|'`, `echo a\ b`), `a>b` splitting, malformed input reports error and
@@ -980,24 +981,121 @@ original plan text.
   "Adding to this table" convention (`From Stage 12: <feature>` in each changed row's Supported column, new
   rows for `mkdir`/`rm`/`mv`/`stat`).
 
-### Step 11: pipes via temp files (`shell.rs`)
-- `a | b [| c ...]`: run stage 1 with stdout -> temp file, next stage with stdin <- that file, delete afterward;
-  multi-stage chains use a fresh temp per link (unique names from a counter, so a script running its own pipeline
-  inside a pipeline stage can't collide); temp files live in `/tmp/` on the image (created by `just disk`) via absolute
-  paths so they're cwd-independent; removed on every exit path. Named limitation (unchanged from the roadmap): finite
+### Step 11: pipes via temp files (`shell/mod.rs`, `shell/launch.rs`)
+- **The grammar needs no changes -- confirmed by reading `shell/syntax.rs`, not assumed.** Step 7 already built
+  `pub type Pipeline = Vec<Segment>` (`pipeline ::= segment ("|" segment)*`), each `Segment` already carrying its
+  own `redirs` independent of pipe-ness; `a_pipeline_has_a_stage_per_command`'s existing host test already parses
+  `"a x | b | c > out < in"` into three segments with the last one carrying both redirections in typed order, and
+  empty-stage detection (`| a`, `a |`, `a | | b`) already reports `EmptyCommand`. The only unfinished piece is
+  `shell/mod.rs:71-74`'s stub: `if pipeline.len() > 1 { shell_err("pipes are not supported yet"); return; }`. This
+  step is entirely execution, not parsing.
+- `a | b [| c ...]`: run stage 1 with stdout -> temp file, next stage with stdin <- that file; multi-stage chains
+  use a fresh temp per link; temp files live in `/tmp/` on the image (created by `just disk`) via absolute paths so
+  they're cwd-independent; removed on every exit path. Named limitation (unchanged from the roadmap): finite
   output that fits on disk only.
+- **Temp-file naming: a monotonic counter, not scoped per pipeline, plus a `stat` collision check --
+  not just a counter.** A script run as one pipeline stage can itself run its own pipeline internally, so if each
+  pipeline invocation reset its own counter to 0, an inner pipe's temp file could collide with an outer, still-alive
+  one; one counter for the whole shell's lifetime, only ever incrementing, guarantees every simultaneously-alive
+  temp file has a unique name regardless of nesting depth. That alone isn't sufficient, though: `open(path,
+  O_WRONLY)` always creates-or-truncates (no `O_EXCL`), so if a user's own file happened to already sit at the
+  counter's next name, the shell would silently destroy it. Since this shell is single-threaded with strictly
+  sequential execution, there's no TOCTOU race in checking first: before claiming counter value `N`, `files::stat`
+  the candidate path (`/tmp/.pipeN`, a leading-dot prefix distinct from anything a user is likely to type by hand,
+  as a first line of defense) and skip to `N+1` if it already exists (capped at a handful of attempts, erroring
+  "cannot create a unique temp file" if exceeded rather than looping forever against a pathological `/tmp/`).
 - **POSIX pipeline semantics, as far as sequential execution allows:** every stage always runs, even if an earlier one
   failed, faulted or wasn't found (a stage that can't start acts as an empty producer/consumer and reports its error);
   the pipeline's status is the *last* stage's; the pipe is bound *before* the stage's own redirections, so `a > f | b`
   sends `a`'s output to `f` (b sees empty input) and `cmd 2>&1 | b` sends stderr through the pipe too. Only failing to
-  create/write the temp file (disk full, `/tmp` missing) aborts the pipeline. The first stage's stdin is the keyboard.
+  create/write the temp file (disk full, `/tmp` missing) aborts the pipeline -- unlike a stage's own failure, which
+  never aborts the rest. The first stage's stdin is the keyboard.
   Deviation: stages run one after another, not concurrently, so e.g. `yes | head` can't work (Stage 23).
 - `> `/`<` on the first/last stage combine with pipes (`a < in | b > out`).
 - **Decided: temp file** (the ROADMAP's deliberate MS-DOS-style design; exercises the filesystem and stays bounded by
   disk, not RAM). The kernel-heap `Pipe(Vec<u8>)` alternative is not built; it is recorded as a possible later option in
   the ROADMAP (still finite, streaming pipes need Stages 19/23). The heap growth in Step 1 is independent of this.
+- **Mechanism: pipeline stages reuse `with_stdio`'s existing overrides, not a new binding path.**
+  `run_segment` already runs a stage's own redirects inside `frames.with_stdio(overrides, |frames| { ... })`,
+  today always called with `[None, None, None]`. A pipeline stage instead seeds that same call with the pipe's
+  binding -- `[None, Some(File(temp_write)), None]` for the first stage, `[Some(File(temp_read)), Some(File(next_temp_write)), None]`
+  for a middle stage, `[Some(File(temp_read)), None, None]` for the last -- and the segment's own redirects, applied
+  afterward via the unchanged `apply_redirect` (a plain overwrite of `frames.top_mut().stdio[fd]`), correctly layer
+  on top: exactly "pipe binds before the stage's own redirects." `run_segment` gains an internal `run_segment_with`
+  taking the initial overrides as a parameter; the existing single-command call site becomes a thin wrapper passing
+  `[None, None, None]`, unchanged in behavior.
+- **Exit status: returned up as `Option<i32>`, not conditionally printed inline -- chosen so Stage 16's real `$?`
+  needs no rearchitecture, only a different caller.** `launch` currently prints `exit {code}` itself
+  (`launch.rs:104`) whenever a program actually ran and returned a code; every other failure (`command not found`,
+  `Permission denied`, `cannot execute`, ...) already reports via `shell_err` and returns. For a pipeline, only the
+  *last* stage's code may ever produce that line (`false | true` prints nothing; `true | false` prints `exit 1`).
+  Rather than threading an "is this the reporting stage" flag into `launch`, `launch`/`run_command`/`run_segment`
+  (via `run_segment_with`) return `Option<i32>` -- `None` meaning "didn't run a program, already fully reported" (a
+  builtin, a script fallback, any of `launch`'s existing error paths), `Some(code)` meaning "ran, here's its exit
+  code" -- and `run_line_inner` (for one command) or `run_pipeline` (using only the last stage's returned value) is
+  what decides whether to print `exit N`, once, in one place. See `ROADMAP.md`'s Stage 16 section: this shape is
+  deliberate -- when real `$?` arrives, only what `run_line_inner`/`run_pipeline` *do* with the returned value
+  changes (save it instead of printing it), not the chain that produces it.
+- **Cleanup:** temp paths for a pipeline are allocated up front (before any stage runs); a small helper removes
+  every one of them on every exit from `run_pipeline` -- normal completion, a stage's own failure (still runs the
+  rest, still cleans up at the end), or a setup failure (disk full aborts immediately, cleaning up whatever was
+  already created). Each pipe handle is marked shell-owned (`files::mark_shell_owned`, the existing mechanism
+  redirect handles already use) and closed explicitly right after the stage it was bound to returns, committing
+  the write side's size to disk before the next stage opens it for reading.
 - **Tests:** `echo hello | cat`; `ls | wc -l`; 3-stage chain; `cat file | head -n 3`; a stage that fails or faults still
   cleans up its temp file and reports; pipe + redirect combos; no leftover files in `tmp/` (host check).
+
+**As built.** Matches the plan above closely -- confirmed by reading the actual grammar/execution code before
+writing anything, which is exactly what found the grammar needed no changes at all (see the plan's own first
+bullet, added during that reading, not assumed beforehand).
+- **A real regression, found by the new tests, not by inspection.** The first version returned `Option<i32>` up
+  through `launch`/`run_command`/`run_segment` and printed `exit N` once in `run_line_inner`, *after*
+  `run_segment`/`run_pipeline` returned. That broke an existing, already-tested Step 8 behavior:
+  `cat nosuchfile 2> e` expects *both* the error text and the `exit N` line to land in `e`, which only works if
+  `exit N` prints while the redirect's `with_stdio` scope is still active. Fixed by keeping the print inside
+  `run_segment_with`'s scope, gated by a new `report: bool` parameter (`true` for a plain command; `true` only for
+  a pipeline's last stage) -- the function still returns `Option<i32>` too, so the Stage-16 forward-compatibility
+  this shape was chosen for is unaffected: printing today, saving to `$?` later, are two different things the
+  *same* returned value can drive, and only `run_segment_with`'s internal `if report && ...` line is what Stage 16
+  actually replaces.
+- **Pipe binding confirmed to need no new mechanism**, exactly as planned: `run_segment` split into a thin
+  `run_segment` (plain command, `[None, None, None]`) and `run_segment_with(segment, overrides, report, depth)`,
+  which `run_pipeline` calls with the pipe's binding seeded into `overrides` -- the segment's own redirects, applied
+  right after via the unchanged `apply_redirect`, correctly layer on top.
+- **Temp files:** `PIPE_PREFIX = "/tmp/.pipe"`, `PIPE_COUNTER` (one `static mut usize`, shell-lifetime, never reset
+  per pipeline -- see the plan's own reasoning), `next_pipe_path` (`files::stat`-checks each candidate, skipping
+  past anything already there, capped at `MAX_PIPE_NAME_ATTEMPTS = 1000`), `cleanup_temps` (best-effort `unlink`
+  of every path, ignoring errors). `run_pipeline` allocates every path up front, opens each stage's pipe ends via
+  the existing `open_redirect_target` (already does exactly what's needed: resolve, open, `mark_shell_owned`),
+  and closes each handle right after the stage it belongs to returns -- fault or not, since a fault unwinds only
+  the *program's* context (`process::resume_kernel`), never the kernel's own `run_pipeline` call frame, so the
+  explicit `close` after `run_segment_with` always runs.
+- **Fixed a stale test, not a regression:** `test/cases/syntax.py`'s `"a pipe is not run yet"` check (and its
+  module docstring) predated this step and asserted the old `"pipes are not supported yet"` stub message. Updated
+  to `"a pipe runs"`, asserting `echo a | cat` actually works -- `syntax.py`'s own scope stays "parses and reaches
+  a program," with `pipes.py` (new) covering execution semantics thoroughly.
+- **`test/cases/pipes.py` (new):** two- and three-stage chains; exit status is the last stage's only (`false |
+  true` prints nothing, `true | false` prints `exit 1`); the pipe binds before a stage's own redirect (`echo hi >
+  f | wc -c` sends `echo`'s output to `f`, `wc -c` sees empty input, verified `f` really has it); `2>&1` sends
+  stderr through the pipe too, verified against the same command *without* `2>&1` (error stays on the console,
+  only stdout -- empty -- goes through); a missing first stage still lets the next stage run on empty input
+  (`nosuchprogram | wc -c` -> `0`, after its own `command not found`); a **faulting** middle stage likewise --
+  `echo x | crash | wc -c`, where `crash`'s own `"about to crash\n"` (its unbuffered `write(1, ...)`, 15 bytes)
+  is pipe-bound, not the console, so it doesn't appear on screen but does land in the temp file `wc -c` then
+  reads (`15`), while only the fault message itself (bypasses redirection unconditionally, decided back in Step
+  2) reaches the console; collision avoidance (a file manually placed at the counter's very first candidate name
+  survives a pipeline run untouched, confirmed by `cat`ing it back); no leftover temp files (`ls /tmp` after every
+  above shows only that one manually-created file). Disk-full-during-a-pipe (the plan's other named setup-failure
+  case) was not built as a live test -- no existing test in this suite pre-fills the image to exercise `ENOSPC`
+  paths at all, so this stays a documented gap rather than new test infrastructure invented specifically for it.
+- **`ROADMAP.md`'s Stage 16 section gained a `$?`/`$VAR` bullet** (prompted by exactly this step's `Option<i32>`
+  design): Stage 16's existing feature list covered `envp`/`export`/inheritance but never actually named `$VAR`
+  expansion or `$?`, despite Step 7's lexer forward-referencing `$VAR` arriving there. Solidified: `$?` is a
+  shell-only special parameter (never exported, never inherited), holding the last pipeline's status -- the exact
+  `Option<i32>` this step's `run_line_inner`/`run_pipeline` already compute -- and once it exists, Stage 12's
+  `exit N` auto-print convention is retired, not kept alongside it, matching real bash (nothing prints
+  automatically; checking `$?` becomes explicit). `Stage12.md`'s own scattered `"...which needs variables"`
+  cross-references were tightened to name Stage 16 directly.
 
 ### Step 12: line editing and history (`keyboard/line.rs`/`line_discipline.rs`, `console/mod.rs`)
 - Cursor-aware buffer (Stage 5's insert/remove at a position, adapted -- no CSI parsing, no ANSI redraw), driven by
@@ -1276,8 +1374,10 @@ mid-line, recall history with Up; `echo hello | cat`; `ls > listing.txt`, `cat l
 `cat` reading typed lines until Ctrl+D; type while `spin 3` runs and see the keys arrive afterward; reboot QEMU with the same
 image and confirm files created before are still there.
 **Known limitations (stated in docs):** finite, sequentially executed pipelines only (Stage 23 for streaming/concurrency); no variables,
-`$?`, `exit`, `if`/`for`, functions, globbing, `;`/`&&`/`||`, background jobs, here-documents, or fds above 2 until later
-stages (the `exit N` line stands in for `$?`); `cd` with no operand goes to `/` until `$HOME`; Ctrl+D at the prompt does nothing; single resident program; kernel-resident shell (path to userspace `sh` recorded); FAT16 root has 512 slots.
+`$?`, `exit`, `if`/`for`, functions, globbing, `;`/`&&`/`||`, background jobs, here-documents, or fds above 2 until Stage 16
+(variables, `$?`, `$VAR` expansion -- the `exit N` line stands in for `$?` until then) or later stages; `cd` with no operand
+goes to `/` until `$HOME` (also Stage 16); Ctrl+D at the prompt does nothing; single resident program; kernel-resident shell
+(path to userspace `sh` recorded); FAT16 root has 512 slots.
 
 ## Kernel heap growth: what actually limits it (researched from r11's code and build)
 - **Today:** heap = 1 MiB `static mut` in `.bss`; kernel image is ~200 KB text + 5.25 MiB bss (2 MiB virtio DMA pool,
@@ -1314,7 +1414,7 @@ stages (the `exit N` line stands in for `$?`); `cd` with no operand goes to `/` 
 | `./script`, `sh script` | new shell process | pushed frame (`with_scope`) | no real process until Stage 19+ |
 | `source`/`.` | current shell | no push; redirect via `with_stdio` | -- |
 | Pipelines | concurrent; every stage runs; status = last | every stage runs, status = last, pipe bound before redirects | sequential via temp files |
-| Command not found / not executable | exit 127 / 126 | bash wording; `exit N` line shows the pipeline status | no `$?` until variables |
+| Command not found / not executable | exit 127 / 126 | bash wording; `exit N` line shows the pipeline status | no `$?` until Stage 16 |
 | `cd` no operand / `cd -` | `$HOME` / `$OLDPWD` | `/` / unsupported | no env until Stage 16 |
 | `pwd` | builtin + utility, `-L/-P` | program via `getcwd`; no flags | no symlinks |
 | `mkdir`, `rm`, `mv` | multi-operand, continue on error, `rm` refuses `.`/`..`, `mv` into dirs | matched | no `-p`/`-f`/`-i`; `rm` on read-only file refuses instead of prompting |

@@ -1,11 +1,12 @@
-"""Last updated: Stage 12, Step 8.
+"""Last updated: Stage 12, Step 11.
 
 A command line is lexed and parsed (POSIX quoting, `#` comments, pipes and redirections recognised)
-instead of split by `shlex`, and errors use bash's wording. Pipes parse but are not run yet
-(Step 11), and say so; redirections run for real (Step 8, tested thoroughly in `redirection.py`) --
-what's checked here is only that they parse. What the parser accepts is tested exhaustively on the
-host, so this module checks the shell end to end: what reaches a program's `argv`, and that a bad
-line is reported while the prompt survives.
+instead of split by `shlex`, and errors use bash's wording. Both pipes and redirections run for
+real (Step 11 and Step 8 respectively; pipe execution itself is tested thoroughly in `pipes.py`,
+redirection in `redirection.py`) -- what's checked here is only that they parse and reach a
+program correctly. What the parser accepts is tested exhaustively on the host, so this module
+checks the shell end to end: what reaches a program's `argv`, and that a bad line is reported
+while the prompt survives.
 """
 
 
@@ -48,8 +49,9 @@ def run(ctx):
     # --- $ * ? ~ { } are ordinary text for now ---
     echo("echo $x * ? ~ {a,b}", "$x * ? ~ {a,b}")
 
-    # --- pipes parse but are not run yet; redirections do run (see redirection.py) ---
-    check("a pipe is not run yet", s.run("echo a | cat"), "echo a | cat\npipes are not supported yet\n")
+    # --- pipes and redirections both run for real (Step 11 pipe execution tested thoroughly in
+    # pipes.py; this just checks a pipe reaches a program's argv/runs at all) ---
+    check("a pipe runs", s.run("echo a | cat"), "echo a | cat\na\n")
     check("a redirection parses and runs", s.run("echo a>synredir.txt"), "echo a>synredir.txt\n")
     check("...and took effect", s.run("cat synredir.txt"), "cat synredir.txt\na\n")
     check("...with a descriptor number", s.run("echo a 2>synredir2.txt"),

@@ -824,6 +824,21 @@ something new (like Stage 14's own deliberately-deferred `$TZ`) needs configurin
   Stage 19 lets a child exist (see Stage 12's path to a userspace `sh`).
 - `env`/`printenv`, a small utility printing the current environment -- cheap once the mechanism
   exists, matching Stage 11's other utilities' spirit.
+- **`$VAR`/`${VAR}` expansion, and `$?` -- the special parameter Stage 12's `exit N` line stood in
+  for.** Stage 12's lexer currently treats `$` as an ordinary character, deliberately deferred to
+  here (its own doc comment says so: `\$` inside double quotes already yields a literal `$`,
+  specifically so adding real expansion later doesn't change what existing scripts' escaped `$`s
+  mean). This stage makes `$VAR`/`${VAR}` a real substitution against the frame's `env`, in
+  unquoted and double-quoted words (single-quoted stays fully literal, matching POSIX) -- happening
+  after tokenizing, before a word reaches `argv`. `$?` is not an exported env var (it's shell-only,
+  never appears in `envp`, not inherited by a child): it holds the last pipeline's exit status,
+  exactly the `Option<i32>` Stage 12's `run_line_inner`/`run_pipeline` already compute (returned up
+  from `launch` through `run_command`/`run_segment`) to decide whether to print `exit N`. **Once
+  `$?` exists, that auto-print convention is retired, not kept alongside it:** like real bash,
+  nothing prints automatically after a command finishes -- the returned status is saved into the
+  shell state instead of being printed, and checking it is now explicit (`echo $?`, a script's own
+  `if`/`test`, ...). `run_line_inner`/`run_pipeline`'s status-returning shape doesn't change; only
+  what they do with the value does.
 
 **Demo:** four checks, each isolating one piece of the mechanism:
 1. **Inheritance:** `export FOO=bar`, then run a program that reads its own `envp` and prints

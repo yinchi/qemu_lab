@@ -52,7 +52,7 @@ const SCRIPT_PROBE_LEN: usize = 128;
 /// - The program is a directory.
 /// - The program is not marked as executable (`Permission denied`).
 /// - The program is too large to be executed, or fails to load (`cannot execute: Exec format error`).
-/// - The program exits with a nonzero status (`exit N`, standing in for `$?`).
+/// - The program exits with a nonzero status.
 ///
 /// An exec-bit file with no ELF magic is bash's `ENOEXEC` fallback, not an error: if its first
 /// `SCRIPT_PROBE_LEN` bytes contain no NUL it "looks like" a script and is run as one, scoped like a
@@ -61,52 +61,63 @@ const SCRIPT_PROBE_LEN: usize = 128;
 /// still reports `cannot execute binary file: Exec format error`. A script has no positional
 /// parameters (there are no variables yet), so extra arguments are rejected the same way `sh` rejects
 /// them, not silently ignored.
-pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) {
+///
+/// Returns `None` if no program actually ran (not found, not a file, not executable, too large,
+/// failed to load, or ran as a script instead -- every one of these already reported via `shell_err`)
+/// or `Some(code)` if one did. Printing `exit {code}` (our stand-in for `$?`, `Stage12.md`'s Step 11)
+/// is the caller's decision, not this function's: a single command prints it unconditionally, a
+/// pipeline only for its last stage.
+pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> Option<i32> {
     let name = argv[0];
     let prog_entry = match find_program(name) {
         Ok(entry) => entry,
         Err(why) => {
             shell_err(&alloc::format!("{name}: {why}"));
-            return;
+            return None;
         }
     };
 
     if prog_entry.is_directory() {
         shell_err(&alloc::format!("{name}: {}", errmsg(EISDIR)));
-        return;
+        return None;
     }
     if prog_entry.attributes().bits() & ATTR_EXEC == 0 {
         shell_err(&alloc::format!("{name}: {}", errmsg(EACCES)));
-        return;
+        return None;
     }
     if prog_entry.len() as usize > MAX_PROGRAM_SIZE {
         shell_err(&alloc::format!(
             "{name}: cannot execute: {}",
             errmsg(ENOEXEC)
         ));
-        return;
+        return None;
     }
 
     let file_bytes = match read_file_checked(vol, &prog_entry) {
         Ok(bytes) => bytes,
         Err(e) => {
             shell_err(&alloc::format!("{name}: {}", errmsg(e)));
-            return;
+            return None;
         }
     };
 
     if !file_bytes.starts_with(ELF_MAGIC) {
         run_as_script_fallback(name, &file_bytes, argv, depth);
-        return;
+        return None;
     }
     match process::run_program(&file_bytes, argv) {
-        Ok(0) => {}
-        Ok(code) => shell_err(&alloc::format!("exit {code}")),
-        Err(e) if e.errno() == E2BIG => shell_err(&alloc::format!("{name}: {}", errmsg(E2BIG))),
-        Err(e) => shell_err(&alloc::format!(
-            "{name}: cannot execute: {}",
-            errmsg(e.errno())
-        )),
+        Ok(code) => Some(code),
+        Err(e) if e.errno() == E2BIG => {
+            shell_err(&alloc::format!("{name}: {}", errmsg(E2BIG)));
+            None
+        }
+        Err(e) => {
+            shell_err(&alloc::format!(
+                "{name}: cannot execute: {}",
+                errmsg(e.errno())
+            ));
+            None
+        }
     }
 }
 

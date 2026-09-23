@@ -48,9 +48,9 @@ pub fn start_prompt(discipline: &mut LineDiscipline, console: &mut Console) {
     uart_write(PROMPT.as_bytes());
 }
 
-/// Runs one typed line: parses it (`syntax.rs`) and executes it -- a builtin (`builtins.rs`) or a program
-/// (`launch.rs`) -- reporting whatever went wrong via `shell_err`. A blank line or a comment does
-/// nothing, quietly, as in any shell. Pipes parse but are not run yet, and say so.
+/// Runs one typed line: parses it (`syntax.rs`) and executes it -- a builtin (`builtins.rs`), a
+/// program (`launch.rs`), or a multi-stage pipeline (`run_pipeline`) -- reporting whatever went
+/// wrong via `shell_err`. A blank line or a comment does nothing, quietly, as in any shell.
 pub fn run_line(line: &str) {
     run_line_inner(line, 0);
 }
@@ -68,33 +68,73 @@ fn run_line_inner(line: &str, depth: usize) {
             return;
         }
     };
-    if pipeline.len() > 1 {
-        shell_err("pipes are not supported yet");
-        return;
+    // The returned status isn't used here -- `exit N` (our stand-in for `$?` until Stage 16, see
+    // `ROADMAP.md`'s Stage 16 section) is printed by `run_segment_with` itself, while its
+    // `with_stdio` scope is still active, so a redirected stderr captures it exactly like the rest
+    // of a failing command's own output. Once Stage 16 adds real `$?`, this is where the returned
+    // value would be saved instead (no redirect concern for a plain variable write, so it need not
+    // move back inside any scope) -- the return chain underneath doesn't change either way.
+    if let [segment] = pipeline.as_slice() {
+        run_segment(segment, depth);
+    } else {
+        run_pipeline(&pipeline, depth);
     }
-    run_segment(&pipeline[0], depth);
+}
+
+/// Runs one segment with no pipe bindings -- the plain, single-command case, always reporting its
+/// own exit status. A thin wrapper over `run_segment_with`; see it for what actually happens.
+fn run_segment(segment: &Segment, depth: usize) -> Option<i32> {
+    run_segment_with(segment, [None, None, None], true, depth)
 }
 
 /// Runs one segment: opens its redirections in order -- left to right, each already in effect for
 /// the ones after it, so `2>&1 > f` and `> f 2>&1` differ -- then the command itself, all under one
-/// `with_stdio` scope. That scope is why a builtin's own state change (`cd`) still sticks under a
-/// redirect, why a failed redirect leaves exactly the earlier ones of the same line in effect, and
-/// why the error message for that failure (and any launch error) is itself subject to whichever
-/// redirects already succeeded -- `cmd 2> e < missing` reports the missing-file error into `e`, not
-/// the console. Shell-opened handles are closed once the scope ends, committing anything written.
-fn run_segment(segment: &Segment, depth: usize) {
+/// `with_stdio` scope seeded with `overrides`. That scope is why a builtin's own state change (`cd`)
+/// still sticks under a redirect, why a failed redirect leaves exactly the earlier ones of the same
+/// line in effect, and why the error message for that failure (and any launch error) is itself
+/// subject to whichever redirects already succeeded -- `cmd 2> e < missing` reports the missing-file
+/// error into `e`, not the console. Shell-opened handles are closed once the scope ends, committing
+/// anything written.
+///
+/// `overrides` is `[None, None, None]` for a plain command (`run_segment`); a pipeline stage
+/// (`run_pipeline`) instead seeds it with the pipe's own binding, which the segment's redirects
+/// below then correctly layer on top of via `apply_redirect`'s plain overwrite -- "the pipe binds
+/// before the stage's own redirects," with no new mechanism beyond what redirection already does.
+///
+/// `report` is whether this call should print `exit {code}` (our stand-in for `$?` until Stage 16)
+/// for a nonzero result -- `true` for a plain command, `true` only for a pipeline's *last* stage
+/// (`run_pipeline`). The print happens *inside* the `with_stdio` scope, not after it returns, so a
+/// redirected stderr captures it exactly like the rest of a failing command's own output -- moving
+/// it outside was tried and breaks `cmd 2> e`'s existing, already-tested behavior.
+///
+/// Returns `None` if no program actually ran (a builtin, a script, or any of `launch`'s own
+/// already-reported failures) or `Some(code)` if one did -- see `launch`'s doc comment.
+fn run_segment_with(
+    segment: &Segment,
+    overrides: [Option<StdioBinding>; 3],
+    report: bool,
+    depth: usize,
+) -> Option<i32> {
     let mut opened = Vec::new();
-    shell_state::frames().with_stdio([None, None, None], |frames| {
+    let status = shell_state::frames().with_stdio(overrides, |frames| {
         for redir in &segment.redirs {
             if !apply_redirect(frames, redir, &mut opened) {
-                return; // shell_err already reported; the command does not run
+                return None; // shell_err already reported; the command does not run
             }
         }
-        run_command(&segment.argv, depth);
+        let status = run_command(&segment.argv, depth);
+        if report
+            && let Some(code) = status
+            && code != 0
+        {
+            shell_err(&format!("exit {code}"));
+        }
+        status
     });
     for handle in opened {
         files::close(handle);
     }
+    status
 }
 
 /// Opens and binds one redirection on `frames`' top frame, recording any handle it opened in
@@ -145,21 +185,132 @@ fn open_redirect_target(path: &str, write: bool, append: bool) -> Result<usize, 
 
 /// Runs a segment's command -- once its redirections (if any) are already bound -- as a builtin or a
 /// program. Empty `argv` (a stage of only redirections, `> f`) runs nothing: POSIX still creates the
-/// file.
-fn run_command(argv: &[String], depth: usize) {
-    let Some(name) = argv.first() else {
-        return;
-    };
+/// file. A builtin never contributes a numeric status (none of `cd`/`source`/`.`/`sh` have one,
+/// matching their existing behavior of never printing `exit N`); only a program launched via
+/// `launch` can return `Some(code)`.
+fn run_command(argv: &[String], depth: usize) -> Option<i32> {
+    let name = argv.first()?;
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     if builtins::is_builtin(name) {
         if let Err(message) = builtins::run(name, &argv[1..], depth) {
             shell_err(&message);
         }
+        None
     } else {
         // SAFETY: as `run`'s doc comment says of the statics it uses.
         let vol = unsafe { static_ref!(VOL) };
-        launch(vol, &argv, depth);
+        launch(vol, &argv, depth)
     }
+}
+
+/// Prefix for pipeline temp file names -- a leading dot, distinct from anything a user is likely to
+/// type by hand. Not itself the safety mechanism against colliding with a real file (`next_pipe_path`
+/// is); just a first line of defense that makes an accidental collision unlikely in the first place.
+const PIPE_PREFIX: &str = "/tmp/.pipe";
+
+/// How many names `next_pipe_path` will skip past an existing file before giving up -- guards
+/// against a pathological `/tmp/`, not a realistic case.
+const MAX_PIPE_NAME_ATTEMPTS: usize = 1000;
+
+/// Monotonic counter for pipeline temp file names: one for the shell's *whole lifetime*, deliberately
+/// not reset per pipeline -- a pipeline stage can itself be a script that runs its own pipeline
+/// internally, and if each pipeline reset its own counter to 0, an inner pipe's temp file could
+/// collide with an outer, still-alive one. One counter that only ever increments guarantees every
+/// simultaneously-alive temp file has a unique name regardless of nesting depth.
+///
+/// SAFETY (every access): single core, and the shell runs with interrupts enabled but nothing else
+/// ever touches this.
+static mut PIPE_COUNTER: usize = 0;
+
+/// Picks the next unused pipeline temp file path: `/tmp/.pipeN` for the lowest `N` (from
+/// `PIPE_COUNTER`) that `files::stat` says doesn't already exist. `open`'s own create-or-truncate
+/// has no `O_EXCL`, so checking first is what actually prevents clobbering a file a user happens to
+/// have sitting at that name -- safe to check-then-create with no race, since this shell is
+/// single-threaded and strictly sequential (nothing else can claim the name in between). `Err` if
+/// nothing works out within `MAX_PIPE_NAME_ATTEMPTS` tries.
+fn next_pipe_path() -> Result<String, String> {
+    // SAFETY: see PIPE_COUNTER.
+    let counter = unsafe { &mut *(&raw mut PIPE_COUNTER) };
+    for _ in 0..MAX_PIPE_NAME_ATTEMPTS {
+        let path = format!("{PIPE_PREFIX}{counter}");
+        *counter += 1;
+        if files::stat(&path).is_err() {
+            return Ok(path);
+        }
+    }
+    Err(String::from("cannot create a unique temp file"))
+}
+
+/// Removes every temp file in `paths`, ignoring errors -- there is nothing more useful to do about a
+/// failed cleanup, and the pipeline is already finishing or aborting either way.
+fn cleanup_temps(paths: &[String]) {
+    for path in paths {
+        let _ = files::unlink(path, false);
+    }
+}
+
+/// Runs a multi-stage pipeline (`Stage12.md`'s Step 11): each stage's stdout feeds the next stage's
+/// stdin through a temp file under `/tmp/`, POSIX-style. Every stage always runs, even if an earlier
+/// one failed, faulted, or wasn't found -- only a *setup* failure (disk full, `/tmp` missing) aborts
+/// the rest, never a stage's own failure. The pipe is bound before a stage's own redirections (see
+/// `run_segment_with`), so `a > f | b` sends `a`'s output to `f`, and `b` sees empty input. The
+/// pipeline's status is the *last* stage's: only its call to `run_segment_with` passes `report:
+/// true`, so `exit N` (if the last stage's code is nonzero) is the only one that can ever print,
+/// from inside that stage's own `with_stdio` scope -- see `run_segment_with`'s doc comment for why
+/// it can't be printed here instead.
+///
+/// Temp paths are all allocated before any stage runs and removed on every exit from this function.
+/// Each pipe handle is marked shell-owned (like a redirect target) and closed right after the stage
+/// it was bound to returns, committing the write side's size to disk before the next stage reads it.
+fn run_pipeline(pipeline: &[Segment], depth: usize) -> Option<i32> {
+    let n = pipeline.len();
+    let mut temps: Vec<String> = Vec::new();
+    for _ in 0..n - 1 {
+        match next_pipe_path() {
+            Ok(path) => temps.push(path),
+            Err(msg) => {
+                shell_err(&msg);
+                cleanup_temps(&temps);
+                return None;
+            }
+        }
+    }
+
+    let mut last_status = None;
+    for (i, segment) in pipeline.iter().enumerate() {
+        let mut overrides = [None, None, None];
+        let mut handles = Vec::new();
+
+        if i > 0
+            && let Err(msg) = open_redirect_target(&temps[i - 1], false, false)
+                .map(|handle| {
+                    overrides[0] = Some(StdioBinding::File(handle));
+                    handles.push(handle);
+                })
+        {
+            shell_err(&msg);
+            cleanup_temps(&temps);
+            return None;
+        }
+        if i < n - 1
+            && let Err(msg) = open_redirect_target(&temps[i], true, false).map(|handle| {
+                overrides[1] = Some(StdioBinding::File(handle));
+                handles.push(handle);
+            })
+        {
+            shell_err(&msg);
+            cleanup_temps(&temps);
+            return None;
+        }
+
+        last_status = run_segment_with(segment, overrides, i == n - 1, depth);
+        for handle in handles {
+            files::close(handle);
+        }
+    }
+
+    cleanup_temps(&temps);
+    last_status
 }
 
 /// How many scripts may be nested (a script's own line launching another script, and so on) before
