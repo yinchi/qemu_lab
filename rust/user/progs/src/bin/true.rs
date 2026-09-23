@@ -3,6 +3,18 @@
 #![no_std]
 #![no_main]
 
-userlib::entry!(run);
+use progs::help;
+use userlib::ExitCode;
 
-fn run() {}
+userlib::entry_with_args!(run);
+
+const USAGE: &str = "true";
+const FLAGS: &[(&str, &str)] = &[];
+
+fn run(args: userlib::Args) -> ExitCode {
+    // Every other argument is ignored, matching real `true`.
+    if args.skip(1).next() == Some("--help") {
+        return help(USAGE, FLAGS);
+    }
+    ExitCode(0)
+}

@@ -25,6 +25,21 @@ pub const SYS_EXIT: usize = 93;
 /// are in `abi::ioctl`. Linux's number and Linux's shape; the requests are this project's own.
 pub const SYS_IOCTL: usize = 29;
 
+/// `mkdir(path, path_len)`: creates an empty directory. Linux's number for `mkdirat`, shape
+/// simplified like every other path-taking syscall here (no dirfd -- paths resolve against the
+/// shell's cwd, the same as `open`/`chmod`).
+pub const SYS_MKDIRAT: usize = 34;
+/// `unlink(path, path_len, flags)`: removes a file, or (`flags & abi::fs::AT_REMOVEDIR`) an empty
+/// directory. Linux's number for `unlinkat`, shape simplified as above.
+pub const SYS_UNLINKAT: usize = 35;
+/// `rename(old, old_len, new, new_len)`: renames or moves an entry within the volume; refuses if
+/// `new` already names something. Linux's number for `renameat`, shape simplified as above.
+pub const SYS_RENAMEAT: usize = 38;
+/// `stat(path, path_len, out)`: writes a path's size, attributes, and timestamps (`abi::fs::STAT_SIZE`
+/// bytes) to `out`. Linux's number for `newfstatat` (aarch64 has no plain `stat`), shape simplified
+/// as above -- no dirfd, no flags.
+pub const SYS_NEWFSTATAT: usize = 79;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +67,13 @@ mod tests {
     #[test]
     fn getcwd_is_linuxs_number() {
         assert_eq!(SYS_GETCWD, 17);
+    }
+
+    #[test]
+    fn step10_numbers_are_linuxs_numbers() {
+        assert_eq!(
+            [SYS_MKDIRAT, SYS_UNLINKAT, SYS_RENAMEAT, SYS_NEWFSTATAT],
+            [34, 35, 38, 79]
+        );
     }
 }

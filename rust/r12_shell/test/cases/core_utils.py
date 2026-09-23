@@ -11,7 +11,7 @@ import subprocess
 
 from harness import CTRL_D, BACKSPACE, dir_attr, mcopy_out, text_bands
 
-BINARIES = "cat chmod clear cp crash echo false head hello hexdump ls pwd tail true wc".split()
+BINARIES = "cat chmod clear cp crash echo false head hello hexdump ls mkdir mv pwd rm stat tail true wc".split()
 
 
 def run(ctx):
@@ -71,7 +71,7 @@ def run(ctx):
     check("tail -n 2", s.run(f"tail -n 2 {f}"), f"tail -n 2 {f}\n" + "".join(lines[-2:]))
     check("tail default", s.run(f"tail {f}"), f"tail {f}\n" + "".join(lines[-10:]))
     check("tail -n 100", s.run(f"tail -n 100 {f}"), f"tail -n 100 {f}\n" + hello_txt)
-    check("head bad count", s.run(f"head -n x {f}"), f"head -n x {f}\nusage: head [-n N] [file]\nexit 1\n")
+    check("head bad count", s.run(f"head -n x {f}"), f"head -n x {f}\nusage: head [-n N | -c N] [file]\nexit 1\n")
     check("wc", s.run(f"wc {f}"), f"wc {f}\n{len(lines)} {words} {len(hello_txt)} {f}\n")
     check("wc -l", s.run(f"wc -l {f}"), f"wc -l {f}\n{len(lines)} {f}\n")
     check("wc -wc", s.run(f"wc -wc {f}"), f"wc -wc {f}\n{words} {len(hello_txt)} {f}\n")
@@ -91,7 +91,7 @@ def run(ctx):
     check("cp onto read-only", s.run("cp tests/hello.txt tests/copy.txt"),
           "cp tests/hello.txt tests/copy.txt\ncp: tests/copy.txt: Permission denied\nexit 1\n")
     check("chmod bad mode", s.run("chmod 755 tests/copy.txt"),
-          "chmod 755 tests/copy.txt\nchmod: invalid mode: 755\nexit 1\n")
+          "chmod 755 tests/copy.txt\nchmod: 755: invalid mode\nexit 1\n")
     check("chmod missing", s.run("chmod +x tests/nosuch"),
           "chmod +x tests/nosuch\nchmod: tests/nosuch: No such file or directory\nexit 1\n")
 

@@ -3,16 +3,22 @@
 #![no_std]
 #![no_main]
 
-use progs::{copy, fail, unknown_option};
+use progs::{copy, fail, help, unknown_option};
 use userlib::{ExitCode, O_RDONLY, close, open};
 
 userlib::entry_with_args!(run);
+
+const USAGE: &str = "cat [file...]";
+const FLAGS: &[(&str, &str)] = &[];
 
 fn run(args: userlib::Args) -> ExitCode {
     let mut status = 0;
     let mut any_file = false;
 
     for path in args.skip(1) {
+        if path == "--help" {
+            return help(USAGE, FLAGS);
+        }
 
         // Reject any option-like arguments (starting with '-') as unknown options.
         if path.len() > 1 && path.starts_with('-') {

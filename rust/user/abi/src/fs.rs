@@ -24,6 +24,21 @@ pub const PATH_MAX: usize = 4096;
 /// then `NAME_MAX` bytes of name, NUL-padded.
 pub const DIRENT_SIZE: usize = 4 + 1 + 1 + NAME_MAX;
 
+// --- unlink() flags ---------------------------------------------------------------------------
+
+/// Flag for the `flags` argument of the `SYS_UNLINKAT` syscall: the target must be an empty
+/// directory, not a file. Linux's value.
+pub const AT_REMOVEDIR: usize = 0x200;
+
+// --- stat() payload -----------------------------------------------------------------------------
+
+/// Size of the fixed payload the `stat` syscall writes: `size: u32` (LE), `attrs: u8`,
+/// `created_date: u16` (LE), `created_time: u16` (LE), `created_time_tenth: u8`, `modified_date: u16`
+/// (LE), `modified_time: u16` (LE), `accessed_date: u16` (LE) -- every field a FAT directory entry
+/// actually stores. Dates/times are FAT's own packed encoding (see `hadris_fat::time::FatDateTime`),
+/// not calendar values -- unpacking them is left to whichever program displays them.
+pub const STAT_SIZE: usize = 16;
+
 // --- FAT attribute bits ------------------------------------------------------------------------
 
 /// Fat attribute: read-only.
@@ -49,5 +64,11 @@ mod tests {
             [ATTR_READ_ONLY, ATTR_VOLUME_LABEL, ATTR_DIRECTORY, ATTR_EXEC],
             [0x01, 0x08, 0x10, 0x40]
         );
+    }
+
+    #[test]
+    fn step10_values() {
+        assert_eq!(AT_REMOVEDIR, 0x200);
+        assert_eq!(STAT_SIZE, 16);
     }
 }

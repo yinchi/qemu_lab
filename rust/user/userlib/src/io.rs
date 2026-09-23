@@ -8,15 +8,16 @@
 //! flushing it first (see `write`).
 
 use abi::syscall::{
-    SYS_CHMOD, SYS_CLOSE, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_OPEN, SYS_READ, SYS_WRITE,
+    SYS_CHMOD, SYS_CLOSE, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT, SYS_NEWFSTATAT,
+    SYS_OPEN, SYS_READ, SYS_RENAMEAT, SYS_UNLINKAT, SYS_WRITE,
 };
 
 // `O_*` flags, directory-record layout and attribute bits: the definitions live in the shared `abi`
 // crate (the kernel uses the same ones) and are re-exported here, so programs keep writing
 // `userlib::O_RDONLY`, `userlib::ATTR_EXEC`, ... exactly as before.
 pub use abi::fs::{
-    ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, NAME_MAX, O_APPEND, O_RDONLY, O_WRONLY,
-    PATH_MAX,
+    AT_REMOVEDIR, ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, NAME_MAX, O_APPEND,
+    O_RDONLY, O_WRONLY, PATH_MAX, STAT_SIZE,
 };
 pub use abi::ioctl::CONSOLE_CLEAR;
 
@@ -167,4 +168,69 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> isize {
 /// negative error: `ERANGE` if `buf` is too small.
 pub fn getcwd(buf: &mut [u8]) -> isize {
     syscall!(SYS_GETCWD, buf.as_mut_ptr() as usize, buf.len())
+}
+
+/// Creates an empty directory at `path`. `path`'s parent must already exist; `path` itself must
+/// not. Returns `0`, or a negative error.
+pub fn mkdir(path: &str) -> isize {
+    syscall!(SYS_MKDIRAT, path.as_ptr() as usize, path.len())
+}
+
+/// Removes the file, or (`remove_dir`) the empty directory, at `path`. Returns `0`, or a negative
+/// error.
+pub fn unlink(path: &str, remove_dir: bool) -> isize {
+    let flags = if remove_dir { AT_REMOVEDIR } else { 0 };
+    syscall!(SYS_UNLINKAT, path.as_ptr() as usize, path.len(), flags)
+}
+
+/// Renames or moves the entry at `old` to `new`, within the same volume. Refuses if `new` already
+/// names something; a directory can't be moved into its own descendant. Returns `0`, or a negative
+/// error.
+pub fn rename(old: &str, new: &str) -> isize {
+    syscall!(
+        SYS_RENAMEAT,
+        old.as_ptr() as usize,
+        old.len(),
+        new.as_ptr() as usize,
+        new.len()
+    )
+}
+
+/// A path's size, attributes, and timestamps, as `stat` reports them -- the raw fields a FAT
+/// directory entry stores (date: bits 0-4 day, 5-8 month, 9-15 year-since-1980; time: bits 0-4
+/// seconds/2, 5-10 minutes, 11-15 hours), not calendar values. Unpacking and formatting them is
+/// left to whichever program displays them (see the `stat` program).
+pub struct Stat {
+    pub size: u32,
+    pub attrs: u8,
+    pub created_date: u16,
+    pub created_time: u16,
+    pub created_time_tenth: u8,
+    pub modified_date: u16,
+    pub modified_time: u16,
+    pub accessed_date: u16,
+}
+
+/// Reads `path`'s size, attributes, and timestamps. `Err` carries the negative error from `stat`.
+pub fn stat(path: &str) -> Result<Stat, isize> {
+    let mut buf = [0u8; STAT_SIZE];
+    let n = syscall!(
+        SYS_NEWFSTATAT,
+        path.as_ptr() as usize,
+        path.len(),
+        buf.as_mut_ptr() as usize
+    );
+    if n < 0 {
+        return Err(n);
+    }
+    Ok(Stat {
+        size: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
+        attrs: buf[4],
+        created_date: u16::from_le_bytes(buf[5..7].try_into().unwrap()),
+        created_time: u16::from_le_bytes(buf[7..9].try_into().unwrap()),
+        created_time_tenth: buf[9],
+        modified_date: u16::from_le_bytes(buf[10..12].try_into().unwrap()),
+        modified_time: u16::from_le_bytes(buf[12..14].try_into().unwrap()),
+        accessed_date: u16::from_le_bytes(buf[14..16].try_into().unwrap()),
+    })
 }

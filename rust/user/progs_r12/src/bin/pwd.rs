@@ -8,10 +8,14 @@ use userlib::{ExitCode, PATH_MAX};
 
 userlib::entry_with_args!(run);
 
+const USAGE: &str = "pwd";
+const FLAGS: &[(&str, &str)] = &[];
+
 fn run(mut args: userlib::Args) -> ExitCode {
     let _ = args.next(); // argv[0]
     if let Some(arg) = args.next() {
         return match arg {
+            "--help" => progs::help(USAGE, FLAGS),
             "-L" | "-P" => {
                 use core::fmt::Write;
                 let _ = writeln!(

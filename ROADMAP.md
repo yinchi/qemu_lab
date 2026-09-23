@@ -910,6 +910,14 @@ depend on runtime input, like Stage 13's editor opening a file of unknown size.
   existing choice of where the stack lives. Worth a deliberate guard gap between wherever the
   heap has grown to and the stack, rather than assuming they'll never meet, matching this
   project's own established "leave it unmapped" philosophy elsewhere.
+- **Audit item, not a feature:** once `alloc` is real in EL0, revisit every "assume this will fit"
+  fixed-capacity workaround the no-heap constraint forced on earlier stages' user programs, and
+  replace the ones that were only ever a stand-in for a real `Vec`/`String`. The concrete example
+  already on record: Stage 12's `progs::PathBuf` (`user/progs/src/lib.rs`) joins a directory and a
+  name into a fixed `PATH_MAX`-byte buffer and returns `None` on overflow, used by `mv`, `cp`'s
+  directory-destination case, and `rm -r`/`chmod -R`'s recursion -- a `alloc::format!`-built
+  `String` would need no such cap. Check for the same pattern elsewhere in `user/progs` before
+  assuming this is the only instance.
 
 **Demo:** open Stage 13's editor against progressively larger files -- confirming each one loads
 and can be edited without hitting a fixed ceiling, and that the heap's growth is genuinely on

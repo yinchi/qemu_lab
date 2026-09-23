@@ -5,7 +5,7 @@
 
 use core::fmt::Write;
 
-use progs::{Fd, Input, fail, unknown_option, usage};
+use progs::{Fd, Input, fail, help, unknown_option, usage};
 use userlib::{ExitCode, read};
 
 userlib::entry_with_args!(run);
@@ -13,11 +13,17 @@ userlib::entry_with_args!(run);
 /// Number of bytes per row in the hexdump output.
 const WIDTH: usize = 16;
 
+const USAGE: &str = "hexdump [file]";
+const FLAGS: &[(&str, &str)] = &[];
+
 fn run(args: userlib::Args) -> ExitCode {
     let mut file = None;
 
     // Parse command-line arguments to determine the input file.
     for arg in args.skip(1) {
+        if arg == "--help" {
+            return help(USAGE, FLAGS);
+        }
         if arg.len() > 1 && arg.starts_with('-') {
             // Unknown option encountered (we don't support any options).
             return unknown_option("hexdump", arg);

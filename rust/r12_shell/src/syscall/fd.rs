@@ -20,7 +20,7 @@ use crate::platform::globals::{CONSOLE, GPU};
 use crate::platform::uart::{uart_clear_screen, uart_write};
 use crate::static_mut_ref;
 use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY, ERANGE};
-use abi::fs::{O_APPEND, O_RDONLY, O_WRONLY};
+use abi::fs::{AT_REMOVEDIR, O_APPEND, O_RDONLY, O_WRONLY, STAT_SIZE};
 use abi::ioctl::CONSOLE_CLEAR;
 
 /// How many fds a program may have open at once, the three standard ones included: every fd above
@@ -351,4 +351,72 @@ pub fn chmod(ptr: usize, len: usize, set: usize, clear: usize) -> isize {
         return EINVAL;
     };
     files::chmod(&path, set, clear)
+}
+
+/// Creates an empty directory at the user-space path `ptr`/`len` -- see `files::mkdir`.
+pub fn mkdir(ptr: usize, len: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
+    let path = match user_path(ptr, len).and_then(shell_state::absolute) {
+        Ok(path) => path,
+        Err(e) => return e,
+    };
+    files::mkdir(&path)
+}
+
+/// Removes the file, or (`flags & AT_REMOVEDIR`) the empty directory, at the user-space path
+/// `ptr`/`len` -- see `files::unlink`.
+pub fn unlink(ptr: usize, len: usize, flags: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
+    if flags & !AT_REMOVEDIR != 0 {
+        return EINVAL;
+    }
+    let path = match user_path(ptr, len).and_then(shell_state::absolute) {
+        Ok(path) => path,
+        Err(e) => return e,
+    };
+    files::unlink(&path, flags & AT_REMOVEDIR != 0)
+}
+
+/// Renames or moves the entry at the user-space path `old_ptr`/`old_len` to `new_ptr`/`new_len` --
+/// see `files::rename`.
+pub fn rename(old_ptr: usize, old_len: usize, new_ptr: usize, new_len: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
+    let old = match user_path(old_ptr, old_len).and_then(shell_state::absolute) {
+        Ok(path) => path,
+        Err(e) => return e,
+    };
+    let new = match user_path(new_ptr, new_len).and_then(shell_state::absolute) {
+        Ok(path) => path,
+        Err(e) => return e,
+    };
+    files::rename(&old, &new)
+}
+
+/// Writes the size, attributes, and timestamps of the user-space path `ptr`/`len` into the
+/// `STAT_SIZE`-byte buffer `out_ptr` -- see `files::stat` for the source and `abi::fs::STAT_SIZE`
+/// for the layout.
+pub fn stat(ptr: usize, len: usize, out_ptr: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
+    let path = match user_path(ptr, len).and_then(shell_state::absolute) {
+        Ok(path) => path,
+        Err(e) => return e,
+    };
+    if !validate(out_ptr, STAT_SIZE, true) {
+        return EFAULT;
+    }
+    let info = match files::stat(&path) {
+        Ok(info) => info,
+        Err(e) => return e,
+    };
+    // SAFETY: validated above to lie entirely within writable user memory.
+    let buf = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, STAT_SIZE) };
+    buf[0..4].copy_from_slice(&info.size.to_le_bytes());
+    buf[4] = info.attrs;
+    buf[5..7].copy_from_slice(&info.created.date.to_le_bytes());
+    buf[7..9].copy_from_slice(&info.created.time.to_le_bytes());
+    buf[9] = info.created.time_tenth;
+    buf[10..12].copy_from_slice(&info.modified.date.to_le_bytes());
+    buf[12..14].copy_from_slice(&info.modified.time.to_le_bytes());
+    buf[14..16].copy_from_slice(&info.accessed_date.to_le_bytes());
+    0
 }

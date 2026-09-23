@@ -19,7 +19,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 7 | Lexer, `run_line`, bash wording | done |
 | 8 | Redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`) | done |
 | 9 | Scripts and scopes | done |
-| 10 | `mkdir`, `rm -r`, `mv` | -- |
+| 10 | Add/enhance user programs (`mkdir`/`rm`/`mv`/`stat`, multi-operand, flags, `--help`) | done |
 | 11 | Pipes via temp files | -- |
 | 12 | Line editing and history | -- |
 | 13 | Docs, roadmap, full regression | -- |
@@ -853,7 +853,7 @@ has a "first thing to unmask" hazard). This step removes that structure.
   `./bad.sh` runs its good lines around the failing one; `source recur.sh` stops cleanly at the depth cap (no
   hang, no fault) and the shell is still alive afterward. `cases/launch.py` updated in place (see above).
 
-### Step 10: `mkdir`, `rm`, `mv` (`files.rs`, `syscall.rs`, `abi`, `userlib`, `progs_r12`)
+### Step 10: add/enhance user programs (`files.rs`, `syscall/fd.rs`, `syscall/mod.rs`, `abi`, `userlib`, `progs`, `progs_r12`) (done)
 - Syscalls over `hadris-fat`'s `create_dir`/`delete`/`rename` (first confirm exact APIs and their limits, e.g. delete of
   non-empty dirs, rename across directories, long-name handling). Linux-style numbers where they exist
   (`mkdirat`/`unlinkat`/`renameat` shapes simplified to path ptr/len args).
@@ -878,6 +878,107 @@ has a "first thing to unmask" hazard). This step removes that structure.
   Each gets a `docs/progs.md` row with the supported/unsupported subset.
 - **Tests:** create/list/remove; error cases (exists, missing parent, non-empty, read-only, exec-bit preserved by
   `mv`); host-side mtools check of resulting image.
+
+**As built.** Expanded well beyond the plan above, after a review of `docs/progs.md` turned up several
+"one file/operand at a time" limitations worth lifting while touching this code anyway -- the multi-operand
+support for `cp`/`chmod`/`mv`, the flag catch-up, `--help`, and `stat` below are all new scope, not in the
+original plan text.
+- **`stat` syscall, added for `mv`'s own use.** `mv` needs to know whether an existing `DST` is a file or a
+  directory *before* calling `rename` (whose own `AlreadyExists` error doesn't distinguish the two), and `rm`
+  needs the same to classify its own top-level operands. Rather than probing via `open`+`getdents` (workable but
+  roundabout), a real `stat`-shaped syscall (`SYS_NEWFSTATAT` = 79, Linux's aarch64 number for `newfstatat`,
+  shape simplified like every other path syscall here) returns every field a FAT directory entry actually
+  stores: size, attributes, and all three real timestamps (`hadris_fat::sync::FileEntry::created`/`modified`/
+  `accessed_date` -- confirmed by reading the crate source; `accessed_date` alone has no time component, a
+  genuine FAT quirk, not a limitation added here). `files::stat`/`fd::stat` write a fixed 16-byte payload
+  (`abi::fs::STAT_SIZE`); `userlib::stat` unpacks it into `Stat` (raw packed fields, left for a consumer to
+  format); the new `stat` program (below) is what actually displays it.
+- **Two real timestamp provenances exist today, both genuine stored data:** `folder_to_img.sh` pins
+  `SOURCE_DATE_EPOCH` for every file bundled into the image at build time (`mtools` converts it to the *build
+  host's local time zone* when stamping FAT dates -- there's no time zone in a FAT timestamp -- so the exact
+  wall-clock value is host-dependent, computed in the test with Python's own `datetime.fromtimestamp` rather
+  than hardcoded); a file the kernel itself creates or writes during a running session gets the FAT epoch
+  (1980-01-01), since `main.rs` opens the volume with no explicit `TimeProvider` and this crate's `no_std` build
+  has no clock to fall back to besides `EpochTimeProvider`. `stat` surfaces whichever is actually on disk --
+  real values arrive once a later stage wires an RTC in (see `ROADMAP.md`'s Stage 14 audit note below); no
+  rework needed then.
+- **`mkdir`/`unlink`/`rename` kernel syscalls**, confirmed against `hadris-fat`'s actual source: `create_dir`/
+  `delete`/`rename` are inherent `FatVolume` methods (not behind a trait import); `delete` refuses a non-empty
+  directory (`Error::DirectoryNotEmpty`) exactly as planned; `rename` takes the *new parent directory* plus a
+  leaf name, not two paths, and refuses if the destination name exists regardless of its type -- so, as planned,
+  `files::rename` stays a thin literal wrapper and every POSIX `mv`(1) behavior (directory-destination,
+  file-replacement) is layered in the `mv` program itself. A new `map_fat_err` centralizes the
+  `hadris_fat::Error` -> errno mapping (`AlreadyExists` -> `EEXIST`, `DirectoryNotEmpty` -> `ENOTEMPTY`,
+  `InvalidPath`/`InvalidFilename` -> `EINVAL`, `NoFreeSpace`/`DirectoryFull` -> `ENOSPC`, everything else `EIO`)
+  -- all these errnos already existed, added in Step 1 anticipating exactly this.
+- **`rm` and read-only files: revises, not just extends, the plan above.** That text framed refusing to delete a
+  read-only file as "the closest analogue" to POSIX `rm`'s interactive "remove write-protected file?" prompt.
+  That framing doesn't hold up: POSIX conditions the prompt (and `-f`'s suppression of it) on the process *not*
+  having appropriate (root) privileges -- deletion is governed by the containing directory's write permission,
+  never a file's own mode, so a privileged process was never blocked or prompted in the first place. This
+  project has no non-root identity at all, so **`rm` now deletes a read-only file unconditionally** (`unlink`
+  has no read-only check at all -- the read-only bit still gates `open_write`, Step 8, just not deletion), and
+  `-f`'s job narrows to POSIX's other, unrelated effect: a missing operand is silently skipped instead of
+  reported, with no effect on the exit status. The `.`/`..`/`/` safety guard and the directory-without-`-r`
+  refusal are hard guards `-f` never bypasses, matching GNU.
+- **`mv`'s replace-or-move-into logic, entirely in the userspace program**, built on `stat` + the thin kernel
+  `rename`: probes `DST` once (existing file / existing directory / doesn't exist); a directory destination
+  joins each source as `DST/basename(SRC)` (`progs::PathBuf::join` + `progs::basename`, new no-heap helpers --
+  see the next bullet); an existing plain-file destination is replaced (`unlink` then `rename`) only when *both*
+  sides are plain files, matching real `mv`(1)/`rename(2)`, which never silently replace across a directory on
+  either side. More than one source requires an already-existing directory destination, checked once up front.
+- **No heap in EL0 (a fact `progs::lib.rs`'s own pre-existing doc comment already stated, missed at first
+  while planning this Step): `progs::PathBuf`** joins a directory and a name into a fixed `PATH_MAX`-byte
+  stack buffer instead of `alloc::format!`, returning `None` on overflow rather than growing -- flagged as an
+  audit item for Stage 18 (`ROADMAP.md`) once `alloc` is real in EL0.
+- **`chmod -R` cannot share `rm -r`'s exact recursion shape.** The plan's mental model (and the original,
+  unrevised design here) was one generic "open, read one record, close, recurse-or-act, repeat" walker for both
+  -- but `rm -r`'s reopen-and-reread-the-first-record loop is only correct *because* deleting an entry shrinks
+  the directory each time; `chmod -R` doesn't delete anything, so reusing that shape would read the same first
+  record forever. `chmod -R` instead reads each directory's whole listing with batched `getdents` (like `ls`)
+  before recursing, still holding at most one fd per directory level (matching the "no fd held across recursion"
+  goal in spirit, just not via literal code sharing).
+- **The `user/progs` (shared, r09-r12+) vs. `user/progs_r12` (this stage only) tier split, discovered partway
+  through implementation, not anticipated by the plan.** `cp`'s and `chmod`'s multi-operand/`-R` logic, and
+  `head`/`tail`'s `-c`, all need either the new `stat` syscall or changed usage/error text -- both broke r11's
+  frozen test suite when first added to the shared tier (r11's older kernel has no `stat`; its tests check
+  wording byte-for-byte). Moved to `progs_r12` overrides instead (the same pattern `ls`, `pwd` and `clear`
+  already used, for the same reason: cwd-dependent behavior r09-r11 predate). `mkdir`/`rm`/`mv`/`stat`
+  themselves went there too, for a related reason -- even though nothing in r09-r11 ever invoked them, their
+  mere presence in the shared `bin/` changed what a full-listing test like `ls -F bin` enumerates. `echo`
+  (`-n`), `wc` (`-L`, multi-file), `cat`/`hexdump`/`true`/`false` (`--help` only) stayed in the shared tier,
+  confirmed non-breaking: none of their changes alter output for any invocation shape r09-r11's tests actually
+  exercise. `progs::lib.rs`'s shared `parse_lines_args`/`LinesArgs` were left completely unchanged for this same
+  reason (the base tier's `head`/`tail` still use them); the extended `-n`-or-`-c` parser is a separately named
+  `parse_lines_or_bytes_args`/`LinesOrBytesArgs`/`CountMode`, used only by `progs_r12`'s `head`/`tail`. Verified
+  by rebuilding and re-running r09/r10 (build only, no test suite) and r11's full `just test` unchanged and
+  green against the final `user/` tree.
+- **`--help` on every program** (old and new, `progs::help(usage, flags)`) except `hello`/`crash` (Stage 9's
+  frozen, no-argument test programs). `--help`, not `-h`: checked POSIX's actual option lists for every utility
+  here -- none assign `-h` to anything, and POSIX has no help-flag convention at all. GNU coreutils' own
+  `--help` is long-form-only in *every* utility across the suite, even ones (`mkdir`, `rm`, `mv`) where `h`
+  would otherwise be free, specifically because `h` already means something else in siblings (`ls -h`/`du -h`
+  human-readable, `cp -h`/`chmod -h` no-dereference) -- the same answer this project lands on, for the same
+  suite-wide-consistency reason.
+- **Trivial/moderate flag catch-up:** `echo -n`; `wc -L` (opt-in only -- fixed to not also trigger the
+  "nothing requested, default to `-lwc`" fallback) and multi-file with a `total` line; `ls` multiple directory
+  operands (a `DIR:` header once more than one is given) and `-l` (`d`/`w`/`x` flags -- directory, writable, and
+  executable, `w` being FAT's read-only bit shown inverted so the letter means the same positive capability it
+  does in a real Unix permission string, not a literal attribute dump -- then size, name); `head -c`/`tail -c`
+  (byte count, mutually exclusive with `-n`, sharing the extended `progs_r12`-only parser above).
+- **A real `rm -r` bug found by the new tests, not by inspection:** the first version unlinked a child directory
+  *twice* -- once implicitly (the recursive call already removes it once its own listing is empty) and again
+  explicitly right after. Fixed by dropping the redundant second `unlink`; `remove_recursive`'s own contract is
+  "empties and then removes `path` itself," so a caller recursing into a child never needs to unlink it again.
+- **Fixture:** `disk/tests/tree/` (new, checked in) -- a 3-level directory tree (`a.txt`, `sub1/b.txt`,
+  `sub1/sub2/c.txt`) for `rm -r`.
+- **Tests:** `cases/user_progs.py` (new) -- `mkdir`/`rm`/`mv`/`stat` basic and error cases; multi-operand
+  continuation for `mkdir`/`rm`/`cp`/`chmod`/`mv`; `mv` into a directory, replacing a file, directory-into-
+  descendant rejection, the trailing-`/` rule; `rm -f`; a read-only file deleted without `-f`; `chmod -R`
+  recursing two levels deep; every new flag; `stat` distinguishing a bundled file's timestamp from a freshly
+  created one; `--help` on a representative spread of old and new programs. `docs/progs.md` updated per its own
+  "Adding to this table" convention (`From Stage 12: <feature>` in each changed row's Supported column, new
+  rows for `mkdir`/`rm`/`mv`/`stat`).
 
 ### Step 11: pipes via temp files (`shell.rs`)
 - `a | b [| c ...]`: run stage 1 with stdout -> temp file, next stage with stdin <- that file, delete afterward;

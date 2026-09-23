@@ -18,13 +18,13 @@ use alloc::vec::Vec;
 use hadris_fat::raw::DirEntryAttrFlags;
 use hadris_fat::sync::read::FileReader;
 use hadris_fat::sync::write::FileWriter;
-use hadris_fat::sync::{DirectoryEntry, FatDir, FatVolume, FatVolumeReadExt, FatVolumeWriteExt};
+use hadris_fat::sync::{DirectoryEntry, FatDateTime, FatDir, FatVolume, FatVolumeReadExt, FatVolumeWriteExt};
 
 use super::blkio::{BlkIo, VOL};
 use super::find_entry_checked;
 use crate::static_ref;
-use abi::errno::{EACCES, EBADF, EINVAL, EIO, EISDIR, EMFILE, ENOENT, ENOTDIR};
-use abi::fs::{ATTR_EXEC, ATTR_READ_ONLY, ATTR_VOLUME_LABEL, DIRENT_SIZE, NAME_MAX};
+use abi::errno::{EACCES, EBADF, EEXIST, EINVAL, EIO, EISDIR, EMFILE, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
+use abi::fs::{ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, ATTR_VOLUME_LABEL, DIRENT_SIZE, NAME_MAX};
 
 /// The only attribute bits `chmod` may change: the two this project exposes as permissions.
 const CHMOD_BITS: u8 = ATTR_EXEC | ATTR_READ_ONLY;
@@ -327,4 +327,124 @@ pub fn chmod(path: &str, set: u8, clear: u8) -> isize {
         Ok(()) => 0,
         Err(_) => EIO,
     }
+}
+
+/// Maps a `hadris-fat` write-path error to an errno. Everything not named here (`NotAFile`,
+/// `NotADirectory`, `EntryNotFound`, `StaleEntry`, `ClusterLoop`, `CorruptFilesystem`, ...) falls
+/// back to `EIO`, matching how every other write path in this file already reports an unexpected
+/// `hadris-fat` failure.
+fn map_fat_err(e: hadris_fat::Error) -> isize {
+    use hadris_fat::Error;
+    match e {
+        Error::AlreadyExists => EEXIST,
+        Error::DirectoryNotEmpty => ENOTEMPTY,
+        Error::InvalidPath | Error::InvalidFilename => EINVAL,
+        Error::NoFreeSpace | Error::DirectoryFull => ENOSPC,
+        _ => EIO,
+    }
+}
+
+/// Creates an empty directory at `path`. `path`'s parent must already exist; `path` itself must
+/// not.
+pub fn mkdir(path: &str) -> isize {
+    let comps = components(path);
+    let Some((leaf, parents)) = comps.split_last() else {
+        return EEXIST; // "/" always exists
+    };
+    let parent = match resolve(parents) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    match vol().create_dir(&parent, leaf) {
+        Ok(_) => 0,
+        Err(e) => map_fat_err(e),
+    }
+}
+
+/// Removes the file, or (`remove_dir`) the empty directory, at `path`. Deletion is governed by the
+/// containing directory alone -- deliberately no read-only check here, matching real POSIX unlink
+/// semantics for a privileged process; the read-only bit still gates `open_write`, just not this.
+pub fn unlink(path: &str, remove_dir: bool) -> isize {
+    let comps = components(path);
+    let Some((leaf, parents)) = comps.split_last() else {
+        return EINVAL; // can't unlink "/"
+    };
+    if *leaf == "." || *leaf == ".." {
+        return EINVAL;
+    }
+    let parent = match resolve(parents) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let entry = match find_entry_checked(&parent, leaf) {
+        Ok(Some(e)) => e,
+        Ok(None) => return ENOENT,
+        Err(e) => return e,
+    };
+    match (entry.is_directory(), remove_dir) {
+        (true, false) => return EISDIR,
+        (false, true) => return ENOTDIR,
+        _ => {}
+    }
+    match vol().delete(&entry) {
+        Ok(()) => 0,
+        Err(e) => map_fat_err(e),
+    }
+}
+
+/// Renames or moves the entry at `old` to `new`, within the same volume. Thin, literal wrapper
+/// over `hadris-fat`'s `rename`: refuses if `new` already names something (`EEXIST`), regardless of
+/// its type, and refuses moving a directory into its own descendant (`EINVAL`, from `InvalidPath`).
+/// Deliberately does not implement "move into an existing directory" or "replace an existing file"
+/// -- those are `mv`(1) behaviors, layered in userspace on top of `stat` + this + `unlink`.
+pub fn rename(old: &str, new: &str) -> isize {
+    let old_entry = match lookup(old) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let new_comps = components(new);
+    let Some((new_leaf, new_parents)) = new_comps.split_last() else {
+        return EISDIR; // can't rename onto "/"
+    };
+    let new_parent = match resolve(new_parents) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    match vol().rename(&old_entry, &new_parent, new_leaf) {
+        Ok(_) => 0,
+        Err(e) => map_fat_err(e),
+    }
+}
+
+/// Every field a FAT directory entry actually stores, as `stat` reports it: raw, packed FAT
+/// date/time (see `abi::fs::STAT_SIZE`'s doc comment), not calendar values -- unpacking is left to
+/// whichever program displays them.
+pub struct StatInfo {
+    pub size: u32,
+    pub attrs: u8,
+    pub created: FatDateTime,
+    pub modified: FatDateTime,
+    pub accessed_date: u16,
+}
+
+/// Reads `path`'s size, attributes, and timestamps. The root has no directory entry of its own, so
+/// it's special-cased: size 0, `ATTR_DIRECTORY`, and the FAT epoch for every timestamp.
+pub fn stat(path: &str) -> Result<StatInfo, isize> {
+    if components(path).is_empty() {
+        return Ok(StatInfo {
+            size: 0,
+            attrs: ATTR_DIRECTORY,
+            created: FatDateTime::EPOCH,
+            modified: FatDateTime::EPOCH,
+            accessed_date: FatDateTime::EPOCH.date,
+        });
+    }
+    let entry = lookup(path)?;
+    Ok(StatInfo {
+        size: entry.len() as u32,
+        attrs: entry.attributes().bits(),
+        created: entry.created(),
+        modified: entry.modified(),
+        accessed_date: entry.accessed_date(),
+    })
 }

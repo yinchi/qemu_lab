@@ -137,6 +137,64 @@ impl Drop for Input {
     }
 }
 
+/// Prints a `--help` synopsis to stdout: `usage: <usage>`, then one `  -x  description` line per
+/// entry in `flags`. Every program checks for `--help` before any other argument parsing and
+/// returns this directly -- see `docs/progs.md`'s conventions section for why `--help` and not
+/// `-h` (POSIX has no help-flag convention at all, and GNU coreutils itself uses the long form
+/// only, since `-h` already means something else in some of its utilities).
+pub fn help(usage: &str, flags: &[(&str, &str)]) -> ExitCode {
+    use core::fmt::Write;
+    let mut out = Fd(1);
+    let _ = writeln!(out, "usage: {usage}");
+    for (flag, desc) in flags {
+        let _ = writeln!(out, "  {flag}  {desc}");
+    }
+    ExitCode(0)
+}
+
+/// A path built from `dir` and `name` as `dir/name`, without a heap (there is none in EL0 until
+/// Stage 18) -- a fixed `PATH_MAX`-byte buffer instead. Used wherever a program computes a child
+/// path itself rather than taking one as an argument (`mv`'s directory-destination case, `rm -r`'s
+/// and `chmod -R`'s recursion).
+pub struct PathBuf {
+    buf: [u8; userlib::PATH_MAX],
+    len: usize,
+}
+
+impl PathBuf {
+    /// Joins `dir` and `name` as `dir/name`, trimming one trailing `/` from `dir` first so joining
+    /// under the root (`dir == "/"`) doesn't double it. `None` if the result wouldn't fit in
+    /// `PATH_MAX` bytes.
+    pub fn join(dir: &str, name: &str) -> Option<Self> {
+        let dir = dir.strip_suffix('/').unwrap_or(dir);
+        let total = dir.len() + 1 + name.len();
+        if total > userlib::PATH_MAX {
+            return None;
+        }
+        let mut buf = [0u8; userlib::PATH_MAX];
+        buf[..dir.len()].copy_from_slice(dir.as_bytes());
+        buf[dir.len()] = b'/';
+        buf[dir.len() + 1..total].copy_from_slice(name.as_bytes());
+        Some(Self { buf, len: total })
+    }
+
+    pub fn as_str(&self) -> &str {
+        // SAFETY: built only from `str` slices above, so the bytes are valid UTF-8.
+        unsafe { core::str::from_utf8_unchecked(&self.buf[..self.len]) }
+    }
+}
+
+/// The text after the last `/` in `path` (or all of it if there is none), after trimming one
+/// trailing `/` first so a directory operand's own name is returned rather than an empty string.
+/// Used by `mv`'s directory-destination case.
+pub fn basename(path: &str) -> &str {
+    let path = path.strip_suffix('/').unwrap_or(path);
+    match path.rfind('/') {
+        Some(i) => &path[i + 1..],
+        None => path,
+    }
+}
+
 /// The arguments `head` and `tail` share: `[-n N] [file]`.
 pub struct LinesArgs {
     pub count: usize,
@@ -164,4 +222,53 @@ pub fn parse_lines_args(
         }
     }
     Ok(parsed)
+}
+
+/// Whether `head`/`tail`'s count is a number of lines (`-n`, the default) or bytes (`-c`) --
+/// Stage 12's extended form. A separate function/type from `parse_lines_args`/`LinesArgs` above
+/// (not a modification of them) since those are used by the base tier's `head`/`tail`, which
+/// r09-r11 also build and must keep working unchanged.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CountMode {
+    Lines,
+    Bytes,
+}
+
+/// The arguments Stage 12's `head`/`tail` share: `[-n N | -c N] [file]`.
+pub struct LinesOrBytesArgs {
+    pub mode: CountMode,
+    pub count: usize,
+    pub file: Option<&'static str>,
+}
+
+/// Parses `[-n N | -c N] [file]` from `args` (already past `argv[0]`), and `--help` (printed using
+/// `flags`). `Err` is the exit status to return, the problem having been reported already.
+pub fn parse_lines_or_bytes_args(
+    prog: &str,
+    usage_text: &str,
+    flags: &[(&str, &str)],
+    mut args: impl Iterator<Item = &'static str>,
+) -> Result<LinesOrBytesArgs, ExitCode> {
+    let mut mode = None;
+    let mut count = 10;
+    let mut file = None;
+    while let Some(arg) = args.next() {
+        if arg == "--help" {
+            return Err(help(usage_text, flags));
+        } else if arg == "-n" || arg == "-c" {
+            if mode.is_some() {
+                return Err(usage(usage_text)); // -n and -c are mutually exclusive
+            }
+            mode = Some(if arg == "-n" { CountMode::Lines } else { CountMode::Bytes });
+            let Some(n) = args.next().and_then(atoi) else {
+                return Err(usage(usage_text));
+            };
+            count = n;
+        } else if arg.len() > 1 && arg.starts_with('-') {
+            return Err(unknown_option(prog, arg));
+        } else if file.replace(arg).is_some() {
+            return Err(usage(usage_text));
+        }
+    }
+    Ok(LinesOrBytesArgs { mode: mode.unwrap_or(CountMode::Lines), count, file })
 }

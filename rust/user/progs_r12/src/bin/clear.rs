@@ -6,9 +6,15 @@
 
 use userlib::{CONSOLE_CLEAR, ExitCode};
 
-userlib::entry!(run);
+userlib::entry_with_args!(run);
 
-fn run() -> ExitCode {
+const USAGE: &str = "clear";
+const FLAGS: &[(&str, &str)] = &[];
+
+fn run(args: userlib::Args) -> ExitCode {
+    if args.skip(1).next() == Some("--help") {
+        return progs::help(USAGE, FLAGS);
+    }
     let result = userlib::ioctl(1, CONSOLE_CLEAR, 0);
     if result < 0 {
         progs::fail("clear", "standard output", result);

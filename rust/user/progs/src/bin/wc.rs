@@ -1,122 +1,173 @@
-//! `wc [-l] [-w] [-c] [file]` -- see `docs/progs.md`.
+//! `wc [-l] [-w] [-c] [-L] [file...]` -- see `docs/progs.md`.
 
 #![no_std]
 #![no_main]
 
 use core::fmt::Write;
 
-use progs::{CHUNK, Fd, Input, fail, unknown_option, usage};
-use userlib::{ExitCode, read};
+use progs::{CHUNK, Fd, fail, help, unknown_option};
+use userlib::{ExitCode, O_RDONLY, close, open, read};
 
 userlib::entry_with_args!(run);
+
+const USAGE: &str = "wc [-l] [-w] [-c] [-L] [file...]";
+const FLAGS: &[(&str, &str)] = &[
+    ("-l", "count lines"),
+    ("-w", "count words"),
+    ("-c", "count bytes"),
+    ("-L", "report the longest line's length"),
+];
 
 fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 
-fn run(args: userlib::Args) -> ExitCode {
+/// Running counts across one or more chunks of a stream.
+#[derive(Default)]
+struct Counts {
+    lines: usize,
+    words: usize,
+    bytes: usize,
+    max_line: usize,
+    cur_line: usize,
+    in_word: bool,
+}
 
-    // Define flags for which counts to display: lines, words, and bytes.
-    let (mut lines, mut words, mut bytes) = (false, false, false);
-
-    // Variable to store the name of the file to process, if any.
-    let mut file = None;
-
-    for arg in args.skip(1) {
-        // Process each argument
-        if arg.len() > 1 && arg.starts_with('-') {
-            // Process each flag character in the argument (flags can be concatenated, e.g. -lwc).
-            for flag in arg[1..].chars() {
-                match flag {
-                    'l' => lines = true,
-                    'w' => words = true,
-                    'c' => bytes = true,
-                    _ => return unknown_option("wc", arg),
-                }
+impl Counts {
+    fn add(&mut self, chunk: &[u8]) {
+        self.bytes += chunk.len();
+        for &b in chunk {
+            if b == b'\n' {
+                self.lines += 1;
+                self.max_line = self.max_line.max(self.cur_line);
+                self.cur_line = 0;
+            } else {
+                self.cur_line += 1;
             }
-        } else if file.replace(arg).is_some() {
-            // Only one file argument is allowed; if another is provided, display usage.
-            return usage("wc [-l] [-w] [-c] [file]");
+            let space = is_space(b);
+            if self.in_word && space {
+                self.in_word = false;
+            } else if !self.in_word && !space {
+                self.in_word = true;
+                self.words += 1;
+            }
         }
     }
 
-    // If no specific counts were requested, default to counting all three: lines, words, and bytes.
-    if !(lines || words || bytes) {
-        (lines, words, bytes) = (true, true, true);
+    /// Accounts for a final line with no trailing newline.
+    fn finish(&mut self) {
+        self.max_line = self.max_line.max(self.cur_line);
     }
 
-    // Display name for the file or stdin.
-    let name = file.unwrap_or("stdin");
+    fn accumulate(&mut self, other: &Counts) {
+        self.lines += other.lines;
+        self.words += other.words;
+        self.bytes += other.bytes;
+        self.max_line = self.max_line.max(other.max_line);
+    }
+}
 
-    // Open the input file or stdin for reading.
-    let input = match Input::open(file) {
-        Ok(input) => input,
-        Err(e) => {
-            fail("wc", name, e);
-            return ExitCode(1);
-        }
-    };
-
-    // Initialize counters for lines, words, and bytes.
-    let (mut n_lines, mut n_words, mut n_bytes) = (0usize, 0usize, 0usize);
-
-    // Track whether the current position is inside a word.
-    let mut in_word = false;
-
-    // Buffer for reading the input in chunks.
+fn count_fd(fd: usize) -> Result<Counts, isize> {
+    let mut counts = Counts::default();
     let mut buf = [0u8; CHUNK];
-
-    // Read the input in chunks and update the counters accordingly.
     loop {
-        let n = read(input.fd, &mut buf);
-
-        // Negative n indicates an error.
+        let n = read(fd, &mut buf);
         if n < 0 {
-            fail("wc", name, n);
-            return ExitCode(1);
+            return Err(n);
         }
-
-        // Zero n indicates end of input.
         if n == 0 {
             break;
         }
-
-        // Update the byte count and analyze each byte to update line and word counts.
-        n_bytes += n as usize;
-        for &b in &buf[..n as usize] {
-            if b == b'\n' {
-                n_lines += 1;
-            }
-            let space = is_space(b);
-            if in_word && space {
-                in_word = false;
-            } else if !in_word && !space {
-                in_word = true;
-                n_words += 1;
-            }
-        }
+        counts.add(&buf[..n as usize]);
     }
+    counts.finish();
+    Ok(counts)
+}
 
-    // Counts are separated by single spaces, in POSIX's fixed order (lines, words, bytes),
-    // followed by the file's name if one was given.
+fn print_counts(c: &Counts, lines: bool, words: bool, bytes: bool, max_line: bool, name: Option<&str>) {
     let mut out = Fd(1);
     let mut first = true;
-
-    // Print the counts for the requested categories (lines, words, bytes in order),
-    // skipping any that were not requested.
-    for (wanted, count) in [(lines, n_lines), (words, n_words), (bytes, n_bytes)] {
+    for (wanted, count) in [(lines, c.lines), (words, c.words), (bytes, c.bytes), (max_line, c.max_line)] {
         if wanted {
             let _ = write!(out, "{}{count}", if first { "" } else { " " });
             first = false;
         }
     }
-
-    // Print the filename if one was provided (none for stdout).
-    if let Some(file) = file {
-        let _ = write!(out, " {file}");
+    if let Some(name) = name {
+        let _ = write!(out, " {name}");
     }
-    // Ensure the output ends with a newline.
     let _ = writeln!(out);
+}
 
-    ExitCode(0)
+fn run(args: userlib::Args) -> ExitCode {
+    let (mut lines, mut words, mut bytes, mut max_line) = (false, false, false, false);
+    let mut n_files = 0usize;
+
+    for arg in args.skip(1) {
+        if arg == "--help" {
+            return help(USAGE, FLAGS);
+        }
+        if arg.len() > 1 && arg.starts_with('-') {
+            for flag in arg[1..].chars() {
+                match flag {
+                    'l' => lines = true,
+                    'w' => words = true,
+                    'c' => bytes = true,
+                    'L' => max_line = true,
+                    _ => return unknown_option("wc", arg),
+                }
+            }
+        } else {
+            n_files += 1;
+        }
+    }
+
+    // If nothing at all was requested, default to lines/words/bytes -- matches POSIX's fixed
+    // order. `-L` alone is not "nothing": it opts out of the default the same as any other flag.
+    if !(lines || words || bytes || max_line) {
+        (lines, words, bytes) = (true, true, true);
+    }
+
+    let mut status = 0;
+
+    if n_files == 0 {
+        match count_fd(0) {
+            Ok(c) => print_counts(&c, lines, words, bytes, max_line, None),
+            Err(e) => {
+                fail("wc", "stdin", e);
+                status = 1;
+            }
+        }
+        return ExitCode(status);
+    }
+
+    let mut total = Counts::default();
+    for arg in args.skip(1) {
+        if arg.len() > 1 && arg.starts_with('-') {
+            continue; // already validated as a flag above
+        }
+        let fd = open(arg, O_RDONLY);
+        if fd < 0 {
+            fail("wc", arg, fd);
+            status = 1;
+            continue;
+        }
+        let fd = fd as usize;
+        match count_fd(fd) {
+            Ok(c) => {
+                print_counts(&c, lines, words, bytes, max_line, Some(arg));
+                total.accumulate(&c);
+            }
+            Err(e) => {
+                fail("wc", arg, e);
+                status = 1;
+            }
+        }
+        close(fd);
+    }
+    if n_files > 1 {
+        print_counts(&total, lines, words, bytes, max_line, Some("total"));
+    }
+
+    ExitCode(status)
 }
