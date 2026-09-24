@@ -47,7 +47,7 @@ pub const USER_SIZE: usize = 0x0020_0000; // 2 MiB
 //
 // Nothing is mapped between the last segment and the stack, so a stack that overflows -- or a
 // wild pointer into the gap -- faults instead of silently running into the program's own data.
-// (Stage 17 makes the window variable-sized; until then the split is fixed.)
+// (Stage 15 makes the window variable-sized; until then the split is fixed.)
 
 /// The stack's size: generous, per the project's rule of thumb for MiB-scale stacks and buffers.
 pub const USER_STACK_SIZE: usize = 0x0010_0000; // 1 MiB

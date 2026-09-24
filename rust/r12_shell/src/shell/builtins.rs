@@ -86,7 +86,7 @@ fn run_script_file(cmd: &str, path: &str, scoped: bool, depth: usize) -> Result<
 
 /// `cd [DIR]`, POSIX's subset: `cd DIR` makes DIR (absolute, or relative to the working directory) the
 /// working directory; with no operand it goes to `/` -- POSIX says `$HOME`, but there is no environment
-/// until Stage 16, which then switches this to `$HOME`. `cd -` (needs `$OLDPWD`) and `-L`/`-P` (there
+/// until Stage 17, which then switches this to `$HOME`. `cd -` (needs `$OLDPWD`) and `-L`/`-P` (there
 /// are no symbolic links to choose about) are refused with a clear error, as is more than one operand.
 /// On any error the working directory is unchanged. `args` excludes the command word.
 fn cd(args: &[&str]) -> Result<(), String> {

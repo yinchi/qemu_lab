@@ -21,7 +21,7 @@
 
 use super::keymap::{KEY_NAMES, KeyState, LockState};
 
-// Exported for a future raw-mode consumer (Stage 13) to match `Token::code` against -- nothing
+// Exported for a future raw-mode consumer (Stage 18) to match `Token::code` against -- nothing
 // in this stage's canonical line loop has a defined action for Escape yet.
 #[allow(dead_code)]
 pub const KEY_ESC: u16 = 1;

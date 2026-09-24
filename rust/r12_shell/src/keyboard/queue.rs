@@ -12,7 +12,7 @@
 //! Who touches what: `drain_keyboard` runs from the IRQ handler, or from `read(0)` inside a syscall, where
 //! IRQs are masked, so there is only ever one producer at a time. The shell's loop pops with IRQs
 //! on, so `pop` masks them for the moment it takes. The queue is reader-agnostic on purpose: whoever
-//! owns the keyboard pops it (later, a raw-mode editor -- Stage 13 -- or a foreground program --
+//! owns the keyboard pops it (later, a raw-mode editor -- Stage 18 -- or a foreground program --
 //! Stage 19).
 
 use super::events::token_for;

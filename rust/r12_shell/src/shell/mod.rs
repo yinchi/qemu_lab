@@ -68,10 +68,10 @@ fn run_line_inner(line: &str, depth: usize) {
             return;
         }
     };
-    // The returned status isn't used here -- `exit N` (our stand-in for `$?` until Stage 16, see
-    // `ROADMAP.md`'s Stage 16 section) is printed by `run_segment_with` itself, while its
+    // The returned status isn't used here -- `exit N` (our stand-in for `$?` until Stage 17, see
+    // `ROADMAP.md`'s Stage 17 section) is printed by `run_segment_with` itself, while its
     // `with_stdio` scope is still active, so a redirected stderr captures it exactly like the rest
-    // of a failing command's own output. Once Stage 16 adds real `$?`, this is where the returned
+    // of a failing command's own output. Once Stage 17 adds real `$?`, this is where the returned
     // value would be saved instead (no redirect concern for a plain variable write, so it need not
     // move back inside any scope) -- the return chain underneath doesn't change either way.
     if let [segment] = pipeline.as_slice() {
@@ -102,7 +102,7 @@ fn run_segment(segment: &Segment, depth: usize) -> Option<i32> {
 /// below then correctly layer on top of via `apply_redirect`'s plain overwrite -- "the pipe binds
 /// before the stage's own redirects," with no new mechanism beyond what redirection already does.
 ///
-/// `report` is whether this call should print `exit {code}` (our stand-in for `$?` until Stage 16)
+/// `report` is whether this call should print `exit {code}` (our stand-in for `$?` until Stage 17)
 /// for a nonzero result -- `true` for a plain command, `true` only for a pipeline's *last* stage
 /// (`run_pipeline`). The print happens *inside* the `with_stdio` scope, not after it returns, so a
 /// redirected stderr captures it exactly like the rest of a failing command's own output -- moving

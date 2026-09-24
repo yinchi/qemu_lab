@@ -76,7 +76,7 @@ Its parts (each one file under `keyboard/`):
 
 > [!NOTE]
 > Neither mode is "raw mode". That term is reserved for a full-screen editor that reads tokens directly and
-> bypasses the line discipline entirely (Stage 13). Both modes here stay inside the same model: keys edit a
+> bypasses the line discipline entirely (Stage 18). Both modes here stay inside the same model: keys edit a
 > line, and Enter finishes it. `Mode::Prompt` just recognizes more keys.
 
 ## Prompt vs Canonical mode

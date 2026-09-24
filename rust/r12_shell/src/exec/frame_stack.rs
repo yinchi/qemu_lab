@@ -1,5 +1,5 @@
 //! The shell's state that a script or a redirect must be able to save and restore: the working
-//! directory and the three standard streams' bindings, held as a stack of frames. (Stage 16 adds the
+//! directory and the three standard streams' bindings, held as a stack of frames. (Stage 17 adds the
 //! environment to the frame; it becomes, in effect, the per-process state a child inherits.)
 //!
 //! Two different scoping operations, deliberately not one:
@@ -41,7 +41,7 @@ pub struct ShellFrame<F> {
     pub cwd: String,
     /// Where stdin, stdout and stderr go.
     pub stdio: [StdioBinding<F>; 3],
-    // Stage 16 adds `env` here.
+    // Stage 17 adds `env` here.
 }
 
 /// The stack of frames. Never empty: the bottom frame is the shell's own, and is never popped.

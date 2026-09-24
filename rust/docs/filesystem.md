@@ -112,7 +112,7 @@ runs at a time, and the shell never reads and writes one path at once. What it d
   also reads the stale bytes past the new end. If it shrinks across a cluster boundary, the freed clusters
   are gone from the chain: the reader gets `EIO`, or, if another file has since been given those clusters,
   reads that file's bytes. `hadris-fat` revalidates the entry on each read, but only by short name and creation
-  time, which catches a deleted file yet not a rewritten one (and, with no clock before Stage 14, not
+  time, which catches a deleted file yet not a rewritten one (and, with no clock before Stage 13, not
   delete-and-recreate either).
 - `unlink` and `rename` do not look at open fds either.
 - FAT has no inodes, so there is no Unix behaviour to imitate, where an open file keeps its old contents after
@@ -173,7 +173,7 @@ by the containing directory alone, as for a privileged process on Unix.
 | `chmod` | As above. |
 
 Timestamps are what is stored: the fixed build-time stamp for files bundled into the image, and the FAT epoch
-(1980-01-01) for anything the kernel itself creates or writes, since there is no real-time clock until Stage 14.
+(1980-01-01) for anything the kernel itself creates or writes, since there is no real-time clock until Stage 13.
 
 `mkdir`, `unlink` and `rename` map `hadris-fat`'s errors through one function (`map_fat_err`): `AlreadyExists` to
 `EEXIST`, `DirectoryNotEmpty` to `ENOTEMPTY`, `InvalidPath`/`InvalidFilename` to `EINVAL`, `NoFreeSpace`/

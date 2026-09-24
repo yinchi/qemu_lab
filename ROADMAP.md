@@ -545,7 +545,7 @@ throwaway test binaries just to prove the plumbing works.
   shell prompt, and each finished input line also go to the serial port (with
   `\r\n` line endings), so a serial log is a readable transcript of a session.
   This is what makes the automated test below possible. It applies to plain
-  line-oriented console writes; a raw-mode full-screen program (Stage 13's
+  line-oriented console writes; a raw-mode full-screen program (Stage 18's
   editor) would bypass it.
 - **More kernel memory.** The kernel stack grows from 16 KiB to 1 MiB and the
   heap from 128 KiB to 1 MiB (the kernel image has a 16 MiB budget and comes
@@ -601,7 +601,7 @@ things the shell shouldn't be built on:
   `SCTLR_EL1` `M | C | I` plus WXN, stack-alignment checks and PAN, page-aligns every linker section, gives
   the user stack an explicit mapping with an unmapped guard, and makes the kernel check every user pointer
   against what is really mapped. Stages 9-11 are deliberately left as they were built. Kernel and user
-  addresses stay identity mapped; only per-process address spaces (Stages 17-19) would change that. The
+  addresses stay identity mapped; only per-process address spaces (Stages 15, 16 and 19) would change that. The
   kernel's own stack gets the same treatment after the phase's last Step: a 64 KiB unmapped guard below it, and
   fatal EL1 exceptions run on a separate exception stack, so an overflow is reported ("Kernel stack overflow")
   rather than faulting again on the stack it just overflowed.
@@ -617,7 +617,7 @@ things the shell shouldn't be built on:
   loop consumes them, and programs run with interrupts enabled.
 
 **Phase 2 (Steps 6-12): the shell**
-- **Shell-state frames.** A stack of `{cwd, stdio triple}` (Stage 16 adds `env`) with two distinct
+- **Shell-state frames.** A stack of `{cwd, stdio triple}` (Stage 17 adds `env`) with two distinct
   operations: `with_scope` pushes a whole frame (a script's own scope) and `with_stdio` saves and
   restores only the stdio triple (every redirect, so a redirected builtin's `cd` still sticks).
   There is still one fd table, not one per program -- at most one program is ever resident, so the
@@ -659,8 +659,8 @@ things the shell shouldn't be built on:
 | A userspace `sh` needs | Provided by | Stage 12's preparation |
 |---|---|---|
 | The shell not running in IRQ context; one input queue independent of its reader | Stage 12, Step 5 | Done here: the token queue and the eval loop outside the interrupt handler |
-| Per-process `cwd`, stdio bindings and `env`, inherited by a child | Stage 16 adds `env`; Stage 19's slots hold a process struct | `ShellFrame` is plain data with no reference to any static, so it can become that struct |
-| Two programs resident at once (the shell stays loaded while a child runs) | Stage 19, with Stages 17/18 for window sizing and heap | None; noted only |
+| Per-process `cwd`, stdio bindings and `env`, inherited by a child | Stage 17 adds `env`; Stage 19's slots hold a process struct | `ShellFrame` is plain data with no reference to any static, so it can become that struct |
+| Two programs resident at once (the shell stays loaded while a child runs) | Stage 19, with Stages 15/16 for window sizing and heap | None; noted only |
 | `spawn`/`wait` syscalls (the fork/exec equivalent) | Stages 19 and 22 | `process::run_program` is split into `prepare` (load and set up) and `run` (enter EL0), so the first half can be reused |
 | `chdir` (number reserved) and `dup2`-style fd control | New syscalls once state is per-process | `getcwd` exists; `SYS_CHDIR`'s number is reserved in `abi`; the frame stack keeps redirection and cwd in one place |
 | Real pipes between resident programs; job control | Stages 23 and 20-22 | Pipelines are isolated in `run_pipeline`, so the temp-file design is replaceable |
@@ -677,82 +677,24 @@ find the files still there. `just test` runs the automated version of all of thi
 
 ---
 
-## Stage 13 (Capstone 1): a vi-like full-screen editor -- `r13_editor`
+## Before Capstone 1: the smaller stages first
 
-**Goal:** genuinely harder than the shell's line editing, not just a bigger
-version of it -- a full-screen editor needs a multi-line buffer and modal
-editing on top of everything Stage 12 already has, even though Stage 6/7's
-`virtio-gpu`+keyboard architecture removes what would otherwise have been
-this stage's hardest problems: there's no terminal-size query needed (the
-display's dimensions are fixed and known up front by this project's own
-design, unlike a real serial terminal's `ESC[18t` round-trip), and no blind,
-escape-code-driven redraw needed (the CPU can read back and rewrite any cell
-in the framebuffer directly, so there's no ANSI vocabulary to speak in
-either direction).
+Stage 12 leaves the shell finished, and Capstone 1 -- the editor -- is the largest single step still ahead.
+The small, self-contained stages that used to come after it therefore come first: each is easy to finish and
+test in isolation, and two of them are things the editor needs (a real heap, and real timestamps for `save`).
+They were originally numbered after the editor; the numbers below are the new ones, and Stages 19 onward are
+unchanged.
 
-**New features specific to this stage:**
-- A multi-line in-memory buffer, and modal editing (insert vs. command mode,
-  at minimum) -- the genuinely new state this stage introduces; both are
-  independent of the I/O model and would have been needed however Stages 6/7
-  turned out.
-- Screen redraw: rewriting the entire visible page's worth of character
-  cells on every edit via Stage 6's console, then one `flush()` call to push
-  it to the display -- no differential/region-tracking logic required, since
-  a full-page rewrite plus a single flush is cheap regardless. Worth naming
-  explicitly: unlike real VGA VRAM, `virtio-gpu` writes aren't automatically
-  visible on screen -- `flush()` is what actually transfers the framebuffer
-  to the display, one extra step real memory-mapped VRAM wouldn't have
-  needed, though still just one cheap call per edit, not something to
-  optimize.
-- A visible cursor needs drawing ourselves, same as Stage 12's: rendered as
-  an ordinary glyph via `put_char`, since `virtio-gpu`'s only cursor
-  primitive is a 64x64 ARGB mouse-pointer overlay, not a character cell.
-- [`kilo`](http://viewsourcecode.org/snaptoken/kilo/) (and its Rust ports,
-  `kiro-editor`/`kilo-rs`) remains a useful design reference for the
-  multi-line-buffer-plus-modal-editing structure itself -- around 1000 lines,
-  easy to read end to end -- even though its terminal I/O layer (built on
-  `termios`/ANSI escapes) isn't something this stage needs or borrows from.
-- File access reuses the `open`/`read`/`write`/`close` syscalls already
-  established in Stage 11 -- nothing new needed on that front, and the
-  editor is launched the same way as any other program via Stage 12's shell.
-- A toggleable raw-mode switch on fd 0 -- the one genuinely new syscall
-  surface this stage needs. Off by default (Stage 10/11's canonical,
-  line-buffered mode); once this editor switches it on, its own `read()` calls pop `Token`s straight from the token queue Stage 12 introduced, bypassing the line discipline entirely -- no
-  Enter-wait, no Backspace-absorption, since the editor decides what
-  Backspace means itself (delete-under-cursor, not "edit the pending
-  line"). Switched back off on exit, restoring Stage 12's shell to
-  canonical mode. Not `termios`/ANSI raw mode -- just this project's own
-  version of the same cooked-vs-raw distinction, since Stage 7's
-  `virtio-keyboard` already delivers discrete key events with nothing
-  escape-sequence-shaped to negotiate. Nothing before this stage has
-  anything to toggle it; the switch itself is worth having now regardless,
-  so `tokens.rs`'s `Token` (already carrying raw evdev codes and modifier
-  flags, not just resolved characters) has a real consumer to have been
-  designed for.
-- Flipping this switch on needs no interrupt-mask changes. Stages 10-11 masked every DAIF bit for a
-  program's whole time at EL0 to close a reentrancy hazard (a keyboard IRQ re-entering
-  `handle_keyboard_irq` while `run_program` was still on the stack), but Stage 12 removes the hazard
-  instead of masking around it: the keyboard IRQ only enqueues `Token`s, the shell's loop runs outside
-  IRQ context, and programs run with interrupts enabled. Raw mode is then purely a routing switch on
-  that queue -- who consumes each `Token`, the shell's line discipline or this editor directly -- and
-  keystrokes typed while a program isn't reading wait in the queue instead of being lost.
+| Now | Stage | Was |
+|---|---|---|
+| 13 | A real-time clock | 14 |
+| 14 | Real file timestamps | 15 |
+| 15 | Arbitrarily large binaries | 17 |
+| 16 | Growable memory (`brk`) and a user heap | 18 |
+| 17 | Environment variables, `$VAR`, `$?` | 16 |
+| 18 | The vi-like editor (**Capstone 1**) | 13 |
 
-**Demo:** launch the editor from Stage 12's shell against a file already
-present on the disk image, edit its text on Stage 6's display using
-Stage 7's keyboard, save it, then -- to prove persistence, not just an
-in-memory illusion -- restart QEMU against the same `disk.img` and confirm
-the edit is still there.
-
----
-
-## Beyond Capstone 1
-
-Stage 13 is the first real checkpoint, not the finish line -- the project stays open-ended past
-it. The two stages below are small, self-contained additions that don't block, and aren't blocked
-by, Stages 10-13's own sequence; they're placed here rather than inserted earlier specifically to
-avoid renumbering that already-written sequence.
-
-## Stage 14: a real-time clock -- `r14_rtc`
+## Stage 13: a real-time clock -- `r13_rtc`
 
 **Goal:** the same "prove the primitive works in isolation before it's load-bearing" pattern
 Stage 3 already used for the generic timer -- a new hardware peripheral, introduced on its own
@@ -775,7 +717,7 @@ before anything else depends on it.
   to what this stage needs. This system just runs in UTC, the same deliberate choice plenty of
   real minimal/server/embedded systems make. Printing the raw epoch-seconds integer is a
   sufficient first cut; human-readable calendar formatting (still UTC) is a nice-to-have on top,
-  not required. Stage 16's environment variables are what would actually unlock this later --
+  not required. Stage 17's environment variables are what would actually unlock this later --
   `$TZ` is ordinarily just one conventional variable riding on that general mechanism, not
   something that needs its own bespoke configuration path.
 
@@ -784,33 +726,120 @@ value actually advances -- proving it's live, not a build-time constant.
 
 ---
 
-## Stage 15: real file timestamps on save -- `r15_save_time`
+## Stage 14: real file timestamps -- `r14_file_times`
 
 **Goal:** replace the fixed, build-time `SOURCE_DATE_EPOCH` timestamp every file on `disk.img`
-carries since Stage 8 with a genuine, RTC-sourced one, for any file a program actually writes at
-runtime -- the first point since Stage 8 where a file's on-disk timestamp reflects something other
-than that fixed build-time value.
+carries since Stage 8 -- and the FAT epoch (1980-01-01) that every file or directory the kernel itself
+creates or writes carries, since there is no clock -- with a genuine, RTC-sourced one, for anything a
+program actually creates or writes at runtime: the first point since Stage 8 where an on-disk timestamp
+reflects something other than a fixed value.
 
 **Features:**
-- Stage 14's RTC driver, called from wherever `hadris-fat`'s write path currently leaves a
-  written file's directory-entry timestamp at whatever default it has -- check `hadris-fat`'s own
-  API for how a caller supplies a modification timestamp on write when this stage is reached.
-- No new consumer needed: `cp` (Stage 11) and the editor's `save` (Stage 13) already write file
-  content through `hadris-fat`; this stage only changes what timestamp those existing writes
+- Stage 13's RTC driver, behind a `hadris-fat` `TimeProvider` (the trait the volume is mounted with:
+  it takes a `&'static dyn TimeProvider`, and the kernel uses the epoch default today), so creating,
+  writing and `mkdir` stamp the entry from the RTC in one place; `FileWriter` also has explicit
+  `set_created`/`set_modified` setters if a caller ever needs to override one.
+- No new consumer needed: `cp` (Stage 11), `mkdir`, `tee` and shell redirects, and later the editor's
+  `save` (Stage 18), already write through `hadris-fat`; this stage only changes what timestamp those existing writes
   carry, not what writes files in the first place.
 
-**Demo:** `cp` a file (or save from the editor), inspect its directory entry, and confirm the
+**Demo:** `cp` a file (or redirect into one), `stat` it, and inspect its directory entry, and confirm the
 timestamp reflects real "now" -- rather than the fixed build-time value every other file on the
 image still carries.
+Side effects to plan for: Stage 12's tests pin the FAT epoch for kernel-created entries (the `stat` checks in
+`user_progs.py`), and `progs.md`/`filesystem.md` say "no RTC until Stage 13"; both change here. Real creation times
+also make `hadris-fat`'s stale-entry check (name plus creation time) meaningfully stronger, at one-second resolution.
 
 ---
 
-## Stage 16: environment variables -- `r16_env`
+## Stage 15: arbitrarily large binaries -- `r15_large_binaries`
+
+**Goal:** let a program's footprint use as much RAM as it actually needs, up to what's genuinely
+free -- not the small, uniform ceiling every program has been held to since Stage 9. Motivated by
+Stage 16's heap and Stage 18's editor (a buffer and a file of unknown size need room to grow), and by
+Stage 17's `chrono-tz` aside: a program linking a full timezone database needs meaningfully more than
+`hello`/`crash` ever did, and paying that same cost for every program regardless of need is the wrong
+trade. Placed early because the heap (Stage 16) is built on it, and the editor on both.
+
+**Features:**
+- `elf.rs`'s `load()` computes the ELF's actual footprint (the highest `p_vaddr + p_memsz` across
+  every `PT_LOAD` segment) before mapping anything, instead of checking each segment against a
+  single fixed `USER_SIZE` constant.
+- `mmu.rs`'s `USER_SIZE` becomes a ceiling, not the amount actually mapped -- the mapped extent
+  for a given load is whatever `elf::load()` just computed for that specific program. Still
+  identity-mapped, still growing from the same fixed `USER_BASE` (every user binary is linked at
+  that same address; growing the window doesn't mean giving up the fixed base), still no physical
+  frame allocator needed -- the extra room is already sitting there, deliberately unmapped, in the
+  gap between the kernel's region and the top of RAM.
+- **Shrink-on-load, not just grow-on-load:** the one genuinely new correctness requirement
+  variable-sized windows introduce. If program A needed 500 KB and program B (loaded next) only
+  needs 10 KB, B must not inherit A's leftover 490 KB still marked `USER`-accessible -- memory B
+  never asked for, doesn't know about, but could still touch given a bug. Each load must
+  explicitly revoke access to whatever extent exceeds *this* program's own needs, not just extend
+  into more of it. The existing broad `tlbi vmalle1is` at the end of `load()` already covers the
+  invalidate half of this for free (it was designed to be correct regardless of what changed, not
+  a precise per-page flush).
+
+**Demo:** load and run a deliberately oversized test binary (a static array well beyond the
+previous 2 MiB ceiling, or Stage 17's `chrono-tz`-linked `date` itself, once it exists) immediately followed by
+`hello` -- confirming the large binary runs correctly, and that `hello`'s own (much smaller)
+window is genuinely clean afterward, e.g. by having `hello` (or a dedicated test) attempt to read
+memory beyond its own footprint and confirm it faults, proving the leftover extent was actually
+revoked, not just left mapped and merely unused.
+
+Reference points from Stage 12: the window is `USER_SIZE` = 2 MiB at `USER_BASE`, with the stack at the top
+(`USER_STACK_TOP = USER_BASE + USER_SIZE`, 1 MiB, a 64 KiB unmapped guard below it) and the image capped at
+`USER_IMAGE_END`, so a larger ceiling keeps the stack where it is and grows the image and, later, the heap upward
+from the base. `docs/mmu.md` and `docs/launching_programs.md` describe the fixed window and are rewritten here.
+
+---
+
+## Stage 16: growable memory at runtime -- `r16_brk`
+
+**Goal:** let an already-running program ask for more memory as it goes, rather than only ever
+getting a fixed allocation decided once at load time -- needed for anything whose memory needs
+depend on runtime input, like Stage 18's editor opening a file of unknown size.
+
+**Features:**
+- A new syscall, `brk`-shaped: request the heap be extended to a new end address (or by some
+  increment). The kernel handler reuses Stage 15's own mechanism -- map more of the same
+  already-reserved, deliberately-free RAM immediately following whatever's already mapped for
+  this program -- just triggered by an explicit runtime request instead of computed once from the
+  ELF header.
+- `userlib` gains its own `#[global_allocator]` -- reusing `linked_list_allocator`, the same crate
+  the kernel's own heap already uses -- starting with a small initial heap and calling `brk` to
+  grow it on demand, rather than syscalling on every individual allocation. `hello`/`crash` need
+  none of this; the editor (Stage 18) is the first EL0 program with genuine dynamic-allocation needs.
+- The heap sits in the natural gap between the loaded segments (bottom of the window) and the
+  stack (top, growing down) -- the classic Unix layout, already implied by this project's
+  existing choice of where the stack lives. Worth a deliberate guard gap between wherever the
+  heap has grown to and the stack, rather than assuming they'll never meet, matching this
+  project's own established "leave it unmapped" philosophy elsewhere.
+- **Audit item, not a feature:** once `alloc` is real in EL0, revisit every "assume this will fit"
+  fixed-capacity workaround the no-heap constraint forced on earlier stages' user programs, and
+  replace the ones that were only ever a stand-in for a real `Vec`/`String`. The concrete example
+  already on record: Stage 12's `progs::PathBuf` (`user/progs/src/lib.rs`) joins a directory and a
+  name into a fixed `PATH_MAX`-byte buffer and returns `None` on overflow, used by `mv`, `cp`'s
+  directory-destination case, and `rm -r`/`chmod -R`'s recursion -- a `alloc::format!`-built
+  `String` would need no such cap. Other known instances: `tail`'s 512 KiB stdin buffer (`tail` of a pipe larger than that is refused),
+  `tee`'s eight-file cap, and the fixed batches in `ls`/`rm`/`chmod`. Check for the same pattern elsewhere in
+  `user/` (the Stage 12 tier, `progs_r12`, included) before assuming these are all of them.
+
+**Demo:** a test program (the editor does not exist yet) that grows a `Vec` to several MiB and touches every
+byte, then a small program right after it -- confirming each size loads and runs without a fixed ceiling, that
+the heap's growth is genuinely on demand (a program that allocates little maps little, checked against the
+kernel's own view of what is mapped), that the pages are revoked for the next load, and that a request past the
+ceiling fails cleanly instead of corrupting the stack. The editor (Stage 18) is the first real consumer, and
+opens progressively larger files for its own demo.
+
+---
+
+## Stage 17: environment variables -- `r17_env`
 
 **Goal:** give programs (and the shell that launches them) a genuine, general-purpose key=value
 store, by extending Stage 10's `argc`/`argv` mechanism with the third array real `execve()` passes
 alongside them -- `envp` -- rather than inventing a special-purpose configuration path each time
-something new (like Stage 14's own deliberately-deferred `$TZ`) needs configuring.
+something new (like Stage 13's own deliberately-deferred `$TZ`) needs configuring.
 
 **Features:**
 - A third array, `envp`: `NULL`-terminated pointers to `"KEY=VALUE"` C-style strings, written onto the new program's stack the same way Stage 10 already writes `argv`'s strings and pointer array (through the `push_cstr_array` helper Stage 12 extracts from `run_program`),
@@ -866,87 +895,89 @@ historical DST transitions included -- genuine `$TZ`-aware local time, not just 
 Its own README warns that "the additional binary size added by this library may overflow
 available program space" on a real microcontroller; that specific risk doesn't apply to us (a
 QEMU-emulated host with generous RAM, not a flash-constrained MCU), but it still has one concrete
-consequence worth naming here rather than discovering later: `mmu.rs`'s fixed 2 MiB user window
-(`USER_SIZE`) was sized for tiny, few-KB demo binaries, and a program statically linking a full
-timezone database would be the first thing to actually pressure-test that budget -- likely still
-fine, but worth deliberately re-checking (or enlarging the window) when this is reached, not
-assuming it fits by default.
+consequence, now already handled: `mmu.rs`'s fixed 2 MiB user window (`USER_SIZE`) was sized for tiny,
+few-KB demo binaries, and a program statically linking a full timezone database is exactly what Stage 15
+(arbitrarily large binaries) was built for -- it comes first, so the database is a straightforward
+use of it, not a budget to re-check.
+
+Two things Stage 12 leaves for this stage, beyond `$VAR` and `$?` themselves: the automatic `exit N` line is
+retired (its 50-odd expectations across the `r12_shell` tests become explicit `echo $?` checks, or simply
+disappear), and `cd` with no operand goes to `$HOME`.
 
 ---
 
-## Stage 17: arbitrarily large binaries -- `r17_large_binaries`
+## Stage 18 (Capstone 1): a vi-like full-screen editor -- `r18_editor`
 
-**Goal:** let a program's footprint use as much RAM as it actually needs, up to what's genuinely
-free -- not the small, uniform ceiling every program has been held to since Stage 9. Directly
-motivated by Stage 16's `chrono-tz` aside: a program linking a full timezone database needs
-meaningfully more than `hello`/`crash` ever did, and paying that same cost for every program
-regardless of need is the wrong trade.
+**Goal:** genuinely harder than the shell's line editing, not just a bigger
+version of it -- a full-screen editor needs a multi-line buffer and modal
+editing on top of everything Stage 12 already has, even though Stage 6/7's
+`virtio-gpu`+keyboard architecture removes what would otherwise have been
+this stage's hardest problems: there's no terminal-size query needed (the
+display's dimensions are fixed and known up front by this project's own
+design, unlike a real serial terminal's `ESC[18t` round-trip), and no blind,
+escape-code-driven redraw needed (the CPU can read back and rewrite any cell
+in the framebuffer directly, so there's no ANSI vocabulary to speak in
+either direction).
 
-**Features:**
-- `elf.rs`'s `load()` computes the ELF's actual footprint (the highest `p_vaddr + p_memsz` across
-  every `PT_LOAD` segment) before mapping anything, instead of checking each segment against a
-  single fixed `USER_SIZE` constant.
-- `mmu.rs`'s `USER_SIZE` becomes a ceiling, not the amount actually mapped -- the mapped extent
-  for a given load is whatever `elf::load()` just computed for that specific program. Still
-  identity-mapped, still growing from the same fixed `USER_BASE` (every user binary is linked at
-  that same address; growing the window doesn't mean giving up the fixed base), still no physical
-  frame allocator needed -- the extra room is already sitting there, deliberately unmapped, in the
-  gap between the kernel's region and the top of RAM.
-- **Shrink-on-load, not just grow-on-load:** the one genuinely new correctness requirement
-  variable-sized windows introduce. If program A needed 500 KB and program B (loaded next) only
-  needs 10 KB, B must not inherit A's leftover 490 KB still marked `USER`-accessible -- memory B
-  never asked for, doesn't know about, but could still touch given a bug. Each load must
-  explicitly revoke access to whatever extent exceeds *this* program's own needs, not just extend
-  into more of it. The existing broad `tlbi vmalle1is` at the end of `load()` already covers the
-  invalidate half of this for free (it was designed to be correct regardless of what changed, not
-  a precise per-page flush).
+**New features specific to this stage:**
+- A multi-line in-memory buffer, and modal editing (insert vs. command mode,
+  at minimum) -- the genuinely new state this stage introduces; both are
+  independent of the I/O model and would have been needed however Stages 6/7
+  turned out.
+- Screen redraw: rewriting the entire visible page's worth of character
+  cells on every edit via Stage 6's console, then one `flush()` call to push
+  it to the display -- no differential/region-tracking logic required, since
+  a full-page rewrite plus a single flush is cheap regardless. Worth naming
+  explicitly: unlike real VGA VRAM, `virtio-gpu` writes aren't automatically
+  visible on screen -- `flush()` is what actually transfers the framebuffer
+  to the display, one extra step real memory-mapped VRAM wouldn't have
+  needed, though still just one cheap call per edit, not something to
+  optimize.
+- A visible cursor needs drawing ourselves, same as Stage 12's: rendered as
+  an ordinary glyph via `put_char`, since `virtio-gpu`'s only cursor
+  primitive is a 64x64 ARGB mouse-pointer overlay, not a character cell.
+- [`kilo`](http://viewsourcecode.org/snaptoken/kilo/) (and its Rust ports,
+  `kiro-editor`/`kilo-rs`) remains a useful design reference for the
+  multi-line-buffer-plus-modal-editing structure itself -- around 1000 lines,
+  easy to read end to end -- even though its terminal I/O layer (built on
+  `termios`/ANSI escapes) isn't something this stage needs or borrows from.
+- File access reuses the `open`/`read`/`write`/`close` syscalls already
+  established in Stage 11 -- nothing new needed on that front, and the
+  editor is launched the same way as any other program via Stage 12's shell.
+  What the stages before it give it: a real heap for the buffer (Stage 16, on Stage 15's
+  growable window) so a file's size is not capped by a fixed array, real timestamps on
+  save (Stage 14), and, with Stage 12, a shell whose diagnostics and options it can lean on.
+- A toggleable raw-mode switch on fd 0 -- the one genuinely new syscall
+  surface this stage needs. Off by default (Stage 10/11's canonical,
+  line-buffered mode); once this editor switches it on, its own `read()` calls pop `Token`s straight from the token queue Stage 12 introduced, bypassing the line discipline entirely -- no
+  Enter-wait, no Backspace-absorption, since the editor decides what
+  Backspace means itself (delete-under-cursor, not "edit the pending
+  line"). Switched back off on exit, restoring Stage 12's shell to
+  canonical mode. Not `termios`/ANSI raw mode -- just this project's own
+  version of the same cooked-vs-raw distinction, since Stage 7's
+  `virtio-keyboard` already delivers discrete key events with nothing
+  escape-sequence-shaped to negotiate. Nothing before this stage has
+  anything to toggle it; the switch itself is worth having now regardless,
+  so `tokens.rs`'s `Token` (already carrying raw evdev codes and modifier
+  flags, not just resolved characters) has a real consumer to have been
+  designed for.
+- Flipping this switch on needs no interrupt-mask changes. Stages 10-11 masked every DAIF bit for a
+  program's whole time at EL0 to close a reentrancy hazard (a keyboard IRQ re-entering
+  `handle_keyboard_irq` while `run_program` was still on the stack), but Stage 12 removes the hazard
+  instead of masking around it: the keyboard IRQ only enqueues `Token`s, the shell's loop runs outside
+  IRQ context, and programs run with interrupts enabled. Raw mode is then purely a routing switch on
+  that queue -- who consumes each `Token`, the shell's line discipline or this editor directly -- and
+  keystrokes typed while a program isn't reading wait in the queue instead of being lost.
 
-**Demo:** load and run a deliberately oversized test binary (a static array well beyond the
-previous 2 MiB ceiling, or Stage 16's `chrono-tz`-linked `date` itself) immediately followed by
-`hello` -- confirming the large binary runs correctly, and that `hello`'s own (much smaller)
-window is genuinely clean afterward, e.g. by having `hello` (or a dedicated test) attempt to read
-memory beyond its own footprint and confirm it faults, proving the leftover extent was actually
-revoked, not just left mapped and merely unused.
+**Demo:** launch the editor from Stage 12's shell against a file already
+present on the disk image, edit its text on Stage 6's display using
+Stage 7's keyboard, save it, then -- to prove persistence, not just an
+in-memory illusion -- restart QEMU against the same `disk.img` and confirm
+the edit is still there.
 
 ---
 
-## Stage 18: growable memory at runtime -- `r18_brk`
-
-**Goal:** let an already-running program ask for more memory as it goes, rather than only ever
-getting a fixed allocation decided once at load time -- needed for anything whose memory needs
-depend on runtime input, like Stage 13's editor opening a file of unknown size.
-
-**Features:**
-- A new syscall, `brk`-shaped: request the heap be extended to a new end address (or by some
-  increment). The kernel handler reuses Stage 17's own mechanism -- map more of the same
-  already-reserved, deliberately-free RAM immediately following whatever's already mapped for
-  this program -- just triggered by an explicit runtime request instead of computed once from the
-  ELF header.
-- `userlib` gains its own `#[global_allocator]` -- reusing `linked_list_allocator`, the same crate
-  the kernel's own heap already uses -- starting with a small initial heap and calling `brk` to
-  grow it on demand, rather than syscalling on every individual allocation. `hello`/`crash` need
-  none of this; the editor is the first EL0 program with genuine dynamic-allocation needs.
-- The heap sits in the natural gap between the loaded segments (bottom of the window) and the
-  stack (top, growing down) -- the classic Unix layout, already implied by this project's
-  existing choice of where the stack lives. Worth a deliberate guard gap between wherever the
-  heap has grown to and the stack, rather than assuming they'll never meet, matching this
-  project's own established "leave it unmapped" philosophy elsewhere.
-- **Audit item, not a feature:** once `alloc` is real in EL0, revisit every "assume this will fit"
-  fixed-capacity workaround the no-heap constraint forced on earlier stages' user programs, and
-  replace the ones that were only ever a stand-in for a real `Vec`/`String`. The concrete example
-  already on record: Stage 12's `progs::PathBuf` (`user/progs/src/lib.rs`) joins a directory and a
-  name into a fixed `PATH_MAX`-byte buffer and returns `None` on overflow, used by `mv`, `cp`'s
-  directory-destination case, and `rm -r`/`chmod -R`'s recursion -- a `alloc::format!`-built
-  `String` would need no such cap. Check for the same pattern elsewhere in `user/progs` before
-  assuming this is the only instance.
-
-**Demo:** open Stage 13's editor against progressively larger files -- confirming each one loads
-and can be edited without hitting a fixed ceiling, and that the heap's growth is genuinely on
-demand (a small file doesn't pre-allocate room for a large one it'll never open).
-
----
-
-## Beyond Capstone 1, part 2: job control
+## Beyond Capstone 1: job control
 
 The stages below form one coupled block, working toward a second capstone. Unix-style job control
 needs *something* to background in the first place -- which means finally revisiting, not
@@ -966,7 +997,7 @@ adds the ability to suspend and later resume a program's exact state, not the ab
 time-slice between two actively-running ones.
 
 **Features:**
-- A second, independent user memory window, alongside the existing one -- Stage 17's per-load
+- A second, independent user memory window, alongside the existing one -- Stage 15's per-load
   footprint computation applies to each window independently, so neither program pays for the
   other's size.
 - A second, independent saved-EL0-context slot, generalizing `process.s`'s existing
@@ -1027,11 +1058,11 @@ from outside, rather than something it calls voluntarily (`exit`) or synchronous
   needs no program-side handler at all, so this first cut deliberately doesn't build general
   signal-handler registration (a `sigaction`-equivalent) -- narrow by design, the same spirit as
   Stage 9's segfault handling covering exactly the EC values it needs and nothing more.
-- **A concrete, verified design precedent for how Stage 13's editor should behave once this
+- **A concrete, verified design precedent for how Stage 18's editor should behave once this
   exists**: real vim does *not* intercept `Ctrl+Z` -- it lets the terminal driver suspend it
   normally, the simpler and more common default. Real nano *does* intercept it (its own `SIGTSTP`
   handling), and has to provide `^T^Z` as an explicit escape hatch to actually suspend despite
-  that. Stage 13's editor, vi-like by its own stated design reference, follows vim's precedent: it
+  that. Stage 18's editor, vi-like by its own stated design reference, follows vim's precedent: it
   never reads `Ctrl+Z` as an editing keystroke, so this stage's kernel-level interception is the
   only thing that ever sees it, and no editor-side change is needed at all.
 - **A second, closely-related signal, needed for correctness rather than authenticity: the
@@ -1071,8 +1102,8 @@ rather than an arbitrary busy-loop.
   is a *cooperative* wake, not preemption: nothing forces the resumed program to do anything in
   particular, it simply continues from wherever it called `sleep()`, which for a loop is typically
   straight into printing and calling `sleep()` again.
-- Deadlines are computed from Stage 3's tick count (elapsed time), not Stage 14's RTC -- this is a
-  scheduling primitive (a relative duration), not a calendar-time one; Stage 14's RTC stays reserved
+- Deadlines are computed from Stage 3's tick count (elapsed time), not Stage 13's RTC -- this is a
+  scheduling primitive (a relative duration), not a calendar-time one; Stage 13's RTC stays reserved
   for `date`'s absolute wall-clock display.
 - A `sleep` utility (a thin wrapper parsing a duration argument) and a small test program that loops
   `print; sleep(1s)` forever -- the concrete vehicle for Stage 22's background-job demo.
@@ -1093,7 +1124,7 @@ deadline-driven, not something requiring an outside resume call the way Stage 19
 ## Stage 22: job control in the shell -- `r22_jobs`
 
 **Goal:** give Stage 12's shell the vocabulary for managing Stage 19/20/21's underlying mechanism --
-`&`, `jobs`, `fg`, `bg` -- the same relationship Stage 16's `export` has to its environment stack:
+`&`, `jobs`, `fg`, `bg` -- the same relationship Stage 17's `export` has to its environment stack:
 the mechanism already exists, this stage is purely the shell-level interface to it.
 
 **Features:**
@@ -1119,7 +1150,7 @@ the mechanism already exists, this stage is purely the shell-level interface to 
   job's output is simply allowed to interleave with whatever else is on screen. On a real Linux
   terminal running vim, this is exactly what happens when an unredirected background job writes
   output: it splices visually into vim's own display, purely cosmetically, and disappears the next
-  time vim redraws from its own internal buffer. The same property holds here for free: Stage 13's
+  time vim redraws from its own internal buffer. The same property holds here for free: Stage 18's
   editor already does a full-page rewrite from its in-memory buffer on every single edit, so any
   background-job corruption on screen is erased by the user's very next keystroke. A cosmetic wart,
   not a correctness issue -- no new machinery needed, and authentic to how real job control
@@ -1141,7 +1172,7 @@ change accurately throughout.
 
 ## Stage 23 (Capstone 2): job control and streaming pipes -- `r23_capstone2`
 
-**Goal:** the second capstone, playing the same role for this block that Stage 13 played for
+**Goal:** the second capstone, playing the same role for this block that Stage 18 played for
 Stages 9-13 -- a demo that only works if every preceding stage in the block is genuinely correct,
 combining job-controlling a real program (not a throwaway test binary) with the one limitation
 Stage 12 itself named as permanent.
@@ -1159,14 +1190,14 @@ Stage 12 itself named as permanent.
 - This directly overturns Stage 12's own named-permanent limitation ("no infinite/streaming
   pipelines under this design, ever") -- `yes | head` becomes possible for the first time, since
   `yes` never has to finish producing (infinite) output before `head` starts consuming it.
-- Stage 13's editor gets real job control with zero editor-side changes: since it never reads
+- Stage 18's editor gets real job control with zero editor-side changes: since it never reads
   `Ctrl+Z` (Stage 20's vim precedent), suspending it, doing something else at the prompt, and
   `fg`-ing it back exercises the exact same mechanism already proven on throwaway test programs in
   Stages 19-22 -- now against a program with real state (an open file, cursor position, unsaved
   edits) that must survive the round trip correctly.
 
-**Demo, two parts, mirroring Stage 13's own single end-to-end demo:**
-1. **Job control:** open Stage 13's editor on a file, make an edit, `Ctrl+Z`, run a few other
+**Demo, two parts, mirroring Stage 18's own single end-to-end demo:**
+1. **Job control:** open Stage 18's editor on a file, make an edit, `Ctrl+Z`, run a few other
    commands at the prompt (confirming the shell stayed fully responsive throughout), `fg` back in,
    confirm the edit and cursor position are exactly as left, save, and exit.
 2. **Streaming pipes:** a `yes | head -n 5`-style pipeline produces exactly 5 lines and returns

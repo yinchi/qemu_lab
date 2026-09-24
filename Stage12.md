@@ -3,6 +3,11 @@
 `ROADMAP.md` carries the summary of this stage (goal, features, demo, and how it connects to later stages);
 this file is the full plan: every Step, its tests, the state the stage ends in, and the decisions behind it.
 
+> **Renumbering.** After this stage was written, `ROADMAP.md` moved the smaller stages ahead of the editor. The stage
+> numbers after 12 in this file are the *old* ones: the editor ("Stage 13" here) is now Stage 18, the clock (14) is 13,
+> timestamps (15) are 14, environment variables and `$?` (16) are 17, large binaries (17) are 15 and `brk`/the heap (18) is 16.
+> Stages 19 and later are unchanged. The current table is at the top of `ROADMAP.md`'s "Before Capstone 1" section.
+
 | Step | What | Status |
 |---|---|---|
 | 0 | Scaffold `r12_shell`, test infrastructure, this document | done |

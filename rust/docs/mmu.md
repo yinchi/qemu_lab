@@ -206,7 +206,7 @@ whatever is left: `USER_IMAGE_END = USER_BASE + USER_SIZE - USER_STACK_SIZE - US
 lie within that range or the load fails with `SegmentOutsideWindow`, and no two segments may share a
 4 KiB page (`SegmentsShareAPage`), so page padding counts against the budget too.
 
-Static objects are mapped into the user image region (`.bss` section), while local variables live on the user stack. There is no user heap (until Stage 18); programs use fixed-size objects only.
+Static objects are mapped into the user image region (`.bss` section), while local variables live on the user stack. There is no user heap (until Stage 16); programs use fixed-size objects only.
 
 Nothing is mapped between the last segment and the stack, so a stack that overflows &mdash; or a
 wild pointer into the gap &mdash; faults instead of silently running into the program's own data.

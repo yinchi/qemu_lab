@@ -12,7 +12,7 @@ use core::fmt;
 use userlib::{ExitCode, O_RDONLY, close, open, read, write};
 
 /// Scratch space for the read/write loops below: big enough to make them cheap, small enough to
-/// sit comfortably on a program's stack (there's no heap in EL0 until Stage 18).
+/// sit comfortably on a program's stack (there's no heap in EL0 until Stage 16).
 pub const CHUNK: usize = 4096;
 
 /// A file descriptor as a `core::fmt::Write` sink, so a program can `write!(Fd(1), ...)`
@@ -155,7 +155,7 @@ pub fn help(usage: &str, flags: &[(&str, &str)]) -> ExitCode {
 }
 
 /// A path built from `dir` and `name` as `dir/name`, without a heap (there is none in EL0 until
-/// Stage 18) -- a fixed `PATH_MAX`-byte buffer instead. Used wherever a program computes a child
+/// Stage 16) -- a fixed `PATH_MAX`-byte buffer instead. Used wherever a program computes a child
 /// path itself rather than taking one as an argument (`mv`'s directory-destination case, `rm -r`'s
 /// and `chmod -R`'s recursion).
 pub struct PathBuf {

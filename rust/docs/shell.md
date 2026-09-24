@@ -129,7 +129,7 @@ There are no variables yet, so there is no `$?`. Instead, when a *program* exits
 shell prints `exit N` on that command's stderr (inside its redirections, so `cmd 2> e` captures it too). A
 program stopped by a fault reports `exit 139` (`128 + SIGSEGV`). A builtin never prints one. For a pipeline
 only the **last** stage's status counts, so `false | true` prints nothing and `true | false` prints
-`exit 1`. Stage 16 replaces this convention with a real `$?`.
+`exit 1`. Stage 17 replaces this convention with a real `$?`.
 
 ## Builtins
 
@@ -137,7 +137,7 @@ Only what has to change the shell's own state is built in.
 
 | Command | Behavior |
 |---|---|
-| `cd [DIR]` | Make `DIR` (absolute, or relative to the working directory) the working directory. With no operand, go to `/` (POSIX says `$HOME`; Stage 16 switches to it). `cd -`, `-L` and `-P` are refused with an explanation, as is more than one operand. On any error the directory is unchanged. |
+| `cd [DIR]` | Make `DIR` (absolute, or relative to the working directory) the working directory. With no operand, go to `/` (POSIX says `$HOME`; Stage 17 switches to it). `cd -`, `-L` and `-P` are refused with an explanation, as is more than one operand. On any error the directory is unchanged. |
 | `source FILE`, `. FILE` | Run the lines of `FILE` in the *current* shell state: a `cd` inside it sticks. |
 | `sh FILE` | Run the lines of `FILE` in a *scope* of its own, as a child shell process would: its `cd`s and redirections are gone afterwards. |
 
@@ -184,7 +184,7 @@ A frame is plain data with no reference to any static, so it can become a per-pr
 when there are processes. The one stack is a static in `exec/shell_state.rs`, which also resolves paths
 against the top frame's working directory and gives each newly launched program the top frame's stream
 bindings. There is one stack, not one per program: at most one program is ever resident, so the shell's state
-*is* the running program's state. Stage 16 adds the environment to the frame. There is deliberately no `chdir`
+*is* the running program's state. Stage 17 adds the environment to the frame. There is deliberately no `chdir`
 *syscall* yet, since with one global stack a program's `chdir` would change the shell's directory too.
 
 ## Limits
