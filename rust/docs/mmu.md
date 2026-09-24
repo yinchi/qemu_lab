@@ -147,7 +147,7 @@ according to `mmu.rs`:
 
 - General interrupt controller distributor (GICD): `device` attribute group
 - General interrupt controller CPU interface (GICC): `device` attribute group
-- UART device memory-mapped registers: `device` attribute group
+- UART and real-time clock device memory-mapped registers: `device` attribute group
 - VirtIO device memory-mapped registers: `device` attribute group
 
 All of the above memory regions fit well within 1 GiB of virtual address space. Then, from the 1GiB

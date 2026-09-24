@@ -1,0 +1,25 @@
+# The programs Stage 13 adds to the core utilities: `date`. A tier of its own, as the tier scheme in
+# `../progs_r12/Cargo.toml` describes (a stage `rNN` builds the base tier and every `progs_rMM` with
+# MM <= NN, highest tier wins a name); it uses `progs_r12`'s argument-parsing layer as a library.
+[package]
+name = "progs_r13"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+abi = { path = "../abi" }
+userlib = { path = "../userlib" }
+progs = { path = "../progs" }
+progs_r12 = { path = "../progs_r12" }
+# Calendar dates and `strftime`. `alloc` is the feature that enables formatting; see `src/bin/date.rs`.
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# chrono's formatting needs `alloc`, so this program needs a heap. Programs have none until Stage 16 (`brk`,
+# and a growable heap in `userlib`), so `date` carries a small fixed one, from the crate the kernel's heap uses.
+linked_list_allocator = "0.10.6"
+getargs = { version = "0.5", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

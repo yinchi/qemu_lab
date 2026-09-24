@@ -1,0 +1,15 @@
+[package]
+name = "hosttests"
+version = "0.1.0"
+edition = "2024"
+
+# Host-side unit tests for the kernel's pure-logic modules (`../src/<module>.rs`, included by
+# `#[path]` in src/lib.rs), run by `just test-host`. Its own workspace so it stays independent of
+# the kernel package that contains it.
+[workspace]
+
+[dependencies]
+bimap = { version = "0.6", default-features = false }
+peg = { version = "0.8", default-features = false }
+unifont = "1.1"
+abi = { path = "../../user/abi" }

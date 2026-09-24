@@ -1,0 +1,31 @@
+[package]
+name = "r13_rtc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+abi = { path = "../user/abi" }
+aarch64-cpu = "11.2.0"
+aarch64-paging = "0.12.1"
+arm-gic = "0.9.1"
+bimap = { version = "0.6", default-features = false }
+embedded-io = { version = "0.7.1", default-features = false }
+fdt = "0.1.5"
+hadris-fat = { version = "2.4.0", default-features = false, features = ["alloc", "lfn", "read", "write", "sync"] }
+linked_list_allocator = "0.10.6"
+peg = { version = "0.8", default-features = false }
+unifont = "1.1"
+virtio-drivers = "0.13.0"
+
+[features]
+# Test-only kernel instrumentation (see syscall/fd.rs's `testhooks`); enabled by `just test`.
+testhooks = []
+
+[build-dependencies]
+cc = "1"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

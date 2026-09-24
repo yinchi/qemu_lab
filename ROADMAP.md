@@ -707,8 +707,11 @@ before anything else depends on it.
   matching the host's own `date +%s` exactly. Just one register matters for a first cut: `RTCDR`
   itself, a read-only 32-bit count of seconds since the Unix epoch -- `RTCLR`/`RTCMR`/the
   interrupt-control registers exist for setting the clock or firing an alarm, neither needed here.
-- A new syscall, shaped like the existing ones (no arguments, current epoch-seconds returned in
-  `x0`) rather than inventing a new convention.
+- A new syscall, `clock_gettime(clock, out)` -- Linux's number (113) and shape, as every other syscall
+  here borrows Linux's number: it fills a 16-byte `timespec` (`tv_sec`, `tv_nsec`) at `out`. Only
+  `CLOCK_REALTIME` exists (any other clock is `EINVAL`, a bad pointer `EFAULT`), and `tv_nsec` is 0 since
+  the PL031 counts whole seconds. (This replaces the earlier plan of a no-argument call returning the
+  seconds in `x0`: the Linux shape costs nothing and leaves room for `CLOCK_MONOTONIC` in Stage 21.)
 - `date`, a new read-only EL0 utility -- prints the current time via the new syscall. **No
   timezone support, by deliberate decision, not an oversight:** the raw RTC value is already
   timezone-independent (Unix epoch seconds are UTC by definition -- that's exactly what matched
@@ -723,6 +726,19 @@ before anything else depends on it.
 
 **Demo:** run `date` via Stage 10's launcher twice, a few seconds apart, and confirm the printed
 value actually advances -- proving it's live, not a build-time constant.
+
+**As built.** `r13_rtc` is `r12_shell` plus: `platform/rtc.rs` (one volatile read of `RTCDR`; the page at
+`0x0901_0000` is mapped as device memory in `arch/mmu.rs`), the `clock_gettime` syscall (`syscall/time.rs`,
+`abi::time`, `userlib::time`), and a new program tier `user/progs_r13` holding `date`. Calendar arithmetic and
+formatting are the `chrono` crate's (`default-features = false`, so no clock and no time zones -- those are
+Stage 17's `chrono-tz`), not code of our own: UTC-only `date` prints GNU's default layout
+(`Sun Sep  9 01:46:40 UTC 2001`), `+FORMAT` with `chrono`'s `strftime`, `-I[date|hours|minutes|seconds]`, `-R`,
+`-d @SECONDS` (which makes the output testable exactly) and `-u` as a no-op. It cannot set the clock or read
+free-form dates, and `%Z`/`%z` are always `UTC`/`+0000`. One consequence to know about: `chrono` formats through
+`alloc`, and EL0 has no heap until Stage 16, so `date` carries a small fixed 128 KiB one from
+`linked_list_allocator` (the crate the kernel's heap uses), which Stage 16's `userlib` heap replaces. Tests:
+`test/cases/clock.py` compares `date +%s` with the host's time and across a busy-wait, and checks exact output
+for chosen instants; `probe clock` covers the syscall's error cases.
 
 ---
 

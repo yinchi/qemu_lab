@@ -47,6 +47,11 @@ pub const SYS_NEWFSTATAT: usize = 79;
 /// (only `LINUX_REBOOT_CMD_RESTART2` reads it, unsupported).
 pub const SYS_REBOOT: usize = 142;
 
+/// `clock_gettime(clock_id, timespec_ptr)`: the current time. Linux's number and shape (`abi::time`
+/// has the `timespec` layout); only `CLOCK_REALTIME` exists, so any other clock is `EINVAL`, and a
+/// bad pointer is `EFAULT`.
+pub const SYS_CLOCK_GETTIME: usize = 113;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +92,10 @@ mod tests {
     #[test]
     fn step12_number_is_linuxs_number() {
         assert_eq!(SYS_REBOOT, 142);
+    }
+
+    #[test]
+    fn step13_number_is_linuxs_number() {
+        assert_eq!(SYS_CLOCK_GETTIME, 113);
     }
 }

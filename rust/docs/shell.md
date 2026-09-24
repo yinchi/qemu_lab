@@ -3,7 +3,7 @@
 The shell is kernel-resident: `kernel_main` ends in `shell::run`, a read-eval loop that never returns
 (the role `init` plays). It is ordinary code running outside any interrupt, so a program it launches runs
 with interrupts enabled. This document describes what it accepts, how it runs a line, and the state it
-carries; the source is `rust/r12_shell/src/shell/` (plus `exec/frame_stack.rs` and `exec/shell_state.rs`
+carries; the source is `rust/r13_rtc/src/shell/` (plus `exec/frame_stack.rs` and `exec/shell_state.rs`
 for its state).
 
 Related documents:
@@ -45,7 +45,7 @@ the current stderr (`shell_err`), so it is redirectable like any program's own e
 The grammar is [`shell.ebnf`](shell.ebnf). Its implementation is split across the first two stages of the
 pipeline above, each a [`peg`](https://docs.rs/peg) grammar covering part of the EBNF. Both are pure `no_std`
 code with no dependency on the rest of the kernel, so their unit tests run on the development machine rather
-than in QEMU (`rust/r12_shell/hosttests/`, run by `just test-host`):
+than in QEMU (`rust/r13_rtc/hosttests/`, run by `just test-host`):
 
 - `shell/lexer.rs` implements the `token`/`redir_op` productions, over the characters of the line. Its
   output is `Token::Word { text, quoted }`, `Token::Pipe` or `Token::Redir { fd, op }`.

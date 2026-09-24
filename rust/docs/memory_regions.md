@@ -98,7 +98,7 @@ This gives us 32 VirtIO device slots, each occupying `0x200` (512) bytes of memo
 - `0x004`: Version of the VirtIO specification implemented by the device.
 - `0x008`: Device ID to identify the type of VirtIO device.
 
-The `virtio_drivers` crate provides abstractions for interacting with VirtIO devices. See `drivers/virtio/gpu.rs` or `drivers/virtio/blk.rs` in `r12_shell/src/` (first written in `r06_virtio/`) for examples of how to instantiate drivers for specific VirtIO devices. The drivers themselves, and the HAL they share, are described in [`virtio.md`](virtio.md).
+The `virtio_drivers` crate provides abstractions for interacting with VirtIO devices. See `drivers/virtio/gpu.rs` or `drivers/virtio/blk.rs` in `r13_rtc/src/` (first written in `r06_virtio/`) for examples of how to instantiate drivers for specific VirtIO devices. The drivers themselves, and the HAL they share, are described in [`virtio.md`](virtio.md).
 
 The VirtIO device memory regions typically contain control and status registers for device interaction, but do not generally store persistent data; a register in the 512-byte VirtIO slot points to the actual location of the device's data in RAM (MMIO = memory-mapped I/O).  This might include the framebuffer for a GPU, or a data buffer for a block device (itself pointing to the actual data blocks loaded from the device to RAM).
 
@@ -109,7 +109,7 @@ The VirtIO device memory regions typically contain control and status registers 
 
 There are several other memory regions defined in the `virt` machine, e.g.:
 
-- `0x0901_0000` for the RTC (Real-Time Clock)
+- `0x0901_0000` for the RTC (Real-Time Clock), a PL031. The kernel maps this one page (`RTC_BASE`, `platform/base_addresses.rs`) as device memory and reads its data register, `RTCDR` at offset 0: a read-only count of seconds since the Unix epoch, which QEMU sets from the host's clock at start-up (`platform/rtc.rs`, the `clock_gettime` syscall, and `date`). Its load, match and interrupt registers are not used
 - `0x0902_0000` for fw-cfg (QEMU's firmware configuration interface, used to pass boot data such as the kernel command line to guest firmware/bootloaders)
 - `0x0903_0000` for GPIO (General-Purpose Input/Output) devices
 - `0x1000_0000` for PCI devices
