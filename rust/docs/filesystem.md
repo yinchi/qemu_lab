@@ -8,7 +8,7 @@ between it, the block device below and the syscalls above.
 flowchart TD
     prog["EL0 program<br/>open / read / write / getdents / ..."]
     fd["syscall/fd.rs<br/>fd numbers, the three standard streams"]
-    files["fs/files.rs<br/>open-file table, path walk, mkdir / unlink / rename / chmod / stat"]
+    files["fs/files.rs<br/>open files, path walk, mkdir / unlink / rename / chmod / stat"]
     path["fs/path.rs<br/>path arithmetic (pure)"]
     fat["hadris-fat<br/>FAT16: directories, clusters, long names"]
     blkio["fs/blkio.rs<br/>BlkIo: bytes over 512-byte sectors"]
@@ -63,8 +63,8 @@ absolute, normalized path the rest of the module resolves: relative paths start 
 ## Open files
 
 `syscall/fd.rs` owns the small file-descriptor numbers a program sees (0, 1 and 2 are the standard streams;
-the rest refer to files). `fs/files.rs` owns what they refer to: a table of **13** slots (`MAX_OPEN_FILES`),
-across everything open at once. Each slot is one of:
+the rest refer to files). `fs/files.rs` owns what they refer to: an **open file**, of which at most **13**
+(`MAX_OPEN_FILES`) can exist at once, counting the shell's own redirect files. Each is one of:
 
 | Kind | Opened by | Used by |
 |---|---|---|
@@ -72,7 +72,10 @@ across everything open at once. Each slot is one of:
 | Writer | `open` for writing a file | `write` |
 | Directory | `open` for reading a *directory* | `getdents` |
 
-`open` fails with `EMFILE` when all 13 are in use. The rules:
+`open` fails with `EMFILE` when 13 are already open. An open file is **shared, not owned by one fd**: it is a
+reference-counted object (`Rc<RefCell<OpenFile>>`, `FileRef`), and every fd slot or stream binding that
+refers to it holds a reference. `2>&1` makes fds 1 and 2 hold the same file; a redirected program's fds 0&ndash;2
+share the file with the shell's own binding of it. The rules:
 
 - **Reading.** A directory can be opened read-only, and its entries are **snapshotted** at that moment.
   `read` on a directory is `EISDIR`; `getdents` on an open file is `ENOTDIR`.
@@ -80,12 +83,50 @@ across everything open at once. Each slot is one of:
   O_APPEND`) starts at the current end. A directory is `EISDIR`; a read-only file is `EACCES`. `hadris-fat`
   refuses a second writer on the same file.
 - **`close` is what commits a write.** A writer's final size reaches the directory entry only when it is closed
-  (`FileWriter::finish`), which is why the shell closes each redirect target and pipe end before the next
+  (`FileWriter::finish`), which is why each redirect target and pipe end is released before the next
   command reads it. There is no `seek`, and no separate truncate.
-- **Ending a program.** When a program exits or faults, `close_all` closes whatever handles it left open, so a
-  crashed program cannot leak them. Handles the *shell* opened for a redirection are marked and skipped: they
-  outlive the one program that ran under them, and the shell closes them when the redirected command is done
-  (see [`shell.md`](shell.md)).
+- **Closing.** `close(fd)` empties the slot and drops that reference. Only the *last* reference really closes
+  the file (and commits a writer, so only then can `close` report `EIO`); closing one of several fds leaves the
+  file open for the rest, so a program that closes stdout under `> f 2>&1` still writes to `f` through stderr.
+- **Ending a program.** When a program exits or faults its fd table is dropped, which releases every
+  reference it held, so a crashed program cannot leak files; a file that only it held is closed and committed
+  then (an error, having no one to report to, is dropped). A file the shell also holds, a redirect target,
+  stays open until the shell's binding goes at the end of the redirected command (see
+  [`shell.md`](shell.md)).
+
+### Concurrent access to one file (a known limitation)
+
+The kernel does not coordinate different `open`s of the same file, and today nothing needs it: one program
+runs at a time, and the shell never reads and writes one path at once. What it does and does not do:
+
+- One fd is one mode: a reader or a writer, never both (`open` has no read-write mode). Fds that share a
+  `FileRef` (`2>&1`, a redirect) share one position; separate `open`s of a path have separate positions.
+- A file can have any number of readers, but **only one writer**: `hadris-fat` refuses a second
+  `FileWriter` on the same directory entry. That refusal reaches the program as `EIO`, not as an error
+  that says what happened.
+- **Readers and a writer on the same file are allowed together, and nothing stops them from interfering.**
+  A reader keeps the size it saw when it opened and never picks up later writes. `write` puts data on disk
+  at once but the directory entry's size and cluster chain change only at `finish`, and opening a writer
+  empties the file by overwriting the *same* clusters. So a reader open while a writer rewrites or
+  truncates the file sees new bytes mixed with old ones. If the file shrinks within its last cluster, it
+  also reads the stale bytes past the new end. If it shrinks across a cluster boundary, the freed clusters
+  are gone from the chain: the reader gets `EIO`, or, if another file has since been given those clusters,
+  reads that file's bytes. `hadris-fat` revalidates the entry on each read, but only by short name and creation
+  time, which catches a deleted file yet not a rewritten one (and, with no clock before Stage 14, not
+  delete-and-recreate either).
+- `unlink` and `rename` do not look at open fds either.
+- FAT has no inodes, so there is no Unix behaviour to imitate, where an open file keeps its old contents after
+  it is truncated or unlinked. The options are refusal or stale data.
+- A running program does not hold its `.exe` open (the launcher reads the whole file into memory), so
+  overwriting a running program's file is harmless.
+
+**The fix, for Stage 19** (when two programs can be resident, so the interference becomes reachable):
+track which directory entries (parent cluster plus offset, which is how `hadris-fat` keys its own writer
+check) have open readers or a writer, and refuse the conflicting `open`, `unlink` or `rename` with `EBUSY` --
+readers-XOR-one-writer, a sharing-violation model. That needs `EBUSY` (-16) added to `abi`'s errno table
+and its `errmsg`, and the second-writer `EIO` mapped to it too. Detecting a change on disk instead is
+weaker (see `Stage12.md`, "Deliberately not done here") and is not the plan. `cat f > f` would then fail
+with `EBUSY` instead of silently emptying `f`.
 
 ## Directory listings
 
@@ -148,8 +189,8 @@ and case-insensitive names.
 | File | What it holds |
 |---|---|
 | `fs/blkio.rs` | `BlkIo`, and the `VOL` static (the mounted volume) |
-| `fs/files.rs` | The open-file table and every operation above |
+| `fs/files.rs` | Open files (`FileRef`) and every operation above |
 | `fs/path.rs` | `abspath` (pure, host-tested) |
 | `fs/mod.rs` | `find_entry_checked` (look up one name in a directory) and `read_file_checked` (read a whole file into a `Vec`) |
-| `syscall/fd.rs` | The fd table on top of the handles above; where `read`/`write`/`open` enter |
+| `syscall/fd.rs` | The fd table, holding references to the files above; where `read`/`write`/`open` enter |
 | `user/abi/src/fs.rs` | The shared constants: open flags, `NAME_MAX`/`PATH_MAX`, `DIRENT_SIZE`, the attribute bits |

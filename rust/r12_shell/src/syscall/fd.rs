@@ -5,15 +5,15 @@
 //! `open` and returned by `close`. A launcher that wants to redirect a standard fd (Stage 12)
 //! rebinds an entry after that reset and before the program starts.
 //!
-//! `File(handle)` entries refer to `fs/files.rs`'s open-file table; `Console` and `Keyboard` have
-//! no state of their own here.
+//! `File(file)` entries hold a reference to an open file (`fs/files.rs`'s `FileRef`); several fds, and the
+//! shell's stream bindings, can refer to the same one, and it is closed when the last reference goes.
+//! `Console` and `Keyboard` have no state of their own here.
 
 use crate::console::utf8::Utf8Decoder;
 use crate::console::{BG, FG};
 use crate::exec::elf;
-use crate::exec::frame_stack::StdioBinding;
-use crate::exec::shell_state;
-use crate::fs::files;
+use crate::exec::shell_state::{self, Stdio};
+use crate::fs::files::{self, FileRef};
 use crate::keyboard::stdin;
 use crate::platform::base_addresses::{USER_BASE, USER_SIZE};
 use crate::platform::globals::{CONSOLE, GPU};
@@ -28,16 +28,16 @@ use abi::ioctl::CONSOLE_CLEAR;
 /// exactly that many, whichever table would have run out first.
 const MAX_FDS: usize = 3 + files::MAX_OPEN_FILES;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum FileDescriptor {
     Console,
     Keyboard,
-    File(usize),
+    File(FileRef),
 }
 
 /// SAFETY (every access, via `table`): single core, and every syscall runs with IRQs masked, so
 /// nothing else can touch the table while a call is in progress.
-static mut FD_TABLE: [Option<FileDescriptor>; MAX_FDS] = [None; MAX_FDS];
+static mut FD_TABLE: [Option<FileDescriptor>; MAX_FDS] = [const { None }; MAX_FDS];
 
 /// Returns a mutable reference to the file descriptor table.
 #[allow(clippy::deref_addrof)]
@@ -47,27 +47,29 @@ fn table() -> &'static mut [Option<FileDescriptor>; MAX_FDS] {
 }
 
 /// Prepares the fd table for a new program: drops any unread typed input and refills the standard
-/// three entries. Nothing can still be open from the last program -- `end_launch` closed it all
+/// three entries. Nothing can still be open from the last program -- `end_launch` emptied the table
 /// when that program ended, on every path (exit or fault).
 pub fn reset_for_launch() {
     stdin::reset();
     let table = table();
-    *table = [None; MAX_FDS];
-    // Each standard stream is whatever the shell's current frame binds it to.
+    *table = [const { None }; MAX_FDS];
+    // Each standard stream is whatever the shell's current frame binds it to: a file shares the
+    // frame's reference, so `2>&1` gives fds 1 and 2 the one open file.
     for (n, slot) in table.iter_mut().take(3).enumerate() {
         *slot = Some(match (shell_state::stdio(n), n) {
-            (StdioBinding::File(handle), _) => FileDescriptor::File(handle),
-            (StdioBinding::Default, 0) => FileDescriptor::Keyboard,
-            (StdioBinding::Default, _) => FileDescriptor::Console,
+            (Stdio::File(file), _) => FileDescriptor::File(file),
+            (Stdio::Default, 0) => FileDescriptor::Keyboard,
+            (Stdio::Default, _) => FileDescriptor::Console,
         });
     }
 }
 
-/// Closes whatever the program that just ended left open, which finishes any file it was still
-/// writing (a written file is only complete on disk once it's closed).
+/// Drops the fds of the program that just ended, which closes whatever only that program still held
+/// and finishes any file it was still writing (a written file is only complete on disk once it's
+/// closed). A file the shell also holds (a redirect target) stays open until the shell lets go.
 /// Cleanup, not a save: nothing the program held only in memory is written out.
 pub fn end_launch() {
-    files::close_all();
+    *table() = [const { None }; MAX_FDS];
     // A character the program left half-written becomes one U+FFFD now, not the first byte of the
     // next program's output.
     console_finish_stream();
@@ -165,7 +167,7 @@ mod testhooks {
 
 impl FileDescriptor {
     fn for_fd(fd: usize) -> Option<Self> {
-        table().get(fd).copied().flatten()
+        table().get(fd).cloned().flatten()
     }
 
     /// Writes to a file descriptor. `Keyboard` isn't writable.
@@ -176,7 +178,7 @@ impl FileDescriptor {
                 bytes.len() as isize
             }
             FileDescriptor::Keyboard => EBADF,
-            FileDescriptor::File(handle) => files::write(handle, bytes),
+            FileDescriptor::File(file) => files::write(&file, bytes),
         }
     }
 
@@ -185,7 +187,7 @@ impl FileDescriptor {
         match self {
             FileDescriptor::Keyboard => stdin::read(buf),
             FileDescriptor::Console => EBADF,
-            FileDescriptor::File(handle) => files::read(handle, buf),
+            FileDescriptor::File(file) => files::read(&file, buf),
         }
     }
 }
@@ -246,7 +248,8 @@ pub fn read(fd: usize, ptr: usize, len: usize) -> isize {
 }
 
 /// Opens the file or directory at the user-space path `ptr`/`len`, returning the lowest free fd
-/// number (never one of the standard three) or a negative error.
+/// number (never one of the standard three) or a negative error. `EMFILE` when no fd is free or
+/// `files::MAX_OPEN_FILES` files are already open (the shell's redirect files count).
 pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
     let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
     let path = match user_path(ptr, len).and_then(shell_state::absolute) {
@@ -269,8 +272,8 @@ pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
         return EMFILE;
     };
     match files::open(&path, write, append) {
-        Ok(handle) => {
-            table[fd] = Some(FileDescriptor::File(handle));
+        Ok(file) => {
+            table[fd] = Some(FileDescriptor::File(file));
             fd as isize
         }
         Err(e) => e,
@@ -313,13 +316,15 @@ pub fn getcwd(ptr: usize, len: usize) -> isize {
     cwd.len() as isize
 }
 
-/// Closes `fd`. Closing a standard fd is allowed (it just leaves that slot empty).
+/// Closes `fd`: the slot is emptied, and the file it held is really closed only if that was the last
+/// reference to it (`files::close`). Closing a standard fd is allowed; under a redirect it releases just
+/// this fd's reference, not the file the other fds and the shell still hold.
 pub fn close(fd: usize) -> isize {
     let Some(entry) = table().get_mut(fd).and_then(Option::take) else {
         return EBADF;
     };
     match entry {
-        FileDescriptor::File(handle) => files::close(handle),
+        FileDescriptor::File(file) => files::close(file),
         FileDescriptor::Console | FileDescriptor::Keyboard => 0,
     }
 }
@@ -328,7 +333,7 @@ pub fn close(fd: usize) -> isize {
 /// `files::getdents` for the record layout.
 pub fn getdents(fd: usize, ptr: usize, len: usize) -> isize {
     let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
-    let Some(FileDescriptor::File(handle)) = FileDescriptor::for_fd(fd) else {
+    let Some(FileDescriptor::File(file)) = FileDescriptor::for_fd(fd) else {
         return EBADF;
     };
     if !validate(ptr, len, true) {
@@ -336,7 +341,7 @@ pub fn getdents(fd: usize, ptr: usize, len: usize) -> isize {
     }
     // SAFETY: validated above to lie entirely within writable user memory.
     let buf = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, len) };
-    files::getdents(handle, buf)
+    files::getdents(&file, buf)
 }
 
 /// Sets and clears permission bits on the file at the user-space path `ptr`/`len` -- see

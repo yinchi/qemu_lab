@@ -8,7 +8,7 @@ error -- a failed redirect open, or the command itself -- is reported through wh
 the same line already succeeded, exactly like a program's own stderr.
 
 Runs from `/tests`, where the fixtures and `probe.exe` live; returns to `/` at the end. Leaves several
-small files behind (`f`, `g`, `e`, `o`, `both.txt`, `only_out.txt`, `newappend.txt`) -- `verify_disk`
+small files behind (`f`, `g`, `e`, `o`, `both.txt`, `only_out.txt`, `shared.txt`, `lone.txt`, `newappend.txt`) -- `verify_disk`
 checks a couple of them straight off the image, once QEMU has exited.
 """
 
@@ -97,6 +97,16 @@ def run(ctx):
     check("only_out.txt again holds just OUT (truncated fresh)",
           s.run("cat only_out.txt"), "cat only_out.txt\nOUT\n")
 
+    # A file shared by two fds (`2>&1`) stays open until the last reference goes: closing fd 1 must
+    # not destroy what fd 2 (and the shell's own binding) still hold.
+    check("program closes stdout under > f 2>&1: stderr still reaches f",
+          s.run("./probe.exe close-out > shared.txt 2>&1"), "./probe.exe close-out > shared.txt 2>&1\n")
+    check("shared.txt holds what was written to fd 2 after fd 1 closed (and was committed)",
+          s.run("cat shared.txt"), "cat shared.txt\nclose(1)=0 write(1)=-9\n")
+    check("program closes stdout under > f alone: the file survives, empty, and the shell is fine",
+          s.run("./probe.exe close-out > lone.txt"), "./probe.exe close-out > lone.txt\nclose(1)=0 write(1)=-9\n")
+    check("lone.txt exists and is empty", s.run("wc -c lone.txt"), "wc -c lone.txt\n0 lone.txt\n")
+
     check("back to /", s.run("cd .."), "cd ..\n")
 
 
@@ -112,6 +122,12 @@ def verify_disk(ctx):
     mcopy_out(ctx.img, "tests/both.txt", dest)
     with open(dest, "rb") as f:
         check("mtools sees both.txt's real bytes on disk", f.read(), b"OUTERR\n")
+
+    shared_dest = os.path.join(ctx.workdir, "shared.txt")
+    mcopy_out(ctx.img, "tests/shared.txt", shared_dest)
+    with open(shared_dest, "rb") as f:
+        check("mtools sees shared.txt's real bytes on disk (committed by the shell's own close)",
+              f.read(), b"close(1)=0 write(1)=-9\n")
 
     listing_dest = os.path.join(ctx.workdir, "listing.txt")
     mcopy_out(ctx.img, "tests/listing.txt", listing_dest)

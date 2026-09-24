@@ -22,10 +22,9 @@ use alloc::vec::Vec;
 use abi::errno::errmsg;
 
 use crate::console::{BG, Console, FG};
-use crate::exec::frame_stack::{FrameStack, StdioBinding};
-use crate::exec::shell_state;
+use crate::exec::shell_state::{self, Frames, Stdio};
 use crate::fs::blkio::VOL;
-use crate::fs::files;
+use crate::fs::files::{self, FileRef};
 use crate::keyboard::line_discipline::{LINE_DISCIPLINE, LineDiscipline, LineOutcome, Mode};
 use crate::keyboard::queue;
 use crate::platform::globals::{CONSOLE, GPU};
@@ -94,8 +93,9 @@ fn run_segment(segment: &Segment, depth: usize) -> Option<i32> {
 /// still sticks under a redirect, why a failed redirect leaves exactly the earlier ones of the same
 /// line in effect, and why the error message for that failure (and any launch error) is itself
 /// subject to whichever redirects already succeeded -- `cmd 2> e < missing` reports the missing-file
-/// error into `e`, not the console. Shell-opened handles are closed once the scope ends, committing
-/// anything written.
+/// error into `e`, not the console. The files a redirect opened are held by the frame's bindings, so they
+/// are closed when the scope ends and restores the streams, committing anything written -- unless a
+/// program somehow still held one.
 ///
 /// `overrides` is `[None, None, None]` for a plain command (`run_segment`); a pipeline stage
 /// (`run_pipeline`) instead seeds it with the pipe's own binding, which the segment's redirects
@@ -112,14 +112,13 @@ fn run_segment(segment: &Segment, depth: usize) -> Option<i32> {
 /// already-reported failures) or `Some(code)` if one did -- see `launch`'s doc comment.
 fn run_segment_with(
     segment: &Segment,
-    overrides: [Option<StdioBinding>; 3],
+    overrides: [Option<Stdio>; 3],
     report: bool,
     depth: usize,
 ) -> Option<i32> {
-    let mut opened = Vec::new();
-    let status = shell_state::frames().with_stdio(overrides, |frames| {
+    shell_state::frames().with_stdio(overrides, |frames| {
         for redir in &segment.redirs {
-            if !apply_redirect(frames, redir, &mut opened) {
+            if !apply_redirect(frames, redir) {
                 return None; // shell_err already reported; the command does not run
             }
         }
@@ -131,22 +130,18 @@ fn run_segment_with(
             shell_err(&format!("exit {code}"));
         }
         status
-    });
-    for handle in opened {
-        files::close(handle);
-    }
-    status
+    })
 }
 
-/// Opens and binds one redirection on `frames`' top frame, recording any handle it opened in
-/// `opened` so `run_segment` can close it afterward. Returns whether it succeeded; on failure it has
-/// already reported the error via `shell_err`.
-fn apply_redirect(frames: &mut FrameStack, redir: &Redirection, opened: &mut Vec<usize>) -> bool {
+/// Opens and binds one redirection on `frames`' top frame. The bindings hold the file open, so it is
+/// closed when the last of them is dropped (the scope ending, or a later redirect of the same stream
+/// replacing it). Returns whether it succeeded; on failure it has already reported the error
+/// via `shell_err`.
+fn apply_redirect(frames: &mut Frames, redir: &Redirection) -> bool {
     match redir {
         Redirection::In(path) => match open_redirect_target(path, false, false) {
-            Ok(handle) => {
-                opened.push(handle);
-                frames.top_mut().stdio[0] = StdioBinding::File(handle);
+            Ok(file) => {
+                frames.top_mut().stdio[0] = Stdio::File(file);
                 true
             }
             Err(msg) => {
@@ -155,9 +150,8 @@ fn apply_redirect(frames: &mut FrameStack, redir: &Redirection, opened: &mut Vec
             }
         },
         Redirection::Out { fd, path, append } => match open_redirect_target(path, true, *append) {
-            Ok(handle) => {
-                opened.push(handle);
-                frames.top_mut().stdio[*fd as usize] = StdioBinding::File(handle);
+            Ok(file) => {
+                frames.top_mut().stdio[*fd as usize] = Stdio::File(file);
                 true
             }
             Err(msg) => {
@@ -166,7 +160,8 @@ fn apply_redirect(frames: &mut FrameStack, redir: &Redirection, opened: &mut Vec
             }
         },
         Redirection::Dup { fd, target } => {
-            let binding = frames.top().stdio[*target as usize];
+            // The same open file, shared: closing one of the two fds leaves the other working.
+            let binding = frames.top().stdio[*target as usize].clone();
             frames.top_mut().stdio[*fd as usize] = binding;
             true
         }
@@ -174,14 +169,11 @@ fn apply_redirect(frames: &mut FrameStack, redir: &Redirection, opened: &mut Vec
 }
 
 /// Resolves `path` against the working directory and opens it for a redirection, in bash's wording
-/// on failure. Marks the handle shell-owned (`files::mark_shell_owned`) so it survives whatever
-/// program runs under this redirect exiting, for `run_segment` to close once the whole segment does.
-fn open_redirect_target(path: &str, write: bool, append: bool) -> Result<usize, String> {
+/// on failure. The file outlives whatever program runs under the redirect because the frame's binding
+/// holds a reference to it, whatever that program does to its own fds.
+fn open_redirect_target(path: &str, write: bool, append: bool) -> Result<FileRef, String> {
     let abspath = shell_state::absolute(path).map_err(|e| format!("{path}: {}", errmsg(e)))?;
-    let handle =
-        files::open(&abspath, write, append).map_err(|e| format!("{path}: {}", errmsg(e)))?;
-    files::mark_shell_owned(handle);
-    Ok(handle)
+    files::open(&abspath, write, append).map_err(|e| format!("{path}: {}", errmsg(e)))
 }
 
 /// Runs a segment's command -- once its redirections (if any) are already bound -- as a builtin or a
@@ -261,8 +253,8 @@ fn cleanup_temps(paths: &[String]) {
 /// it can't be printed here instead.
 ///
 /// Temp paths are all allocated before any stage runs and removed on every exit from this function.
-/// Each pipe handle is marked shell-owned (like a redirect target) and closed right after the stage
-/// it was bound to returns, committing the write side's size to disk before the next stage reads it.
+/// Each pipe file is held by the binding the stage runs under, so it is closed as soon as the stage's
+/// `run_segment_with` returns, committing the write side's size to disk before the next stage reads it.
 fn run_pipeline(pipeline: &[Segment], depth: usize) -> Option<i32> {
     let n = pipeline.len();
     let mut temps: Vec<String> = Vec::new();
@@ -280,24 +272,18 @@ fn run_pipeline(pipeline: &[Segment], depth: usize) -> Option<i32> {
     let mut last_status = None;
     for (i, segment) in pipeline.iter().enumerate() {
         let mut overrides = [None, None, None];
-        let mut handles = Vec::new();
 
         if i > 0
             && let Err(msg) = open_redirect_target(&temps[i - 1], false, false)
-                .map(|handle| {
-                    overrides[0] = Some(StdioBinding::File(handle));
-                    handles.push(handle);
-                })
+                .map(|file| overrides[0] = Some(Stdio::File(file)))
         {
             shell_err(&msg);
             cleanup_temps(&temps);
             return None;
         }
         if i < n - 1
-            && let Err(msg) = open_redirect_target(&temps[i], true, false).map(|handle| {
-                overrides[1] = Some(StdioBinding::File(handle));
-                handles.push(handle);
-            })
+            && let Err(msg) = open_redirect_target(&temps[i], true, false)
+                .map(|file| overrides[1] = Some(Stdio::File(file)))
         {
             shell_err(&msg);
             cleanup_temps(&temps);
@@ -305,9 +291,6 @@ fn run_pipeline(pipeline: &[Segment], depth: usize) -> Option<i32> {
         }
 
         last_status = run_segment_with(segment, overrides, i == n - 1, depth);
-        for handle in handles {
-            files::close(handle);
-        }
     }
 
     cleanup_temps(&temps);
@@ -355,7 +338,7 @@ pub(crate) fn run_script_content(content: &str, scoped: bool, depth: usize) -> R
 /// console row first if something else left the cursor mid-line.
 pub fn shell_err(msg: &str) {
     match shell_state::stdio(2) {
-        StdioBinding::Default => {
+        Stdio::Default => {
             uart_ensure_newline();
             uart_write(msg.as_bytes());
             uart_write(b"\n");
@@ -371,9 +354,9 @@ pub fn shell_err(msg: &str) {
                 console.write_char('\n', FG, BG);
             }
         }
-        StdioBinding::File(handle) => {
-            let _ = files::write(handle, msg.as_bytes());
-            let _ = files::write(handle, b"\n");
+        Stdio::File(file) => {
+            let _ = files::write(&file, msg.as_bytes());
+            let _ = files::write(&file, b"\n");
         }
     }
 }

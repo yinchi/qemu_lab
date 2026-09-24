@@ -44,8 +44,8 @@ def run(ctx):
           s.run("nosuchprogram | wc -c"), "nosuchprogram | wc -c\nnosuchprogram: command not found\n0\n")
     # `crash` writes "about to crash\n" (15 bytes) to its own stdout before faulting -- pipe-bound
     # here, not the console, so it doesn't appear on screen but does end up in the temp file `wc -c`
-    # then reads (the write is unbuffered, and `run_pipeline` closes the handle -- committing its
-    # size -- unconditionally after the stage returns, fault or not). Only the fault message itself
+    # then reads (the write is unbuffered, and the pipe file is closed -- committing its size --
+    # when the stage's redirect scope ends, fault or not). Only the fault message itself
     # bypasses redirection and reaches the console directly.
     check("a faulting middle stage still lets the last stage run",
           s.run("echo x | crash | wc -c"),

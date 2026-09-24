@@ -1,5 +1,5 @@
 //! The filesystem service, built on the block driver: `blkio` presents the device to `hadris-fat` as
-//! a byte stream, `files` is the open-file table and path handling behind `open`/`getdents`/`chmod`,
+//! a byte stream, `files` is the open files and path handling behind `open`/`getdents`/`chmod`,
 //! and the helpers here look up directory entries and read whole files on the mounted volume.
 
 pub mod blkio;

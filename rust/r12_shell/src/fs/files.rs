@@ -1,6 +1,12 @@
-//! The kernel side of `open`/`close`/`getdents`/`chmod` and the per-handle half of `read`/
+//! The kernel side of `open`/`close`/`getdents`/`chmod` and the per-file half of `read`/
 //! `write`: turns a path from a user program into an open file on Stage 8's FAT filesystem.
 //! `syscall/fd.rs` owns the small fd numbers a program sees; this module owns what they refer to.
+//!
+//! An open file is shared, not owned by one fd: `open` returns a `FileRef` (a reference-counted
+//! `OpenFile`), and every fd slot or stream binding (`2>&1`, a frame's redirect) that refers to it holds
+//! a clone. `close` drops one reference; the file is really closed -- a writer's size committed to disk --
+//! when the last one goes, whether that is an explicit `close` (which can report `EIO`) or the implicit
+//! drop of a program's fd table when it exits (which cannot).
 //!
 //! The paths this module takes are absolute and normalized (`fs::path::abspath` produces them from what a
 //! user typed and the working directory): `/`, or `/` and components. Components are matched exactly
@@ -12,8 +18,10 @@
 //! Either way, `close` (`FileWriter::finish`) is what commits the final size to disk. There's no
 //! seek, and no separate truncate-without-writing flag.
 
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use hadris_fat::raw::DirEntryAttrFlags;
 use hadris_fat::sync::read::FileReader;
@@ -29,9 +37,10 @@ use abi::fs::{ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, ATTR_VOLUME_LABEL, DIRE
 /// The only attribute bits `chmod` may change: the two this project exposes as permissions.
 const CHMOD_BITS: u8 = ATTR_EXEC | ATTR_READ_ONLY;
 
-/// How many files/directories may be open at once, across every fd a program holds. The fd table
-/// (`syscall/fd.rs`) is sized from this (it adds the three standard fds), so `open` fails with
-/// `EMFILE` at exactly this many, whichever table would have run out first.
+/// How many files/directories may be open at once, counting each file once however many fds refer to it,
+/// and the shell's own redirect files too. The fd table (`syscall/fd.rs`) is sized from this (it adds the
+/// three standard fds), so `open` fails with `EMFILE` at exactly this many, whichever would have run out
+/// first.
 pub const MAX_OPEN_FILES: usize = 13;
 
 type Dir = FatDir<'static, BlkIo>;
@@ -43,8 +52,8 @@ struct DirRec {
     attrs: u8,
 }
 
-/// One open file, which may be a reader, a writer, or a directory.
-enum OpenFile {
+/// What an open file is.
+enum Kind {
     /// A file opened for reading, represented by its `FileReader`.
     Reader(FileReader<'static, BlkIo>),
 
@@ -53,41 +62,59 @@ enum OpenFile {
 
     /// A directory. `recs` holds the directory's entries as `DirRec`.
     Dir { recs: Vec<DirRec>, next: usize },
+
+    /// A writer that `OpenFile::finish` has already finished; only ever seen while it is being dropped.
+    Closed,
 }
 
-/// The table `fd.rs`'s `FileDescriptor::File(handle)` indexes into. A handle stays valid from
-/// `open` until `close` (or the end of the launch -- see `close_all`).
+/// One open file, which may be a reader, a writer, or a directory. Counted in `LIVE_FILES` from its
+/// creation to its drop, which also finishes a writer that was never finished explicitly.
+pub struct OpenFile {
+    kind: Kind,
+}
+
+/// A shared open file: what an fd slot or a stream binding holds. Single core, so no atomics; the
+/// `RefCell` is borrowed only for the duration of one `read`/`write`/`getdents`.
+pub type FileRef = Rc<RefCell<OpenFile>>;
+
+/// How many `OpenFile`s exist. `open` refuses (`EMFILE`) at `MAX_OPEN_FILES`.
 ///
-/// SAFETY (every access, via `table`): single core, and every syscall runs with IRQs masked, so
-/// nothing else can touch this while a call is in progress.
-static mut OPEN_FILES: [Option<OpenFile>; MAX_OPEN_FILES] = [const { None }; MAX_OPEN_FILES];
+/// SAFETY (every access, via `live_files`): single core, and every syscall runs with IRQs masked, so
+/// nothing else can touch this while a call is in progress; the shell runs outside interrupts.
+static mut LIVE_FILES: usize = 0;
 
-/// Whether each slot was opened by the shell itself (a redirect target), rather than by the program
-/// that is about to run. `close_all` skips these -- the shell closes its own handles when the
-/// redirected command (or, from Step 9, scope) they belong to is done with them, which can be well
-/// after the one program that happened to run under it has already exited.
-///
-/// SAFETY: as `OPEN_FILES`.
-static mut SHELL_OWNED: [bool; MAX_OPEN_FILES] = [false; MAX_OPEN_FILES];
-
-/// Accessor for `OPEN_FILES`.
+/// Accessor for `LIVE_FILES`.
 #[allow(clippy::deref_addrof)]
-fn table() -> &'static mut [Option<OpenFile>; MAX_OPEN_FILES] {
-    // SAFETY: see OPEN_FILES.
-    unsafe { &mut *(&raw mut OPEN_FILES) }
+fn live_files() -> &'static mut usize {
+    // SAFETY: see LIVE_FILES.
+    unsafe { &mut *(&raw mut LIVE_FILES) }
 }
 
-/// Accessor for `SHELL_OWNED`.
-#[allow(clippy::deref_addrof)]
-fn shell_owned() -> &'static mut [bool; MAX_OPEN_FILES] {
-    // SAFETY: see SHELL_OWNED.
-    unsafe { &mut *(&raw mut SHELL_OWNED) }
+impl OpenFile {
+    fn new(kind: Kind) -> FileRef {
+        *live_files() += 1;
+        Rc::new(RefCell::new(Self { kind }))
+    }
+
+    /// Commits a writer's final size to disk (a no-op for anything else), reporting failure as `EIO`.
+    fn finish(&mut self) -> isize {
+        match core::mem::replace(&mut self.kind, Kind::Closed) {
+            Kind::Writer(writer) => match writer.finish() {
+                Ok(()) => 0,
+                Err(_) => EIO,
+            },
+            _ => 0,
+        }
+    }
 }
 
-/// Marks `handle` -- just returned by `open` -- as one the shell opened for a redirect rather than
-/// one the about-to-run program opened for itself, so `close_all` leaves it alone.
-pub fn mark_shell_owned(handle: usize) {
-    shell_owned()[handle] = true;
+impl Drop for OpenFile {
+    /// The implicit close: the last reference went without an explicit `close` (a program exited holding
+    /// the file). Any error is dropped, as there is nobody to tell.
+    fn drop(&mut self) {
+        let _ = self.finish();
+        *live_files() -= 1;
+    }
 }
 
 /// Accessor for the FAT volume, `VOL`.
@@ -152,11 +179,11 @@ fn list(dir: &Dir) -> Result<Vec<DirRec>, isize> {
 
 /// Opens a file for reading. If the path points to a directory, it opens the directory instead,
 /// e.g., for listing its contents via `getdents`.
-fn open_read(path: &str) -> Result<OpenFile, isize> {
+fn open_read(path: &str) -> Result<Kind, isize> {
     let comps = components(path);
     let Some((leaf, parents)) = comps.split_last() else {
         // No components at all: the root directory itself.
-        return Ok(OpenFile::Dir {
+        return Ok(Kind::Dir {
             recs: list(&vol().root_dir())?,
             next: 0,
         });
@@ -165,20 +192,20 @@ fn open_read(path: &str) -> Result<OpenFile, isize> {
     let entry = find_entry_checked(&parent, leaf)?.ok_or(ENOENT)?;
     if entry.is_directory() {
         let dir = parent.open_entry(&entry).map_err(|_| EIO)?;
-        Ok(OpenFile::Dir {
+        Ok(Kind::Dir {
             recs: list(&dir)?,
             next: 0,
         })
     } else {
-        Ok(OpenFile::Reader(vol().read_file(&entry).map_err(|_| EIO)?))
+        Ok(Kind::Reader(vol().read_file(&entry).map_err(|_| EIO)?))
     }
 }
 
 /// Opens a file for writing. If the file does not exist, it is created. `append` positions the
-/// writer at the file's current end instead of truncating it. Returns an `OpenFile::Writer` handle.
+/// writer at the file's current end instead of truncating it. Returns a `Kind::Writer`.
 /// If the path points to a directory, it returns `EISDIR`. If the file is read-only, it returns
 /// `EACCES`.
-fn open_write(path: &str, append: bool) -> Result<OpenFile, isize> {
+fn open_write(path: &str, append: bool) -> Result<Kind, isize> {
     let comps = components(path);
     let (leaf, parents) = comps.split_last().ok_or(EISDIR)?;
     let parent = resolve(parents)?;
@@ -200,42 +227,42 @@ fn open_write(path: &str, append: bool) -> Result<OpenFile, isize> {
     } else {
         vol().write_file(&entry).map_err(|_| EIO)?
     };
-    Ok(OpenFile::Writer(writer))
+    Ok(Kind::Writer(writer))
 }
 
-/// Opens `path` and returns its handle. Read mode (`write: false`) opens a file, or a directory (for
+/// Opens `path` and returns the new file. Read mode (`write: false`) opens a file, or a directory (for
 /// `getdents`); write mode creates the file if needed, starting it empty or (`append`) from its
-/// current end. `append` is ignored in read mode.
-pub fn open(path: &str, write: bool, append: bool) -> Result<usize, isize> {
-    let slot = table().iter().position(Option::is_none).ok_or(EMFILE)?;
-    let file = if write {
+/// current end. `append` is ignored in read mode. `EMFILE` if `MAX_OPEN_FILES` files are already open.
+pub fn open(path: &str, write: bool, append: bool) -> Result<FileRef, isize> {
+    if *live_files() >= MAX_OPEN_FILES {
+        return Err(EMFILE);
+    }
+    let kind = if write {
         open_write(path, append)?
     } else {
         open_read(path)?
     };
-    table()[slot] = Some(file);
-    Ok(slot)
+    Ok(OpenFile::new(kind))
 }
 
-/// Reads from the file represented by `handle` into `buf`. Returns the number of bytes read, EBADF
-/// if the handle is not open for reading, EISDIR if the handle is a directory, or EIO on an I/O
-/// error.
-pub fn read(handle: usize, buf: &mut [u8]) -> isize {
-    match table()[handle].as_mut() {
-        Some(OpenFile::Reader(reader)) => match reader.read(buf) {
+/// Reads from `file` into `buf`. Returns the number of bytes read, EBADF if it is not open for reading,
+/// EISDIR if it is a directory, or EIO on an I/O error.
+pub fn read(file: &FileRef, buf: &mut [u8]) -> isize {
+    match &mut file.borrow_mut().kind {
+        Kind::Reader(reader) => match reader.read(buf) {
             Ok(n) => n as isize,
             Err(_) => EIO,
         },
-        Some(OpenFile::Dir { .. }) => EISDIR,
+        Kind::Dir { .. } => EISDIR,
         _ => EBADF,
     }
 }
 
-/// Writes `bytes` to the file represented by `handle`. Returns the number of bytes written, EBADF
-/// if the handle is not open for writing, or EIO on an I/O error.
-pub fn write(handle: usize, bytes: &[u8]) -> isize {
-    match table()[handle].as_mut() {
-        Some(OpenFile::Writer(writer)) => match writer.write(bytes) {
+/// Writes `bytes` to `file`. Returns the number of bytes written, EBADF if it is not open for writing,
+/// or EIO on an I/O error.
+pub fn write(file: &FileRef, bytes: &[u8]) -> isize {
+    match &mut file.borrow_mut().kind {
+        Kind::Writer(writer) => match writer.write(bytes) {
             Ok(n) => n as isize,
             Err(_) => EIO,
         },
@@ -245,10 +272,11 @@ pub fn write(handle: usize, bytes: &[u8]) -> isize {
 
 /// Batched reading of directory entries. Fills `buf` with as many directory entries as can fit in
 /// one call. Returns the number of bytes written to `buf`. Moves the `next` index in the
-/// referened `OpenFile::Dir` structure in `table()[handle]` accordingly.
-pub fn getdents(handle: usize, buf: &mut [u8]) -> isize {
-    let Some(OpenFile::Dir { recs, next }) = table()[handle].as_mut() else {
-        // If the handle is not a directory, return `ENOTDIR`.
+/// directory `file` accordingly.
+pub fn getdents(file: &FileRef, buf: &mut [u8]) -> isize {
+    let mut file = file.borrow_mut();
+    let Kind::Dir { recs, next } = &mut file.kind else {
+        // If the file is not a directory, return `ENOTDIR`.
         return ENOTDIR;
     };
 
@@ -280,28 +308,13 @@ pub fn getdents(handle: usize, buf: &mut [u8]) -> isize {
     off as isize
 }
 
-/// Closes `handle`. For a writer, this is also what commits the file's final size to disk. Clears
-/// the shell-owned mark too, so whatever `open` next hands out this slot starts unmarked.
-pub fn close(handle: usize) -> isize {
-    shell_owned()[handle] = false;
-    match table()[handle].take() {
-        Some(OpenFile::Writer(writer)) => match writer.finish() {
-            Ok(()) => 0,
-            Err(_) => EIO,
-        },
-        Some(_) => 0,
-        None => EBADF,
-    }
-}
-
-/// Closes every open handle the program that just exited (or faulted) might have left open --
-/// shell-owned handles (see `mark_shell_owned`) are skipped, since those belong to the shell's own
-/// redirects, which can outlive the one program that happened to run under them.
-pub fn close_all() {
-    for handle in 0..MAX_OPEN_FILES {
-        if !shell_owned()[handle] {
-            let _ = close(handle);
-        }
+/// Drops the caller's reference to `file`. If it was the last one, the file is really closed, and for a
+/// writer that is what commits its final size to disk (so this can return `EIO`); otherwise the file
+/// stays open for whoever else holds it, and this is `0`.
+pub fn close(file: FileRef) -> isize {
+    match Rc::try_unwrap(file) {
+        Ok(cell) => cell.into_inner().finish(),
+        Err(_shared) => 0,
     }
 }
 

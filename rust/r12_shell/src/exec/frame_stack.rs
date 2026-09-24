@@ -13,6 +13,11 @@
 //! A frame is plain data with no reference to any static, so it can be embedded in a per-process struct
 //! unchanged when there is one. The stack itself is the one static (`shell_state.rs`).
 //!
+//! What an open file *is* is not this module's business: it is generic over the type `F` a binding holds
+//! (`StdioBinding<F>`), which the kernel instantiates with a reference-counted open file
+//! (`fs::files::FileRef`, see `shell_state.rs`) and the host tests with plain numbers or an `Rc`. Copying a
+//! frame clones its bindings, so a scope inherits the same open files, and dropping the frame releases them.
+//!
 //! Pure `no_std` + `alloc`, with no dependency on the rest of the kernel, so it is tested on the host
 //! (`hosttests/`).
 
@@ -21,46 +26,46 @@ use alloc::vec::Vec;
 
 /// What standard stream `n` (0, 1 or 2) is connected to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StdioBinding {
+pub enum StdioBinding<F> {
     /// The default: the keyboard for stdin, the console for stdout and stderr.
     Default,
-    /// An open file, by its handle in the open-file table. A non-owning reference: whoever opened the
-    /// file closes it, and copying a frame copies the reference, not the file.
-    File(usize),
+    /// An open file. Cloning the binding shares the file (a reference, for the kernel's `F`), so the file
+    /// stays open until the last binding or fd that holds it is dropped.
+    File(F),
 }
 
 /// One level of shell state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShellFrame {
+pub struct ShellFrame<F> {
     /// The working directory: absolute and normalized (see `fs::path::abspath`).
     pub cwd: String,
     /// Where stdin, stdout and stderr go.
-    pub stdio: [StdioBinding; 3],
+    pub stdio: [StdioBinding<F>; 3],
     // Stage 16 adds `env` here.
 }
 
 /// The stack of frames. Never empty: the bottom frame is the shell's own, and is never popped.
-pub struct FrameStack {
-    frames: Vec<ShellFrame>,
+pub struct FrameStack<F> {
+    frames: Vec<ShellFrame<F>>,
 }
 
-impl FrameStack {
+impl<F: Clone> FrameStack<F> {
     /// A stack holding just the shell's own frame: working directory `/`, default streams.
     pub fn new() -> Self {
         Self {
             frames: alloc::vec![ShellFrame {
                 cwd: String::from("/"),
-                stdio: [StdioBinding::Default; 3],
+                stdio: [StdioBinding::Default, StdioBinding::Default, StdioBinding::Default],
             }],
         }
     }
 
     /// The frame code is currently running against.
-    pub fn top(&self) -> &ShellFrame {
+    pub fn top(&self) -> &ShellFrame<F> {
         self.frames.last().expect("the frame stack is never empty")
     }
 
-    pub fn top_mut(&mut self) -> &mut ShellFrame {
+    pub fn top_mut(&mut self) -> &mut ShellFrame<F> {
         self.frames
             .last_mut()
             .expect("the frame stack is never empty")
@@ -100,14 +105,15 @@ impl FrameStack {
 
     /// Runs `f` with the streams named in `overrides` (`Some(binding)` replaces stream `n`, `None` leaves
     /// it) rebound on the current frame, then puts the streams back. Only the streams are restored: a
-    /// working-directory change made inside `f` is kept.
+    /// working-directory change made inside `f` is kept. The override bindings are dropped at the end, so
+    /// a file opened for the redirect is closed then, unless something else still holds it.
     pub fn with_stdio<R>(
         &mut self,
-        overrides: [Option<StdioBinding>; 3],
+        overrides: [Option<StdioBinding<F>>; 3],
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let depth = self.depth();
-        let saved = self.top().stdio;
+        let saved = self.top().stdio.clone();
         for (stream, binding) in self.top_mut().stdio.iter_mut().zip(overrides) {
             if let Some(binding) = binding {
                 *stream = binding;
@@ -124,6 +130,9 @@ impl FrameStack {
 mod tests {
     use super::*;
     use StdioBinding::*;
+
+    /// The tests' stand-in for an open file: a number.
+    type FrameStack = super::FrameStack<u32>;
 
     #[test]
     fn it_starts_with_the_shells_own_frame() {
@@ -234,5 +243,52 @@ mod tests {
             (s.depth(), s.top().cwd.as_str(), s.top().stdio),
             (1, "/", [Default; 3])
         );
+    }
+    /// Bindings that count their holders, standing in for the kernel's reference-counted open files.
+    mod shared {
+        use super::super::{FrameStack, StdioBinding};
+        use alloc::rc::Rc;
+
+        #[test]
+        fn a_scope_shares_the_files_and_releases_them_when_it_ends() {
+            let file = Rc::new(());
+            let mut s = FrameStack::new();
+            s.top_mut().stdio[1] = StdioBinding::File(file.clone());
+            assert_eq!(Rc::strong_count(&file), 2);
+            s.with_scope(|s| {
+                // The copy holds the same file, not a second one.
+                assert_eq!(Rc::strong_count(&file), 3);
+                s.top_mut().stdio[1] = StdioBinding::Default;
+                assert_eq!(Rc::strong_count(&file), 2);
+            });
+            assert_eq!(Rc::strong_count(&file), 2);
+            s.top_mut().stdio[1] = StdioBinding::Default;
+            assert_eq!(Rc::strong_count(&file), 1);
+        }
+
+        #[test]
+        fn with_stdio_releases_the_override_when_it_ends() {
+            let file = Rc::new(());
+            let mut s = FrameStack::new();
+            s.with_stdio([None, Some(StdioBinding::File(file.clone())), None], |s| {
+                assert_eq!(Rc::strong_count(&file), 2);
+                // `2>&1`: another binding of the same file.
+                let dup = s.top().stdio[1].clone();
+                s.top_mut().stdio[2] = dup;
+                assert_eq!(Rc::strong_count(&file), 3);
+            });
+            assert_eq!(Rc::strong_count(&file), 1);
+        }
+
+        #[test]
+        fn a_redirect_layered_over_another_releases_the_one_it_replaces() {
+            let pipe = Rc::new(());
+            let mut s = FrameStack::new();
+            s.with_stdio([None, Some(StdioBinding::File(pipe.clone())), None], |s| {
+                s.top_mut().stdio[1] = StdioBinding::Default; // `cmd > elsewhere` replacing the pipe
+                assert_eq!(Rc::strong_count(&pipe), 1);
+            });
+            assert_eq!(Rc::strong_count(&pipe), 1);
+        }
     }
 }

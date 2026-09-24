@@ -101,8 +101,10 @@ sends stderr to where stdout *was*, i.e. the console).
   `cmd 2> e < missing` reports the missing file into `e`.
 - A builtin runs under its redirections too, and its effect on shell state sticks: `cd dir > f` still
   changes directory.
-- Redirection is by shell-opened file handles, closed when the segment ends, which is what commits
-  anything written.
+- A redirection opens the file and binds it in the segment's frame; the file stays open as long as a
+  binding or a program's fd refers to it, and is closed when the segment ends and the frame's streams are
+  restored, which is what commits anything written. `2>&1` shares the one file between two streams, so a
+  program closing one of them leaves the other working.
 
 ### Pipelines
 

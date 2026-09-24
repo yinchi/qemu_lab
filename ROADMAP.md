@@ -979,7 +979,7 @@ time-slice between two actively-running ones.
 - A second slot in `fd.rs`'s table, one per resident program rather than one shared table reset on
   every launch. Stage 12's own reasoning for a single table ("at most one program is ever
   resident") stops holding the moment a second one can be alive-but-dormant at the same time; each
-  slot now keeps its own three-plus-`File(handle)` entries, still reset by `reset_for_launch()`
+  slot now keeps its own three-plus-open-file entries (Stage 12 made those shared `Rc` references), still reset by `reset_for_launch()`
   when a *fresh* program is loaded into that slot, but no longer reset just because the *other*
   slot's occupant changed.
 - **This stage is also the gate for moving the shell to userspace** (Stage 12 keeps it
@@ -988,6 +988,11 @@ time-slice between two actively-running ones.
   path-to-a-userspace-`sh` table: `spawn`/`wait` syscalls (Stage 22), turning Stage 12's shell-state frame
   into a per-process struct a child inherits (with the `chdir` syscall whose number Stage 12 reserves),
   and `dup2`-style fd control.
+- **File sharing rules.** With two resident programs, one can hold a file open while the other rewrites
+  or deletes it, which Stage 12 leaves uncoordinated (a reader then sees mixed or stale data, an `EIO`, or
+  another file's bytes). This stage adds the rule: track open readers and the one writer per directory entry, and
+  refuse a conflicting `open`, `unlink` or `rename` with a new `EBUSY` (`rust/docs/filesystem.md`, "Concurrent
+  access to one file", has the analysis). Stage 12's `Rc` open files already give the shared-handle half.
 - Explicitly not a scheduler: switching between the two slots only ever happens at an explicit
   call from kernel code reacting to something specific (Stage 20's signal, Capstone 2's blocked
   pipe read/write) -- never a timer interrupt forcing a switch mid-instruction. No ready queue, no

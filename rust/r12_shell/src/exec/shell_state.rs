@@ -15,16 +15,23 @@
 use alloc::string::String;
 
 use super::frame_stack::{FrameStack, StdioBinding};
-use crate::fs::{files, path};
+use crate::fs::files::{self, FileRef};
+use crate::fs::path;
 use crate::static_mut_ref;
+
+/// A stream binding in the kernel: the default, or a shared open file.
+pub type Stdio = StdioBinding<FileRef>;
+
+/// The kernel's frame stack, whose bindings hold shared open files.
+pub type Frames = FrameStack<FileRef>;
 
 /// Written once by `kernel_main`, before the keyboard's interrupt is enabled.
 /// SAFETY (every access): single core; the shell's loop and the syscalls it runs never overlap, and the
 /// interrupt handler never touches it.
-pub static mut FRAMES: Option<FrameStack> = None;
+pub static mut FRAMES: Option<Frames> = None;
 
 /// The stack of shell frames.
-pub fn frames() -> &'static mut FrameStack {
+pub fn frames() -> &'static mut Frames {
     // SAFETY: see FRAMES; populated by `kernel_main` before anything can call this.
     unsafe { static_mut_ref!(FRAMES) }
 }
@@ -48,7 +55,7 @@ pub fn chdir(path: &str) -> Result<(), isize> {
     Ok(())
 }
 
-/// Where standard stream `n` goes for a program about to start.
-pub fn stdio(n: usize) -> StdioBinding {
-    frames().top().stdio[n]
+/// Where standard stream `n` goes for a program about to start (a file binding shares the file).
+pub fn stdio(n: usize) -> Stdio {
+    frames().top().stdio[n].clone()
 }

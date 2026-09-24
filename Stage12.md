@@ -25,7 +25,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 11c | `poweroff`/`reboot` via PSCI | done |
 | 12 | Line editing and history | done |
 | 13 | Docs, roadmap, docs check (its regression tests run at the end of 13b) | done |
-| 13b | Open-file reference counting (`Rc`) and small syscall-surface fixes | planned |
+| 13b | Open-file reference counting (`Rc`) and small syscall-surface fixes | in progress: 13b-1 done |
 
 ## Goal
 Turn Stage 10's launcher into a shell worth typing at -- line editing with history, `cd`/`pwd`/`mkdir`/`rm`/`mv`,
@@ -1361,7 +1361,7 @@ each other, in that order: the code was made self-consistent first, then the doc
   test program's name exists under `user/`.
 - **Regression tests moved to the end of Step 13b** (13b-5: r09-r11, then a fresh-checkout `just test`), so that they
   run once, against the final code, rather than before and after 13b.
-- **Known limitation, fixed by Step 13b below:** a program that `close`s a standard fd the shell redirected to a
+- **Known limitation, fixed by Step 13b-1 below:** a program that `close`s a standard fd the shell redirected to a
   file closes the shell's own handle, which the shell then closes again after the command.
 - **Verification:** host tests, and the full QEMU suite in 17 groups, pass. The `user/` crates changed only in a
   doc comment (`userlib`'s `open`).
@@ -1371,7 +1371,7 @@ Everything the Step 13 documentation check found that is a real behavior problem
 deliberately deferred until after that step's code review so it doesn't mix with it. One subsection per problem;
 each records whether it has been agreed.
 
-#### 13b-1: shared and redirected fds need reference counting (agreed)
+#### 13b-1: shared and redirected fds need reference counting (done)
 - **The problem.** An open file is a numeric handle into `files.rs`'s 13-slot table, with no notion of how many
   fds refer to it. `2>&1` (`Redirection::Dup`) copies the frame's `File(handle)` binding, so fds 1 and 2 hold the
   *same* handle, and `close(fd)` destroys the file whatever else still refers to it. Two visible effects: a program
@@ -1403,6 +1403,22 @@ each records whether it has been agreed.
   must still land in `f`, and the shell's redirect must still commit `f` afterward. The existing fd-limit test
   (`probe fds`) must still hit `EMFILE` at the same count. Host tests for the generic `StdioBinding`, including
   that a scoped copy takes and releases references. Full `just test`.
+- **As built.** As designed, with these specifics:
+  - `fs/files.rs`: `OpenFile` (a `Kind` of Reader/Writer/Dir, plus `Closed` while dropping) in a `FileRef =
+    Rc<RefCell<OpenFile>>`; `open` returns a `FileRef`, and `read`/`write`/`getdents` take `&FileRef`. `LIVE_FILES`
+    counts existing `OpenFile`s and `open` refuses at `MAX_OPEN_FILES`; `OpenFile`'s `Drop` finishes a writer
+    nobody closed explicitly and decrements it. `close(FileRef)` is `Rc::try_unwrap` then `finish`, so only the
+    last reference can report `EIO`. `OPEN_FILES`, `SHELL_OWNED`, `mark_shell_owned` and `close_all` are gone.
+  - `exec/frame_stack.rs`: `StdioBinding<F>`, `ShellFrame<F>`, `FrameStack<F>` (clone, not copy);
+    `shell_state.rs` names the kernel's instantiation (`Stdio`, `Frames`). `end_launch` empties the fd table
+    instead of calling `close_all`.
+  - `shell/mod.rs` got *simpler* than planned: the `opened` and `handles` lists and their explicit `close` calls
+    are gone, because a redirect's file is held by the frame binding and closed when `with_stdio` restores the
+    streams (or a later redirect replaces the binding). The one behavior change: a commit error at that
+    point was already ignored, and still is.
+  - Tests: `frame_stack.rs` host tests with an `Rc` stand-in (a scope shares and releases; `with_stdio` releases
+    its override; a replaced binding is released); `probe close-out` under `> f 2>&1` (stderr still lands in the
+    file and is committed, checked with `mtools` too) and under `> f` alone; `probe fds` still hits `EMFILE` at 13.
 - **Docs to update with it.** `syscalls.md` (the `close` row's warning, the shared-13 note in "File descriptors"),
   `filesystem.md` ("Open files", including the shell-owned wording), `shell.md` ("Redirection", handles closed when
   the segment ends), and this file's Step 13 known-limitation bullet.
@@ -1460,6 +1476,14 @@ which also runs the docs check. (The manual check on a real display, T12.6/T13.4
 - **`cp`/`mv` self-copy** refuses by comparing path *strings* (`cp a ./a` isn't caught): a proper check needs the
   kernel's `abspath` on the user side, and a program has no heap to build the normalized path in, so it waits for
   a shared heapless normalizer (or Stage 18's heap); it stays documented in `progs.md`.
+- **Concurrent access to one file** is uncoordinated: a reader and a writer of the same file can be open
+  together, and a writer that rewrites or truncates it gives the reader mixed or stale data (or `EIO`, or
+  another file's bytes if the shrink freed clusters that were reused); a second writer is refused by
+  `hadris-fat` but reported as `EIO`. Nothing in Stage 12 can trigger it (one resident program; the shell never
+  reads and writes one path at once), so it is documented, not fixed: [`docs/filesystem.md`](rust/docs/filesystem.md)
+  has the detail and the plan for Stage 19 -- readers-XOR-one-writer by directory entry, refusing with a new
+  `EBUSY`. Detecting change on disk was considered and set aside: it needs an extra directory read per `read`,
+  can't see a rewrite before its `finish`, and, with no clock, can't see a same-size rewrite.
 - **`cd` with no operand** going to `/` waits for `$HOME` in Stage 16.
 - **The 13 open files being shared** with the shell's own redirect handles is inherent to the cap and stays
   documented.
@@ -1708,9 +1732,8 @@ image and confirm files created before are still there.
 **Known limitations (stated in docs):** finite, sequentially executed pipelines only (Stage 23 for streaming/concurrency); no variables,
 `$?`, `exit`, `if`/`for`, functions, globbing, `;`/`&&`/`||`, background jobs, here-documents, or fds above 2 until Stage 16
 (variables, `$?`, `$VAR` expansion -- the `exit N` line stands in for `$?` until then) or later stages; `cd` with no operand
-goes to `/` until `$HOME` (also Stage 16); Ctrl+D at the prompt does nothing; single resident program; kernel-resident shell
-(path to userspace `sh` recorded); FAT16 root has 512 slots; open files are not reference-counted, so a program closing a
-redirected standard fd affects the shell's own handle (Step 13b); `cp`/`mv` detect a self-copy only when the two path strings are
+goes to `/` until `$HOME` (also Stage 16); Ctrl+D at the prompt does nothing; single resident program; opens of one file are uncoordinated (Stage 19 adds the sharing rule, see `docs/filesystem.md`); kernel-resident shell
+(path to userspace `sh` recorded); FAT16 root has 512 slots; `cp`/`mv` detect a self-copy only when the two path strings are
 identical.
 
 ## Kernel heap growth: what actually limits it (researched from r11's code and build)
@@ -1804,14 +1827,14 @@ Decided while planning; later Steps may refine these but shouldn't silently reve
 18. **`poweroff`/`reboot` go through one `reboot` syscall to PSCI** (Step 11c), not a device register or a `shutdown` program:
     QEMU `virt` provides PSCI with no device discovery, and `shutdown`'s mandatory time operand can't be honored without a clock.
 19. **Inserted Steps take a letter** (`4b`, `4c`, `11b`, `11c`, `13b`) so the numbers the plan already refers to don't shift.
-20. **Open files are to be reference-counted with `Rc`** (Step 13b, planned): the handle-and-flag scheme was a stopgap for an
+20. **Open files are reference-counted with `Rc`** (Step 13b-1): the handle-and-flag scheme was a stopgap for an
     in-kernel shell, and Stages 19 and 23 need shared handles.
 
 ## Files touched
 By area (the ground truth for any file is `git log`; this is the shape):
 - **Kernel, `rust/r12_shell/`:** the whole hierarchy under "Source layout" (a copy of r11 reorganized in Step 1b), with
   new modules for the line discipline and history (`keyboard/`), the wrapped-input layout (`console/input_layout.rs`), the
-  token queue, the shell (`shell/`), the frame stack and shell state (`exec/`), path handling and the open-file table (`fs/`),
+  token queue, the shell (`shell/`), the frame stack and shell state (`exec/`), path handling and open files (`fs/`),
   the power syscall and PSCI (`syscall/power.rs`, `arch/psci.rs`), and `arch/` changes (`mmu.rs` for real, `vectors.s`
   including the exception stack, `context.s`); `link.ld` (kernel stack guard); `justfile`; `hosttests/`; `test/` (harness,
   runner, one module per area, `progs/`, fixtures); `disk/` fixtures.

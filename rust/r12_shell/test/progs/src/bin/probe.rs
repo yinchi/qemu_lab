@@ -5,6 +5,8 @@
 //!   probe sys-unknown   an unassigned syscall number
 //!   probe bad-ptr       bad or wrapping pointers/lengths given to write/read/open/chmod
 //!   probe fds           opens files until the kernel says no, then closes them all
+//!   probe close-out     closes fd 1, tries to write to it, and reports both results on fd 2 -- run as
+//!                      `> f 2>&1` to show that closing one fd leaves the file the other fd shares open
 //!   probe args ...      prints argc/argv exactly as received, plus what the stack layout guarantees
 //!   probe exit N        exits with status N, passed to the kernel unmasked (so N > 255 tests the mask)
 //!   probe frag          one line of 200 one-digit `write!` fragments (stdout buffer: one console flush)
@@ -71,6 +73,12 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
         }
         Some("fds") => {
             fds(&mut out);
+            0
+        }
+        Some("close-out") => {
+            let closed = userlib::close(1);
+            let written = userlib::write(1, b"lost");
+            let _ = writeln!(Fd(2), "close(1)={closed} write(1)={written}");
             0
         }
         Some("args") => {
@@ -174,7 +182,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|close-out|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
             2
         }
     }
