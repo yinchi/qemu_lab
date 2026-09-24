@@ -12,8 +12,9 @@
 
 use core::fmt::Write;
 
-use progs::{Fd, diag, help};
+use progs::{Fd, diag};
 use userlib::{ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, ExitCode, Stat, stat};
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -52,22 +53,19 @@ fn print_one(name: &str, info: &Stat) {
 }
 
 fn run(args: userlib::Args) -> ExitCode {
-    let mut any = false;
-    let mut status = 0;
-    let mut first = true;
+    let plain = match cli::plain("stat", USAGE, FLAGS, args) {
+        Ok(plain) => plain,
+        Err(status) => return status,
+    };
+    if plain.count == 0 {
+        return diag::missing_operand("stat");
+    }
 
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
-        }
-        if arg.len() > 1 && arg.starts_with('-') {
-            return diag::invalid_option("stat", arg);
-        }
-        any = true;
-        if !first {
+    let mut status = 0;
+    for (i, arg) in cli::operands(args).enumerate() {
+        if i > 0 {
             let _ = writeln!(Fd(1));
         }
-        first = false;
         match stat(arg) {
             Ok(info) => print_one(arg, &info),
             Err(e) => {
@@ -76,10 +74,5 @@ fn run(args: userlib::Args) -> ExitCode {
             }
         }
     }
-
-    if !any {
-        return diag::missing_operand("stat");
-    }
-
     ExitCode(status)
 }

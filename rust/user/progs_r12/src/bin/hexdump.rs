@@ -5,8 +5,9 @@
 
 use core::fmt::Write;
 
-use progs::{Fd, Input, diag, fail, help};
+use progs::{Fd, Input, diag, fail};
 use userlib::{ExitCode, read};
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -17,21 +18,16 @@ const USAGE: &str = "hexdump [file]";
 const FLAGS: &[(&str, &str)] = &[];
 
 fn run(args: userlib::Args) -> ExitCode {
-    let mut file = None;
-
-    // Parse command-line arguments to determine the input file.
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
-        }
-        if arg.len() > 1 && arg.starts_with('-') {
-            // Unknown option encountered (we don't support any options).
-            return diag::invalid_option("hexdump", arg);
-        } else if file.replace(arg).is_some() {
-            // More than one file specified; hexdump only supports a single file.
-            return diag::extra_operand("hexdump", arg);
-        }
+    // Parse command-line arguments to determine the input file: at most one operand, and no options.
+    let plain = match cli::plain("hexdump", USAGE, FLAGS, args) {
+        Ok(plain) => plain,
+        Err(status) => return status,
+    };
+    if let Some(extra) = plain.second {
+        // More than one file specified; hexdump only supports a single file.
+        return diag::extra_operand("hexdump", extra);
     }
+    let file = plain.first;
 
     // Display name for the file in error messages.
     let name = file.unwrap_or("stdin");

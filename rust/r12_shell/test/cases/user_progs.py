@@ -186,6 +186,15 @@ def run(ctx):
           "ls tests/docs bin\ntests/docs:\nexample.txt\n\nbin:\n" + "".join(f"{n}.exe\n" for n in bin_names))
 
     ex_size = len(example_txt)
+    grouped = s.run("ls -lF tests/docs").split("\n", 1)[1]
+    separate = s.run("ls -l -F tests/docs").split("\n", 1)[1]
+    check("ls -lF is ls -l -F", (grouped == separate, "-w-" in grouped), (True, True))
+    check("ls -Fl groups in either order", s.run("ls -Fl /").split("\n", 1)[1], s.run("ls -lF /").split("\n", 1)[1])
+    check("ls -1F: -1 is accepted", "bin/" in s.run("ls -1F /"), True)
+    check("ls -lx names the bad letter", s.run("ls -lx"),
+          "ls -lx\nls: invalid option -- 'x'\nTry 'ls --help' for more information.\nexit 1\n")
+    check("ls --long is not a supported option", s.run("ls --long"),
+          "ls --long\nls: unrecognized option '--long'\nTry 'ls --help' for more information.\nexit 1\n")
     check("ls -l", s.run("ls -l tests/docs"),
           f"ls -l tests/docs\n-w- {ex_size:>10} example.txt\n")
 
@@ -269,3 +278,63 @@ def run(ctx):
           "head tests\nhead: error reading 'tests': Is a directory\nexit 1\n")
     check("cat on a missing file stays in GNU's bare form", s.run("cat tests/nosuch.txt"),
           "cat tests/nosuch.txt\ncat: tests/nosuch.txt: No such file or directory\nexit 1\n")
+
+    # ================================================================= one argument parser (getargs)
+    # `--` ends the options, so a file named like an option can be named; a lone `-` is a plain operand.
+    s.run("cd tests")
+    s.run("echo dash > ./-dash.txt")
+    check("cat -- -dash.txt", s.run("cat -- -dash.txt"), "cat -- -dash.txt\ndash\n")
+    check("cat -dash.txt is an option", s.run("cat -dash.txt"),
+          "cat -dash.txt\ncat: invalid option -- 'd'\nTry 'cat --help' for more information.\nexit 1\n")
+    check("cat - is an ordinary file name", s.run("cat -"), "cat -\ncat: -: No such file or directory\nexit 1\n")
+    check("rm -- -dash.txt", s.run("rm -- -dash.txt"), "rm -- -dash.txt\n")
+    check("...it is gone", s.run("cat -- -dash.txt"),
+          "cat -- -dash.txt\ncat: -dash.txt: No such file or directory\nexit 1\n")
+    s.run("cd ..")
+
+    # Option values, however they are written.
+    first = hello_txt.split("\n")[0] + "\n"
+    last = hello_txt.rstrip("\n").split("\n")[-1] + "\n"
+    for cmd, want in [
+        ("head -n1 tests/hello.txt", first),
+        ("head -n 1 tests/hello.txt", first),
+        ("head --lines=1 tests/hello.txt", first),
+        ("head --lines 1 tests/hello.txt", first),
+        ("head -c3 tests/hello.txt", hello_txt[:3]),
+        ("head --bytes=3 tests/hello.txt", hello_txt[:3]),
+        ("tail -n1 tests/hello.txt", last),
+        ("tail --lines=1 tests/hello.txt", last),
+        ("tail -c3 tests/hello.txt", hello_txt[-3:]),
+        ("tail --bytes 3 tests/hello.txt", hello_txt[-3:]),
+        ("head tests/hello.txt -n1", first),  # options may follow the operand
+    ]:
+        # Output that stops mid-line gets the prompt's newline (see `uart_ensure_newline`).
+        check(cmd, s.run(cmd), f"{cmd}\n{want}" + ("" if want.endswith("\n") else "\n"))
+    check("head --lines with no value", s.run("head --lines"),
+          "head --lines\nhead: option '--lines' requires an argument\n"
+          "Try 'head --help' for more information.\nexit 1\n")
+    check("head --lines=x", s.run("head --lines=x tests/hello.txt"),
+          "head --lines=x tests/hello.txt\nhead: invalid number of lines: 'x'\nexit 1\n")
+
+    # Flags apply to the whole command line, wherever they are written.
+    s.run("mkdir tests/optdir")
+    check("rm dir -r (the flag after the operand)", s.run("rm tests/optdir -r"), "rm tests/optdir -r\n")
+    check("...the directory went", s.run("ls tests/optdir"),
+          "ls tests/optdir\nls: cannot access 'tests/optdir': No such file or directory\nexit 1\n")
+    s.run("echo x > tests/teeapp.txt")
+    check("tee file -a (the flag after the file) appends", s.run("echo y | tee tests/teeapp.txt -a"),
+          "echo y | tee tests/teeapp.txt -a\ny\n")
+    check("...so the file has both lines", s.run("cat tests/teeapp.txt"), "cat tests/teeapp.txt\nx\ny\n")
+    grouped = s.run("wc -lc tests/hello.txt").split("\n", 1)[1]
+    separate = s.run("wc -l -c tests/hello.txt").split("\n", 1)[1]
+    trailing = s.run("wc tests/hello.txt -lc").split("\n", 1)[1]
+    check("wc -lc, wc -l -c and wc FILE -lc agree", grouped == separate == trailing, True)
+
+    # chmod's mode is the first operand even though `-x` looks like an option.
+    s.run("cp tests/hello.txt tests/chmopt.txt")
+    check("chmod +x with -R after the file", s.run("chmod +x tests/chmopt.txt -R"), "chmod +x tests/chmopt.txt -R\n")
+    check("...it is executable", "chmopt.txt*" in s.run("ls -F tests"), True)
+    check("chmod -- -x file: -x is the mode", s.run("chmod -- -x tests/chmopt.txt"), "chmod -- -x tests/chmopt.txt\n")
+    check("...it no longer is", "chmopt.txt*" in s.run("ls -F tests"), False)
+    check("chmod -q file is an unknown option", s.run("chmod -q tests/chmopt.txt"),
+          "chmod -q tests/chmopt.txt\nchmod: invalid option -- 'q'\nTry 'chmod --help' for more information.\nexit 1\n")

@@ -10,8 +10,10 @@
 #![no_main]
 
 use abi::errno::EMFILE;
-use progs::{CHUNK, diag, fail, help, write_all};
+use progs::{CHUNK, fail, help, write_all};
 use userlib::{ExitCode, O_APPEND, O_WRONLY, close, open, read};
+use getargs::Arg;
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -28,17 +30,20 @@ fn run(args: userlib::Args) -> ExitCode {
     let mut n = 0usize;
     let mut status = 0;
 
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
+    // First pass: the flags, so that `-a` applies to every file wherever it is written (as in GNU).
+    let mut opts = cli::opts(args);
+    loop {
+        match cli::next("tee", &mut opts) {
+            Err(status) => return status,
+            Ok(None) => break,
+            Ok(Some(Arg::Long("help"))) => return help(USAGE, FLAGS),
+            Ok(Some(Arg::Short('a') | Arg::Long("append"))) => append = true,
+            Ok(Some(Arg::Positional(_))) => {}
+            Ok(Some(other)) => return cli::invalid("tee", other),
         }
-        if arg == "-a" {
-            append = true;
-            continue;
-        }
-        if arg.len() > 1 && arg.starts_with('-') {
-            return diag::invalid_option("tee", arg);
-        }
+    }
+
+    for arg in cli::operands(args) {
         if n == MAX_FILES {
             fail("tee", arg, EMFILE);
             status = 1;

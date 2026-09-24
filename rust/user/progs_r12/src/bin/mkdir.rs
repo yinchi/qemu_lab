@@ -3,8 +3,9 @@
 #![no_std]
 #![no_main]
 
-use progs::{diag, help};
+use progs::diag;
 use userlib::{ExitCode, mkdir};
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -12,27 +13,21 @@ const USAGE: &str = "mkdir DIR...";
 const FLAGS: &[(&str, &str)] = &[];
 
 fn run(args: userlib::Args) -> ExitCode {
-    let mut any = false;
-    let mut status = 0;
+    let plain = match cli::plain("mkdir", USAGE, FLAGS, args) {
+        Ok(plain) => plain,
+        Err(status) => return status,
+    };
+    if plain.count == 0 {
+        return diag::missing_operand("mkdir");
+    }
 
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
-        }
-        if arg.len() > 1 && arg.starts_with('-') {
-            return diag::invalid_option("mkdir", arg);
-        }
-        any = true;
+    let mut status = 0;
+    for arg in cli::operands(args) {
         let result = mkdir(arg);
         if result < 0 {
             diag::cannot("mkdir", "create directory", arg, result);
             status = 1;
         }
     }
-
-    if !any {
-        return diag::missing_operand("mkdir");
-    }
-
     ExitCode(status)
 }

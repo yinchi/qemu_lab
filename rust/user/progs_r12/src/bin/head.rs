@@ -4,8 +4,9 @@
 #![no_std]
 #![no_main]
 
-use progs::{CHUNK, CountMode, Input, diag, parse_lines_or_bytes_args, write_all};
+use progs::{CHUNK, CountMode, Input, diag, write_all};
 use userlib::{ExitCode, read};
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -18,7 +19,7 @@ const FLAGS: &[(&str, &str)] = &[
 fn run(args: userlib::Args) -> ExitCode {
 
     // Get the parsed command-line arguments: line/byte count and input file.
-    let parsed = match parse_lines_or_bytes_args("head", USAGE, FLAGS, args.skip(1)) {
+    let parsed = match cli::count_args("head", USAGE, FLAGS, args) {
         Ok(parsed) => parsed,
         Err(status) => return status,
     };

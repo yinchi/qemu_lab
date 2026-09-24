@@ -80,41 +80,108 @@ fn report(path: &str, code: isize) {
     }
 }
 
-fn run(args: userlib::Args) -> ExitCode {
-    let mut args = args.skip(1);
+/// The attribute bits a mode changes -- `(set, clear)` -- for one of the four symbolic modes.
+/// FAT has no write bit, only a read-only bit, so `+w` clears it and `-w` sets it.
+fn mode_bits(mode: &str) -> Option<(u8, u8)> {
+    match mode {
+        "+x" => Some((ATTR_EXEC, 0)),
+        "-x" => Some((0, ATTR_EXEC)),
+        "+w" => Some((0, ATTR_READ_ONLY)),
+        "-w" => Some((ATTR_READ_ONLY, 0)),
+        _ => None,
+    }
+}
 
-    let Some(mode) = args.next() else {
+/// What one command-line argument is.
+enum Item {
+    Help,
+    Recursive,
+    /// The first operand.
+    Mode(&'static str),
+    File(&'static str),
+    /// Looks like an option this program does not have.
+    Bad(&'static str),
+}
+
+/// The arguments in order, classified. `chmod` cannot use `getargs` for this: its modes `-x` and `-w`
+/// look like options, so an argument is an option only if it is `-R`, `--help` or `--`, and a
+/// dash-word that is not one of the four modes is unrecognized. Options may come anywhere, as in GNU.
+struct Items {
+    args: core::iter::Skip<userlib::Args>,
+    ended: bool,
+    mode_seen: bool,
+}
+
+impl Items {
+    fn new(args: userlib::Args) -> Self {
+        Items { args: args.skip(1), ended: false, mode_seen: false }
+    }
+}
+
+impl Iterator for Items {
+    type Item = Item;
+
+    fn next(&mut self) -> Option<Item> {
+        loop {
+            let arg = self.args.next()?;
+            if !self.ended {
+                if arg == "--" {
+                    self.ended = true;
+                    continue;
+                }
+                if arg == "--help" {
+                    return Some(Item::Help);
+                }
+                if arg == "-R" {
+                    return Some(Item::Recursive);
+                }
+                if arg.len() > 1 && arg.starts_with('-') && mode_bits(arg).is_none() {
+                    return Some(Item::Bad(arg));
+                }
+            }
+            if !self.mode_seen {
+                self.mode_seen = true;
+                return Some(Item::Mode(arg));
+            }
+            return Some(Item::File(arg));
+        }
+    }
+}
+
+fn run(args: userlib::Args) -> ExitCode {
+    let mut mode = None;
+    let mut bits = (0, 0);
+    let mut recursive = false;
+    let mut files = 0usize;
+
+    // First pass: the mode and the flags, so that `-R` applies to every file wherever it is written.
+    for item in Items::new(args) {
+        match item {
+            Item::Help => return help(USAGE, FLAGS),
+            Item::Recursive => recursive = true,
+            Item::Bad(arg) => return diag::invalid_option("chmod", arg),
+            Item::Mode(text) => {
+                let Some(found) = mode_bits(text) else {
+                    let _ = writeln!(Fd(2), "chmod: invalid mode: '{text}'");
+                    return ExitCode(1);
+                };
+                mode = Some(text);
+                bits = found;
+            }
+            Item::File(_) => files += 1,
+        }
+    }
+    let Some(mode) = mode else {
         return diag::missing_operand("chmod");
     };
-    if mode == "--help" {
-        return help(USAGE, FLAGS);
+    if files == 0 {
+        return diag::missing_operand_after("chmod", mode);
     }
+    let (set, clear) = bits;
 
-    // FAT has no write bit, only a read-only bit, so `+w` clears it and `-w` sets it.
-    let (set, clear) = match mode {
-        "+x" => (ATTR_EXEC, 0),
-        "-x" => (0, ATTR_EXEC),
-        "+w" => (0, ATTR_READ_ONLY),
-        "-w" => (ATTR_READ_ONLY, 0),
-        _ => {
-            let _ = writeln!(Fd(2), "chmod: invalid mode: '{mode}'");
-            return ExitCode(1);
-        }
-    };
-
-    let mut recursive = false;
-    let mut any = false;
     let mut status = 0;
-
-    for path in args {
-        if path == "-R" {
-            recursive = true;
-            continue;
-        }
-        if path.len() > 1 && path.starts_with('-') {
-            return diag::invalid_option("chmod", path);
-        }
-        any = true;
+    for item in Items::new(args) {
+        let Item::File(path) = item else { continue };
 
         let mut ok = true;
         let r = chmod(path, set, clear);
@@ -142,10 +209,6 @@ fn run(args: userlib::Args) -> ExitCode {
         if !ok {
             status = 1;
         }
-    }
-
-    if !any {
-        return diag::missing_operand_after("chmod", mode);
     }
 
     ExitCode(status)

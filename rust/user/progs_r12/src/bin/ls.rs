@@ -9,6 +9,8 @@ use core::fmt::Write;
 
 use progs::{Fd, diag, help};
 use userlib::{ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, DirEnt, ExitCode, O_RDONLY, close, getdents, open};
+use getargs::Arg;
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -77,21 +79,24 @@ fn list_one(dir: &str, classify: bool, long: bool) -> Result<(), ()> {
 }
 
 fn run(args: userlib::Args) -> ExitCode {
+    cli::status(list(args))
+}
+
+fn list(args: userlib::Args) -> Result<ExitCode, ExitCode> {
     let mut classify = false;
     let mut long = false;
     let mut n_dirs = 0usize;
 
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
-        } else if arg == "-F" {
-            classify = true;
-        } else if arg == "-l" {
-            long = true;
-        } else if arg.len() > 1 && arg.starts_with('-') {
-            return diag::invalid_option("ls", arg);
-        } else {
-            n_dirs += 1;
+    let mut opts = cli::opts(args);
+    while let Some(arg) = cli::next("ls", &mut opts)? {
+        match arg {
+            Arg::Long("help") => return Ok(help(USAGE, FLAGS)),
+            Arg::Short('F') => classify = true,
+            Arg::Short('l') => long = true,
+            // One entry per line is all this `ls` ever does, so `-1` is accepted and changes nothing.
+            Arg::Short('1') => {}
+            Arg::Positional(_) => n_dirs += 1,
+            other => return Err(cli::invalid("ls", other)),
         }
     }
 
@@ -101,14 +106,11 @@ fn run(args: userlib::Args) -> ExitCode {
         if list_one(".", classify, long).is_err() {
             status = 1;
         }
-        return ExitCode(status);
+        return Ok(ExitCode(status));
     }
 
     let mut first = true;
-    for arg in args.skip(1) {
-        if arg.len() > 1 && arg.starts_with('-') {
-            continue; // already validated as a flag above
-        }
+    for arg in cli::operands(args) {
         if n_dirs > 1 {
             if !first {
                 let _ = writeln!(Fd(1));
@@ -121,5 +123,5 @@ fn run(args: userlib::Args) -> ExitCode {
         }
     }
 
-    ExitCode(status)
+    Ok(ExitCode(status))
 }

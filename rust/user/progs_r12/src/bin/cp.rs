@@ -10,8 +10,9 @@
 use core::fmt::Write;
 
 use abi::errno::{EISDIR, ENAMETOOLONG, ENOENT};
-use progs::{CHUNK, Fd, PathBuf, basename, diag, help, write_all};
+use progs::{CHUNK, Fd, PathBuf, basename, diag, write_all};
 use userlib::{ATTR_DIRECTORY, ExitCode, O_RDONLY, O_WRONLY, close, open, read, stat};
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -82,21 +83,13 @@ fn copy_one(src: &str, dst: &str) -> Result<(), ()> {
 }
 
 fn run(args: userlib::Args) -> ExitCode {
-    let mut count = 0usize;
-    let mut first: Option<&str> = None;
-    let mut dst: Option<&str> = None;
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
-        }
-        if arg.len() > 1 && arg.starts_with('-') {
-            return diag::invalid_option("cp", arg);
-        }
-        count += 1;
-        first.get_or_insert(arg);
-        dst = Some(arg);
-    }
-    let Some(dst) = dst.filter(|_| count >= 2) else {
+    let plain = match cli::plain("cp", USAGE, FLAGS, args) {
+        Ok(plain) => plain,
+        Err(status) => return status,
+    };
+    let count = plain.count;
+    let first = plain.first;
+    let Some(dst) = plain.last.filter(|_| count >= 2) else {
         return match first {
             Some(src) => diag::missing_destination_operand("cp", src),
             None => diag::missing_file_operand("cp"),
@@ -118,7 +111,7 @@ fn run(args: userlib::Args) -> ExitCode {
     }
 
     let mut status = 0;
-    for (i, src) in args.skip(1).enumerate() {
+    for (i, src) in cli::operands(args).enumerate() {
         if i == count - 1 {
             break; // this operand is dst itself
         }

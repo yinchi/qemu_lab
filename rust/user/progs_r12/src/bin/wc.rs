@@ -5,8 +5,10 @@
 
 use core::fmt::Write;
 
-use progs::{CHUNK, Fd, diag, fail, help};
+use progs::{CHUNK, Fd, fail, help};
 use userlib::{ExitCode, O_RDONLY, close, open, read};
+use getargs::Arg;
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -100,25 +102,23 @@ fn print_counts(c: &Counts, lines: bool, words: bool, bytes: bool, max_line: boo
 }
 
 fn run(args: userlib::Args) -> ExitCode {
+    cli::status(count(args))
+}
+
+fn count(args: userlib::Args) -> Result<ExitCode, ExitCode> {
     let (mut lines, mut words, mut bytes, mut max_line) = (false, false, false, false);
     let mut n_files = 0usize;
 
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
-        }
-        if arg.len() > 1 && arg.starts_with('-') {
-            for flag in arg[1..].chars() {
-                match flag {
-                    'l' => lines = true,
-                    'w' => words = true,
-                    'c' => bytes = true,
-                    'L' => max_line = true,
-                    _ => return diag::invalid_short("wc", flag),
-                }
-            }
-        } else {
-            n_files += 1;
+    let mut opts = cli::opts(args);
+    while let Some(arg) = cli::next("wc", &mut opts)? {
+        match arg {
+            Arg::Long("help") => return Ok(help(USAGE, FLAGS)),
+            Arg::Short('l') => lines = true,
+            Arg::Short('w') => words = true,
+            Arg::Short('c') => bytes = true,
+            Arg::Short('L') => max_line = true,
+            Arg::Positional(_) => n_files += 1,
+            other => return Err(cli::invalid("wc", other)),
         }
     }
 
@@ -138,14 +138,11 @@ fn run(args: userlib::Args) -> ExitCode {
                 status = 1;
             }
         }
-        return ExitCode(status);
+        return Ok(ExitCode(status));
     }
 
     let mut total = Counts::default();
-    for arg in args.skip(1) {
-        if arg.len() > 1 && arg.starts_with('-') {
-            continue; // already validated as a flag above
-        }
+    for arg in cli::operands(args) {
         let fd = open(arg, O_RDONLY);
         if fd < 0 {
             fail("wc", arg, fd);
@@ -169,5 +166,5 @@ fn run(args: userlib::Args) -> ExitCode {
         print_counts(&total, lines, words, bytes, max_line, Some("total"));
     }
 
-    ExitCode(status)
+    Ok(ExitCode(status))
 }

@@ -16,6 +16,8 @@ use progs::{Fd, PathBuf, basename, diag, help};
 use userlib::{
     ATTR_DIRECTORY, DIRENT_SIZE, DirEnt, ExitCode, O_RDONLY, close, getdents, open, stat, unlink,
 };
+use getargs::Arg;
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -95,26 +97,29 @@ fn remove_recursive(path: &str) -> Result<(), isize> {
 }
 
 fn run(args: userlib::Args) -> ExitCode {
+    cli::status(remove(args))
+}
+
+fn remove(args: userlib::Args) -> Result<ExitCode, ExitCode> {
     let (mut recursive, mut force) = (false, false);
     let mut any = false;
     let mut status = 0;
 
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
+    let mut opts = cli::opts(args);
+    while let Some(arg) = cli::next("rm", &mut opts)? {
+        match arg {
+            Arg::Long("help") => return Ok(help(USAGE, FLAGS)),
+            Arg::Short('r') | Arg::Short('R') => recursive = true,
+            Arg::Short('f') => force = true,
+            Arg::Positional(_) => any = true,
+            other => return Err(cli::invalid("rm", other)),
         }
-        if arg.len() > 1 && arg.starts_with('-') {
-            for flag in arg[1..].chars() {
-                match flag {
-                    'r' => recursive = true,
-                    'f' => force = true,
-                    _ => return diag::invalid_short("rm", flag),
-                }
-            }
-            continue;
-        }
-        any = true;
+    }
+    if !any {
+        return Err(diag::missing_operand("rm"));
+    }
 
+    for arg in cli::operands(args) {
         if let Some(why) = forbidden(arg, recursive) {
             refuse(arg, why);
             status = 1;
@@ -154,9 +159,5 @@ fn run(args: userlib::Args) -> ExitCode {
         }
     }
 
-    if !any {
-        return diag::missing_operand("rm");
-    }
-
-    ExitCode(status)
+    Ok(ExitCode(status))
 }

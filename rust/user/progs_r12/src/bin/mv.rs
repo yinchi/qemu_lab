@@ -10,8 +10,9 @@
 use core::fmt::Write;
 
 use abi::errno::{EEXIST, EINVAL, ENAMETOOLONG, ENOENT, ENOTDIR};
-use progs::{Fd, PathBuf, basename, diag, errmsg, help};
+use progs::{Fd, PathBuf, basename, diag, errmsg};
 use userlib::{ATTR_DIRECTORY, ExitCode, rename, stat, unlink};
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -88,22 +89,13 @@ fn try_move(src: &str, target: &str) -> Result<(), isize> {
 }
 
 fn run(args: userlib::Args) -> ExitCode {
-    // First pass: validate operands, count them, and capture the last one as dst.
-    let mut count = 0usize;
-    let mut first: Option<&str> = None;
-    let mut dst: Option<&str> = None;
-    for arg in args.skip(1) {
-        if arg == "--help" {
-            return help(USAGE, FLAGS);
-        }
-        if arg.len() > 1 && arg.starts_with('-') {
-            return diag::invalid_option("mv", arg);
-        }
-        count += 1;
-        first.get_or_insert(arg);
-        dst = Some(arg);
-    }
-    let Some(dst) = dst.filter(|_| count >= 2) else {
+    let plain = match cli::plain("mv", USAGE, FLAGS, args) {
+        Ok(plain) => plain,
+        Err(status) => return status,
+    };
+    let count = plain.count;
+    let first = plain.first;
+    let Some(dst) = plain.last.filter(|_| count >= 2) else {
         return match first {
             Some(src) => diag::missing_destination_operand("mv", src),
             None => diag::missing_file_operand("mv"),
@@ -130,7 +122,7 @@ fn run(args: userlib::Args) -> ExitCode {
     }
 
     let mut status = 0;
-    for (i, src) in args.skip(1).enumerate() {
+    for (i, src) in cli::operands(args).enumerate() {
         if i == count - 1 {
             break; // this operand is dst itself
         }

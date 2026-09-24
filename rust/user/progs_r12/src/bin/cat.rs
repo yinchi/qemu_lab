@@ -3,8 +3,10 @@
 #![no_std]
 #![no_main]
 
-use progs::{copy, diag, fail, help};
+use progs::{copy, fail, help};
 use userlib::{ExitCode, O_RDONLY, close, open};
+use getargs::Arg;
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -12,22 +14,23 @@ const USAGE: &str = "cat [file...]";
 const FLAGS: &[(&str, &str)] = &[];
 
 fn run(args: userlib::Args) -> ExitCode {
+    cli::status(concatenate(args))
+}
+
+fn concatenate(args: userlib::Args) -> Result<ExitCode, ExitCode> {
     let mut status = 0;
     let mut any_file = false;
 
-    for path in args.skip(1) {
-        if path == "--help" {
-            return help(USAGE, FLAGS);
+    let mut opts = cli::opts(args);
+    while let Some(arg) = cli::next("cat", &mut opts)? {
+        match arg {
+            Arg::Long("help") => return Ok(help(USAGE, FLAGS)),
+            Arg::Positional(_) => any_file = true,
+            other => return Err(cli::invalid("cat", other)),
         }
+    }
 
-        // Reject any option-like arguments (starting with '-') as unknown options.
-        if path.len() > 1 && path.starts_with('-') {
-            return diag::invalid_option("cat", path);
-        }
-
-        // Flag that we have encountered at least one file argument.
-        any_file = true;
-
+    for path in cli::operands(args) {
         // Open the file for reading.
         let fd = open(path, O_RDONLY);
 
@@ -57,5 +60,5 @@ fn run(args: userlib::Args) -> ExitCode {
 
     // Return the exit status; an error on any file or stdin will result in a
     // non-zero exit code.
-    ExitCode(status)
+    Ok(ExitCode(status))
 }

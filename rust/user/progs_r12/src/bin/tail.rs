@@ -9,8 +9,9 @@
 #![no_std]
 #![no_main]
 
-use progs::{CHUNK, CountMode, EINVAL, Input, diag, parse_lines_or_bytes_args, write_all};
+use progs::{CHUNK, CountMode, EINVAL, Input, diag, write_all};
 use userlib::{ExitCode, read};
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
@@ -78,7 +79,7 @@ fn emit_bytes(chunk: &[u8], skip: &mut usize) -> Result<(), isize> {
 }
 
 fn run(args: userlib::Args) -> ExitCode {
-    let parsed = match parse_lines_or_bytes_args("tail", USAGE, FLAGS, args.skip(1)) {
+    let parsed = match cli::count_args("tail", USAGE, FLAGS, args) {
         Ok(parsed) => parsed,
         Err(status) => return status,
     };

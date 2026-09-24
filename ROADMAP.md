@@ -627,7 +627,9 @@ things the shell shouldn't be built on:
   resolver with `.`/`..`. `mkdir`, `rm` (with `-r`) and `mv` as utilities over new directory-mutating
   syscalls (`hadris-fat` already has `create_dir`, `delete` and `rename`). `chdir` as a syscall is
   deliberately absent until state is per-process. Also `stat`, `tee` and `clear` (over a console `ioctl`),
-  and `poweroff`/`reboot` over one `reboot` syscall that calls PSCI (a real shutdown needs no device).
+  and `poweroff`/`reboot` over one `reboot` syscall that calls PSCI (a real shutdown needs no device). These
+  programs' diagnostics use GNU coreutils' wording, and their options one `no_std` argument-parsing crate, `getargs`
+  (checked: zero dependencies, no allocation), so `-Fl`, `-n5`, `--lines=5` and `--` work everywhere.
 - **A lexer that keeps quoting information** (POSIX quoting; `#` only at word start), replacing
   `shlex::split`, which can't tell `echo "|"` from a pipe.
 - **Redirection:** `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`, applied left to right and on builtins too; no fds

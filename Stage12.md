@@ -1371,6 +1371,14 @@ each other, in that order: the code was made self-consistent first, then the doc
   *replaces* `cat`, `wc` and `hexdump` by name, as it already did `cp head ls tail chmod`. `tee`, a Stage 12 program that
   had been put in the base tier, moved to `progs_r12` (r11 no longer builds it; r11's tests never used it). `cat`, `wc` and
   `tee` keep GNU's bare `prog: path: reason`, which is what GNU prints for them. `docs/progs.md` states the rule.
+- **One argument parser, `getargs`** (after the wording pass): the hand-rolled option loops in a dozen programs each lacked
+  something (`--`, grouped flags in `ls`, attached values, flags after operands), so the Stage 12 tier now parses through the
+  `getargs` crate (0.5, `default-features = false`: `no_std`, no allocation, no dependencies) behind `progs_r12::cli`
+  (`progs_r12` gained a `lib.rs`; `progs::diag` gained `invalid_long`, and the old count parser was deleted from `progs`).
+  Behavior that follows: grouped short flags, `-n5`/`--lines=5`, `--`, a lone `-` as an operand, and flags anywhere on the line
+  (so `rm dir -r` recurses and `tee f -a` appends, as in GNU). `head`/`tail` gained `--lines`/`--bytes` and `tee` `--append`;
+  no other long options. `chmod` parses by hand, because `-x` and `-w` are its modes. The base tier is unchanged. New tests
+  cover `--`, every value form, flags after operands and `chmod`'s special case.
 - **A docs check script** (`test/check_docs.py`, `just check-docs`, first in `just test`): every program in every tier has a
   `progs.md` row, every `abi` syscall a `syscalls.md` row, every `test/progs` program a `test/README.md` entry, and no
   test program's name exists under `user/`.

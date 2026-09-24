@@ -5,15 +5,20 @@
 #![no_main]
 
 use userlib::{CONSOLE_CLEAR, ExitCode};
+use progs_r12::cli;
 
 userlib::entry_with_args!(run);
 
 const USAGE: &str = "clear";
 const FLAGS: &[(&str, &str)] = &[];
 
-fn run(mut args: userlib::Args) -> ExitCode {
-    if args.nth(1) == Some("--help") {
-        return progs::help(USAGE, FLAGS);
+fn run(args: userlib::Args) -> ExitCode {
+    let plain = match cli::plain("clear", USAGE, FLAGS, args) {
+        Ok(plain) => plain,
+        Err(status) => return status,
+    };
+    if let Some(operand) = plain.first {
+        return progs::diag::extra_operand("clear", operand);
     }
     let result = userlib::ioctl(1, CONSOLE_CLEAR, 0);
     if result < 0 {

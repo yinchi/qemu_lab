@@ -7,6 +7,12 @@ name = "abi"
 version = "0.1.0"
 
 [[package]]
+name = "getargs"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "084c6b182b01dec54ff12986b9cc8859a9b0d92b074f878c382a4481a070e66e"
+
+[[package]]
 name = "progs"
 version = "0.1.0"
 dependencies = [
@@ -19,6 +25,7 @@ name = "progs_r12"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "getargs",
  "progs",
  "userlib",
 ]

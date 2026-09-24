@@ -45,6 +45,13 @@ pub fn invalid_option(prog: &str, arg: &str) -> ExitCode {
     }
 }
 
+/// `prog: unrecognized option '--name'`, then the `Try` line.
+pub fn invalid_long(prog: &str, name: &str) -> ExitCode {
+    let _ = writeln!(err(), "{prog}: unrecognized option '--{name}'");
+    try_help(prog);
+    ExitCode(1)
+}
+
 /// `prog: missing operand`, then the `Try` line.
 pub fn missing_operand(prog: &str) -> ExitCode {
     let _ = writeln!(err(), "{prog}: missing operand");
