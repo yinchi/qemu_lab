@@ -144,9 +144,6 @@ pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, Launc
     // Load the ELF binary into the user window.
     let entry = elf::load(elf_bytes)?;
 
-    // Reset the file descriptor table for the new program.
-    fd::reset_for_launch();
-
     // Prepare the initial stack with the argument strings and array of pointers.
     //
     // SAFETY: `stack_top` and `floor` are inside the user window `elf::load` just mapped; the
@@ -155,6 +152,11 @@ pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, Launc
         let _user = crate::arch::mmu::user_access(); // writes the user stack, which PAN would forbid
         unsafe { push_cstr_array(stack_top, floor, args) }.ok_or(LaunchError::ArgsTooBig)?
     };
+
+    // Reset the file descriptor table for the new program -- last, so that nothing after it can fail:
+    // the table now holds references to the shell's redirect files, and only `end_launch` (after the
+    // program has run) lets go of them.
+    fd::reset_for_launch();
     Ok(PreparedProgram {
         entry,
         sp: argv,
@@ -208,7 +210,8 @@ pub fn run(program: PreparedProgram) -> i32 {
     }
 
     // Back from the program (its `exit` or a fault, both taken as exceptions, so IRQs are masked
-    // again): close every file it left open, which finishes any writes still in progress, then unmask.
+    // again): drop its fds, which closes every file only it held and so finishes any writes still in
+    // progress, then unmask.
     fd::end_launch();
 
     // Ensure that interrupts are unmasked for the kernel after the program has finished,

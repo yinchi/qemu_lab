@@ -115,7 +115,9 @@ pub fn open(path: &str, flags: usize) -> isize {
 }
 
 /// Closes `fd`. For a file opened with `O_WRONLY` this is also what commits its final size to
-/// disk, so a failure here means the write may not have landed.
+/// disk, so a failure here means the write may not have landed. If other fds refer to the same open file
+/// (a standard fd the shell redirected, `2>&1`), only this fd is closed and the commit happens when the
+/// last one goes; a file left open at exit is committed then, with no way to report a failure.
 pub fn close(fd: usize) -> isize {
     syscall!(SYS_CLOSE, fd)
 }

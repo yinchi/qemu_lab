@@ -7,6 +7,8 @@
 //!   probe fds           opens files until the kernel says no, then closes them all
 //!   probe close-out     closes fd 1, tries to write to it, and reports both results on fd 2 -- run as
 //!                      `> f 2>&1` to show that closing one fd leaves the file the other fd shares open
+//!   probe leak-write PATH [crash]  writes a line to PATH and ends without closing it, by exiting or (`crash`)
+//!                      by faulting: the kernel must still commit the file's size
 //!   probe reboot-wide   `reboot` with power-off's command in the low 32 bits and a bit set above them:
 //!                      must be `EINVAL`, not a power-off (this program printing anything proves it lived)
 //!   probe getdents-small  `getdents` with buffers under one record (`EINVAL`), on a file (`ENOTDIR`), and
@@ -87,6 +89,18 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             let _ = writeln!(Fd(2), "close(1)={closed} write(1)={written}");
             0
         }
+        Some("leak-write") => match args.next() {
+            Some(path) => {
+                let fd = userlib::open(path, userlib::O_WRONLY);
+                let _ = userlib::write(fd as usize, b"written\n");
+                if args.next() == Some("crash") {
+                    // SAFETY: none -- address 0 is unmapped, so this faults on purpose.
+                    let _ = unsafe { core::ptr::read_volatile(core::ptr::null::<u8>()) };
+                }
+                0
+            }
+            None => usage_exit("probe leak-write PATH [crash]"),
+        },
         Some("reboot-wide") => {
             let wide = 0x1_0000_0000 | abi::reboot::LINUX_REBOOT_CMD_POWER_OFF as usize;
             let _ = writeln!(out, "reboot({wide:#x}): {}", raw(abi::syscall::SYS_REBOOT, wide, 0, 0, 0));
@@ -197,7 +211,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|close-out|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|close-out|leak-write|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
             2
         }
     }

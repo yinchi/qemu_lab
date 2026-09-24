@@ -25,7 +25,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 11c | `poweroff`/`reboot` via PSCI | done |
 | 12 | Line editing and history | done |
 | 13 | Docs, roadmap, docs check (its regression tests run at the end of 13b) | done |
-| 13b | Open-file reference counting (`Rc`) and small syscall-surface fixes | in progress: 13b-1 to 13b-3 done |
+| 13b | Open-file reference counting (`Rc`) and small syscall-surface fixes | done |
 
 ## Goal
 Turn Stage 10's launcher into a shell worth typing at -- line editing with history, `cd`/`pwd`/`mkdir`/`rm`/`mv`,
@@ -1366,7 +1366,7 @@ each other, in that order: the code was made self-consistent first, then the doc
 - **Verification:** host tests, and the full QEMU suite in 17 groups, pass. The `user/` crates changed only in a
   doc comment (`userlib`'s `open`).
 
-### Step 13b: open-file reference counting with `Rc`, and small syscall-surface fixes (`fs/files.rs`, `syscall/fd.rs`, `exec/frame_stack.rs`, `shell/mod.rs`, `arch/vectors.s`) (planned)
+### Step 13b: open-file reference counting with `Rc`, and small syscall-surface fixes (`fs/files.rs`, `syscall/fd.rs`, `exec/frame_stack.rs`, `shell/mod.rs`, `syscall/power.rs`) (done)
 Everything the Step 13 documentation check found that is a real behavior problem rather than a wording one,
 deliberately deferred until after that step's code review so it doesn't mix with it. One subsection per problem;
 each records whether it has been agreed.
@@ -1476,16 +1476,38 @@ each records whether it has been agreed.
     in a newline and two `% 16 == 0` checks.
   - No behavior changed apart from the `reboot` fix; the full suite passes. `just lint` is clean.
 
-#### 13b-4: a review pass over the rewritten code
+#### 13b-4: a review pass over the rewritten code (done)
 After 13b-1 to 13b-3, read what they rewrote (`fs/files.rs`, `syscall/fd.rs`, the redirect and pipeline paths in
 `shell/mod.rs`, `exec/frame_stack.rs`) once more for aliasing, lifetime and stale-comment problems, and update the
 docs the change touches (`syscalls.md`, `filesystem.md`, `shell.md`, the "known limitations" of Step 13). Done after
 the changes, not before, because it is the new code that has not yet been read critically.
 
-#### 13b-5: the regression tests, last (T13.1 and T13.2)
+- **As built.** Read `fs/files.rs`, `syscall/fd.rs`, `shell/mod.rs`, `exec/frame_stack.rs`, `shell_state.rs` and the
+  launch path for aliasing, lifetime and stale-comment problems. Findings:
+  - **A real bug, fixed:** `process::prepare` called `fd::reset_for_launch()` *before* building the argument stack,
+    and that step can still fail (`ArgsTooBig`, though the dry run makes it unreachable in practice). The reset now
+    puts the shell's redirect files into the fd table, and only `end_launch` empties it, so a failure there would
+    have left the table holding references, and the redirect's file would not have been committed when its
+    segment ended. `reset_for_launch` now runs last, after the last fallible step. (The old `close_all` design
+    had no such window.)
+  - **A test gap, closed:** nothing checked that the implicit close on program exit still commits a file, the job
+    `close_all` used to do and `OpenFile`'s `Drop` does now. `probe leak-write PATH [crash]` writes and ends without
+    closing, by exiting or by faulting; both files must read back complete (`launch.py`).
+  - Checked and fine: no path can borrow an `OpenFile`'s `RefCell` twice (syscalls never nest, and `Drop` and
+    `finish` do not borrow); `LIVE_FILES` is incremented only in `OpenFile::new` and decremented only in its `Drop`;
+    `EMFILE` order is unchanged (an fd slot, then the file limit); a pipeline stage's files are released when its
+    `with_stdio` scope restores, before the next stage opens its read side; a failed redirect drops the earlier
+    ones with the same scope; `with_scope` clones bindings and `pop` releases them.
+  - Comments brought up to date: `process::run` (drops fds, not "closes files"), `userlib::close`.
+
+#### 13b-5: the regression tests, last (T13.1 and T13.2) (done)
 Run once the code and docs are final, in this order: T13.2, rebuild r09-r11 against the modified `user/` crates and
 run r11's own suite; then T13.1, one clean `just test` from a fresh checkout state (delete `disk.img` and `target/`),
 which also runs the docs check. (The manual check on a real display, T12.6/T13.4, remains the user's.)
+- **Result.** After `cargo clean` in every crate the stage builds and deleting `disk.img` and the kernel ELFs: r09 and r10
+  build and produce their disk images with no warnings or errors, and r11's `just test` passes (50 checks). A fresh
+  `just test` in `r12_shell` passes: 136 host tests in `hosttests`, 13 in `abi`, and 491 QEMU checks in 17 groups, `fsck.fat`
+  clean after each. `just lint` is clean.
 
 #### Deliberately not done here
 - **`open` with `O_APPEND` and no `O_WRONLY`** is accepted as a plain read-only open with the append ignored. That

@@ -72,7 +72,7 @@ def run(ctx):
 
     # --- syscall error values ---
     check("probe without a subcommand", s.run("tests/probe.exe"),
-          "tests/probe.exe\nusage: probe sys-unknown|bad-ptr|fds|close-out|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...\nexit 2\n")
+          "tests/probe.exe\nusage: probe sys-unknown|bad-ptr|fds|close-out|leak-write|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...\nexit 2\n")
     check("unknown syscall is ENOSYS", s.run("tests/probe.exe sys-unknown"),
           "tests/probe.exe sys-unknown\nunknown syscall: -38\n")
     check("ioctl on a closed fd is EBADF", s.run("tests/probe.exe ioctl 3 1"),
@@ -113,6 +113,14 @@ def run(ctx):
           "one byte short: -22\n"
           "on a file, too small: -20\n"
           "exactly one record: 261\n")
+
+    # --- a file left open when the program ends is closed, and its size committed, by the kernel ---
+    check("a program that exits without closing its file", s.run("tests/probe.exe leak-write tests/leaked.txt"),
+          "tests/probe.exe leak-write tests/leaked.txt\n")
+    check("...still has the written size", s.run("cat tests/leaked.txt"), "cat tests/leaked.txt\nwritten\n")
+    crashed = s.run("tests/probe.exe leak-write tests/crashed.txt crash")
+    check("a program that faults with a file open is stopped", "Segmentation fault" in crashed and crashed.endswith("exit 139\n"), True)
+    check("...and its file was still committed", s.run("cat tests/crashed.txt"), "cat tests/crashed.txt\nwritten\n")
 
     # --- reboot's command is the whole register, not its low 32 bits ---
     check("reboot with a wide command is EINVAL and does not power off",
