@@ -1356,6 +1356,21 @@ each other, in that order: the code was made self-consistent first, then the doc
   `syscall.rs`, `run_program`, `argv`) were fixed, `KEY_D`'s comment became a `///`, and `main.rs`'s layering
   comment records the one deliberate exception (`exec::process` calls `syscall::fd`).
 - **Deliberately left alone:** the line-by-line comments in `user/progs/`, which explain what `read`'s results mean.
+- **The golden comparison was retired** (after Step 13b): `test/golden/step04_r11.json` and `mkgolden.py` are gone, and
+  `line_discipline.py` now checks the same 12 transcripts with the expected text written in. Step 4's job for it (proving
+  a refactor changed nothing, against r11) was done, and a test should state the behavior *as of this stage*, not
+  compare with an earlier stage's kernel. Step 4's own record above describes it as it was at the time.
+- **Error wording aligned with GNU coreutils, across the whole Stage 12 tier** (after Step 13b), decided in one pass rather
+  than left for later stages: `cannot remove/stat/create directory/create regular file/move 'x'` and `error reading`
+  wording for failed operations, `invalid option -- 'x'` / `unrecognized option '--foo'` and `missing operand` /
+  `missing file operand` / `extra operand 'x'` / `target 'd' is not a directory` (each followed by `Try 'prog --help' for
+  more information.`), `invalid number of lines: 'x'`, `invalid mode: 'x'` (only four symbolic modes exist, so `755` is
+  invalid), the `same file` and `subdirectory of itself` refusals for `cp`/`mv`, and `rm`'s three refusals. The helpers are
+  the new additive `progs::diag`. Frozen wording stays with the base tier, whose programs r09-r11's tests pin
+  (`echo true false hello crash`, and `cat wc hexdump cp head tail ls chmod` as r11 builds them): the Stage 12 tier
+  *replaces* `cat`, `wc` and `hexdump` by name, as it already did `cp head ls tail chmod`. `tee`, a Stage 12 program that
+  had been put in the base tier, moved to `progs_r12` (r11 no longer builds it; r11's tests never used it). `cat`, `wc` and
+  `tee` keep GNU's bare `prog: path: reason`, which is what GNU prints for them. `docs/progs.md` states the rule.
 - **A docs check script** (`test/check_docs.py`, `just check-docs`, first in `just test`): every program in every tier has a
   `progs.md` row, every `abi` syscall a `syscalls.md` row, every `test/progs` program a `test/README.md` entry, and no
   test program's name exists under `user/`.
@@ -1757,9 +1772,9 @@ unknown -> `ENOSYS`, bad pointer -> `EFAULT`. Reference: `docs/syscalls.md`.
 not supported). **Line editing at the prompt:** arrows, Home/End, Delete/Backspace, Ctrl+A/E/U/K, and history (Up/Down); a program's
 `read(0)` gets a real tty's canonical mode (Backspace, Ctrl+U, Ctrl+D as end-of-file or partial delivery). Prompt `> `.
 Reference: `docs/shell.md`, `docs/console.md`, `docs/shell.ebnf`.
-**User programs (`user/progs` and `user/progs_r12`, core utils only):** the base tier (Stages 9-11 and `tee`) is `echo cat ls cp head
-tail wc hexdump true false chmod tee`, plus Stage 9's `hello`/`crash`; `progs_r12` adds `clear pwd mkdir rm mv stat poweroff reboot`
-and overrides `chmod cp head ls tail`; all with rows in `docs/progs.md`. **Test programs and fixtures** live only in
+**User programs (`user/progs` and `user/progs_r12`, core utils only):** the base tier (Stages 9-11) is `echo cat ls cp head
+tail wc hexdump true false chmod`, plus Stage 9's `hello`/`crash`; `progs_r12` adds `clear pwd mkdir rm mv stat tee poweroff reboot`
+and overrides `chmod cp head ls tail cat wc hexdump` (in GNU's diagnostic wording, `progs::diag`); all with rows in `docs/progs.md`. **Test programs and fixtures** live only in
 `r12_shell/test/progs/` -> `disk/tests/` (`probe overflow spin` + fixtures), documented in `r12_shell/test/README.md`; the shared
 `abi` crate sits beside `userlib` as a library, not a binary.
 **Disk and memory:** 64 MiB FAT16 (`bin/ fonts/ home/ tests/ tmp/`), gitignored image. The kernel image is about 23 MiB: heap
@@ -1884,7 +1899,7 @@ By area (the ground truth for any file is `git log`; this is the shape):
   the power syscall and PSCI (`syscall/power.rs`, `arch/psci.rs`), and `arch/` changes (`mmu.rs` for real, `vectors.s`
   including the exception stack, `context.s`); `link.ld` (kernel stack guard); `justfile`; `hosttests/`; `test/` (harness,
   runner, one module per area, `progs/`, fixtures); `disk/` fixtures.
-- **Shared crates, `rust/user/`:** `abi` (new), `userlib`, `progs` (`tee`, additive), and the new tier `progs_r12`
+- **Shared crates, `rust/user/`:** `abi` (new), `userlib`, `progs` (`diag`, additive), and the new tier `progs_r12`
   (`clear pwd mkdir rm mv stat poweroff reboot` and overrides of `chmod cp head ls tail`); nothing test-only.
 - **Docs and plans:** `rust/docs/` (rewritten and extended in Step 13), `r12_shell/test/README.md`, `ROADMAP.md` (Stage 12
   summary and forward-connection edits), `Stage12.md`.

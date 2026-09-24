@@ -7,7 +7,7 @@
 
 use core::fmt::Write;
 
-use progs::{Fd, fail, help, unknown_option};
+use progs::{Fd, diag, help};
 use userlib::{ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, DirEnt, ExitCode, O_RDONLY, close, getdents, open};
 
 userlib::entry_with_args!(run);
@@ -25,7 +25,12 @@ const BATCH: usize = 8;
 fn list_one(dir: &str, classify: bool, long: bool) -> Result<(), ()> {
     let fd = open(dir, O_RDONLY);
     if fd < 0 {
-        fail("ls", dir, fd);
+        // GNU: a name that does not exist is "cannot access"; a directory that will not open, "cannot open directory".
+        if fd == abi::errno::ENOENT {
+            diag::cannot("ls", "access", dir, fd);
+        } else {
+            diag::cannot("ls", "open directory", dir, fd);
+        }
         return Err(());
     }
     let fd = fd as usize;
@@ -36,7 +41,12 @@ fn list_one(dir: &str, classify: bool, long: bool) -> Result<(), ()> {
     loop {
         let n = getdents(fd, &mut buf);
         if n < 0 {
-            fail("ls", dir, n);
+            // Opened, but not a directory (this `ls` cannot list a plain file): GNU calls that "cannot open directory".
+            if n == abi::errno::ENOTDIR {
+                diag::cannot("ls", "open directory", dir, n);
+            } else {
+                diag::report("ls", "reading directory", dir, n);
+            }
             ok = false;
             break;
         }
@@ -79,7 +89,7 @@ fn run(args: userlib::Args) -> ExitCode {
         } else if arg == "-l" {
             long = true;
         } else if arg.len() > 1 && arg.starts_with('-') {
-            return unknown_option("ls", arg);
+            return diag::invalid_option("ls", arg);
         } else {
             n_dirs += 1;
         }

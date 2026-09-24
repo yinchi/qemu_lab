@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use progs::{CHUNK, CountMode, Input, fail, parse_lines_or_bytes_args, write_all};
+use progs::{CHUNK, CountMode, Input, diag, parse_lines_or_bytes_args, write_all};
 use userlib::{ExitCode, read};
 
 userlib::entry_with_args!(run);
@@ -30,7 +30,7 @@ fn run(args: userlib::Args) -> ExitCode {
     let input = match Input::open(parsed.file) {
         Ok(input) => input,
         Err(e) => {
-            fail("head", name, e);
+            diag::input_error("head", name, e);
             return ExitCode(1);
         }
     };
@@ -44,7 +44,7 @@ fn run(args: userlib::Args) -> ExitCode {
 
         // Negative n: indicates an error occurred while reading.
         if n < 0 {
-            fail("head", name, n);
+            diag::report("head", "error reading", name, n);
             return ExitCode(1);
         }
         // Zero n: indicates end of file.
@@ -80,7 +80,7 @@ fn run(args: userlib::Args) -> ExitCode {
         // Write the chunk up to the determined end position.
         // Return an error if writing fails.
         if let Err(e) = write_all(1, &chunk[..end]) {
-            fail("head", "stdout", e);
+            diag::write_error("head", e);
             return ExitCode(1);
         }
     }

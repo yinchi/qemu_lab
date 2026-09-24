@@ -1,15 +1,16 @@
 //! `chmod +x|-x|+w|-w [-R] file...` -- see `docs/progs.md`. Stage 12's tier replaces the base
-//! `chmod` (one file only, and hand-rolled its "invalid mode" message inconsistently with every
-//! other program's error wording) with multi-file and `-R` support -- `-R` needs the `stat`
-//! syscall this stage adds, which r09-r11's older kernels don't have.
+//! `chmod` (one file only) with multi-file and `-R` support -- `-R` needs the `stat` syscall this stage
+//! adds, which r09-r11's older kernels don't have. Only those four symbolic modes exist (a single
+//! user, and FAT has just an executable bit and a read-only bit), so anything else, an octal `755`
+//! included, is an invalid mode.
 
 #![no_std]
 #![no_main]
 
 use core::fmt::Write;
 
-use abi::errno::ENAMETOOLONG;
-use progs::{Fd, PathBuf, fail, help, unknown_option, usage};
+use abi::errno::{ENAMETOOLONG, ENOENT};
+use progs::{Fd, PathBuf, diag, help};
 use userlib::{
     ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, DirEnt, ExitCode, O_RDONLY, chmod,
     close, getdents, open, stat,
@@ -70,11 +71,20 @@ fn chmod_recursive(path: &str, set: u8, clear: u8) -> Result<(), isize> {
     }
 }
 
+/// GNU's wording: a name that does not exist is "cannot access", any other failure "changing permissions of".
+fn report(path: &str, code: isize) {
+    if code == ENOENT {
+        diag::cannot("chmod", "access", path, code);
+    } else {
+        diag::report("chmod", "changing permissions of", path, code);
+    }
+}
+
 fn run(args: userlib::Args) -> ExitCode {
     let mut args = args.skip(1);
 
     let Some(mode) = args.next() else {
-        return usage(USAGE);
+        return diag::missing_operand("chmod");
     };
     if mode == "--help" {
         return help(USAGE, FLAGS);
@@ -87,7 +97,7 @@ fn run(args: userlib::Args) -> ExitCode {
         "+w" => (0, ATTR_READ_ONLY),
         "-w" => (ATTR_READ_ONLY, 0),
         _ => {
-            let _ = writeln!(Fd(2), "chmod: {mode}: invalid mode");
+            let _ = writeln!(Fd(2), "chmod: invalid mode: '{mode}'");
             return ExitCode(1);
         }
     };
@@ -102,14 +112,14 @@ fn run(args: userlib::Args) -> ExitCode {
             continue;
         }
         if path.len() > 1 && path.starts_with('-') {
-            return unknown_option("chmod", path);
+            return diag::invalid_option("chmod", path);
         }
         any = true;
 
         let mut ok = true;
         let r = chmod(path, set, clear);
         if r < 0 {
-            fail("chmod", path, r);
+            report(path, r);
             ok = false;
         }
 
@@ -117,13 +127,13 @@ fn run(args: userlib::Args) -> ExitCode {
             match stat(path) {
                 Ok(info) if info.attrs & ATTR_DIRECTORY != 0 => {
                     if let Err(e) = chmod_recursive(path, set, clear) {
-                        fail("chmod", path, e);
+                        report(path, e);
                         ok = false;
                     }
                 }
                 Ok(_) => {} // a plain file: -R beyond the chmod already done is a no-op
                 Err(e) => {
-                    fail("chmod", path, e);
+                    report(path, e);
                     ok = false;
                 }
             }
@@ -135,7 +145,7 @@ fn run(args: userlib::Args) -> ExitCode {
     }
 
     if !any {
-        return usage(USAGE);
+        return diag::missing_operand_after("chmod", mode);
     }
 
     ExitCode(status)

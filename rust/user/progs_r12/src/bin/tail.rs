@@ -9,7 +9,7 @@
 #![no_std]
 #![no_main]
 
-use progs::{CHUNK, CountMode, EINVAL, Input, fail, parse_lines_or_bytes_args, write_all};
+use progs::{CHUNK, CountMode, EINVAL, Input, diag, parse_lines_or_bytes_args, write_all};
 use userlib::{ExitCode, read};
 
 userlib::entry_with_args!(run);
@@ -96,7 +96,7 @@ fn run(args: userlib::Args) -> ExitCode {
     match result {
         Ok(()) => ExitCode(0),
         Err(e) => {
-            fail("tail", name, e);
+            diag::input_error("tail", name, e);
             ExitCode(1)
         }
     }

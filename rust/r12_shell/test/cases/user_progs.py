@@ -27,29 +27,30 @@ def run(ctx):
     check("mkdir creates a directory", s.run("mkdir tests/newdir"), "mkdir tests/newdir\n")
     check("ls on the new (empty) directory", s.run("ls tests/newdir"), "ls tests/newdir\n")
     check("mkdir again is File exists", s.run("mkdir tests/newdir"),
-          "mkdir tests/newdir\nmkdir: tests/newdir: File exists\nexit 1\n")
+          "mkdir tests/newdir\nmkdir: cannot create directory 'tests/newdir': File exists\nexit 1\n")
     check("mkdir under a missing parent", s.run("mkdir tests/nosuchparent/x"),
-          "mkdir tests/nosuchparent/x\nmkdir: tests/nosuchparent/x: No such file or directory\nexit 1\n")
+          "mkdir tests/nosuchparent/x\nmkdir: cannot create directory 'tests/nosuchparent/x': No such file or directory\nexit 1\n")
     check("mkdir multi-operand continues past a failure", s.run("mkdir tests/newdir tests/newdir2"),
-          "mkdir tests/newdir tests/newdir2\nmkdir: tests/newdir: File exists\nexit 1\n")
+          "mkdir tests/newdir tests/newdir2\nmkdir: cannot create directory 'tests/newdir': File exists\nexit 1\n")
     check("...but the second operand was still created", s.run("ls tests/newdir2"), "ls tests/newdir2\n")
 
     # ================================================================= rm
     check("rm refuses a directory without -r", s.run("rm tests/newdir"),
-          "rm tests/newdir\nrm: tests/newdir: Is a directory\nexit 1\n")
+          "rm tests/newdir\nrm: cannot remove 'tests/newdir': Is a directory\nexit 1\n")
     check("rm -r removes an empty directory", s.run("rm -r tests/newdir"), "rm -r tests/newdir\n")
     check("...it's really gone", s.run("ls tests/newdir"),
-          "ls tests/newdir\nls: tests/newdir: No such file or directory\nexit 1\n")
+          "ls tests/newdir\nls: cannot access 'tests/newdir': No such file or directory\nexit 1\n")
     check("rm on a missing file", s.run("rm tests/nosuchfile"),
-          "rm tests/nosuchfile\nrm: tests/nosuchfile: No such file or directory\nexit 1\n")
+          "rm tests/nosuchfile\nrm: cannot remove 'tests/nosuchfile': No such file or directory\nexit 1\n")
     check("rm -f on a missing file is silent", s.run("rm -f tests/nosuchfile"), "rm -f tests/nosuchfile\n")
-    check("rm .", s.run("rm ."), "rm .\nrm: .: Invalid argument\nexit 1\n")
-    check("rm ..", s.run("rm .."), "rm ..\nrm: ..: Invalid argument\nexit 1\n")
-    check("rm /", s.run("rm /"), "rm /\nrm: /: Invalid argument\nexit 1\n")
-    check("rm -r / is refused too", s.run("rm -r /"), "rm -r /\nrm: /: Invalid argument\nexit 1\n")
+    check("rm .", s.run("rm ."), "rm .\nrm: refusing to remove '.' or '..' directory: skipping '.'\nexit 1\n")
+    check("rm ..", s.run("rm .."), "rm ..\nrm: refusing to remove '.' or '..' directory: skipping '..'\nexit 1\n")
+    check("rm /", s.run("rm /"), "rm /\nrm: cannot remove '/': Is a directory\nexit 1\n")
+    check("rm -r / is refused too", s.run("rm -r /"),
+          "rm -r /\nrm: it is dangerous to operate recursively on '/'\nexit 1\n")
     check("rm -r on a populated 3-level tree", s.run("rm -r tests/tree"), "rm -r tests/tree\n")
     check("...the whole tree is gone", s.run("ls tests/tree"),
-          "ls tests/tree\nls: tests/tree: No such file or directory\nexit 1\n")
+          "ls tests/tree\nls: cannot access 'tests/tree': No such file or directory\nexit 1\n")
 
     s.run("cp tests/hello.txt tests/rmtarget.txt")
     s.run("chmod -w tests/rmtarget.txt")
@@ -61,7 +62,7 @@ def run(ctx):
     s.run("cp tests/hello.txt tests/mvsrc.txt")
     check("mv renames", s.run("mv tests/mvsrc.txt tests/mvdst.txt"), "mv tests/mvsrc.txt tests/mvdst.txt\n")
     check("the old name is gone", s.run("ls tests/mvsrc.txt"),
-          "ls tests/mvsrc.txt\nls: tests/mvsrc.txt: No such file or directory\nexit 1\n")
+          "ls tests/mvsrc.txt\nls: cannot access 'tests/mvsrc.txt': No such file or directory\nexit 1\n")
     check("the new name has the content", s.run("cat tests/mvdst.txt"), "cat tests/mvdst.txt\n" + hello_txt)
 
     check("mv into an existing directory", s.run("mv tests/mvdst.txt tests/mvdir"),
@@ -70,9 +71,11 @@ def run(ctx):
           "cat tests/mvdir/mvdst.txt\n" + hello_txt)
 
     check("mv a file onto itself", s.run("mv tests/mvdir/mvdst.txt tests/mvdir/mvdst.txt"),
-          "mv tests/mvdir/mvdst.txt tests/mvdir/mvdst.txt\nmv: tests/mvdir/mvdst.txt: Invalid argument\nexit 1\n")
+          "mv tests/mvdir/mvdst.txt tests/mvdir/mvdst.txt\n"
+          "mv: 'tests/mvdir/mvdst.txt' and 'tests/mvdir/mvdst.txt' are the same file\nexit 1\n")
     check("mv a directory into its own descendant", s.run("mv tests/mvdir tests/mvdir/sub"),
-          "mv tests/mvdir tests/mvdir/sub\nmv: tests/mvdir: Invalid argument\nexit 1\n")
+          "mv tests/mvdir tests/mvdir/sub\n"
+          "mv: cannot move 'tests/mvdir' to a subdirectory of itself, 'tests/mvdir/sub'\nexit 1\n")
 
     s.run("cp tests/hello.txt tests/repl1.txt")
     s.run("cp tests/notes.txt tests/repl2.txt")
@@ -82,10 +85,10 @@ def run(ctx):
           "cat tests/repl2.txt\n" + hello_txt)
 
     check("mv refuses to replace a file with a directory", s.run("mv tests/mvdir tests/repl2.txt"),
-          "mv tests/mvdir tests/repl2.txt\nmv: tests/mvdir: File exists\nexit 1\n")
+          "mv tests/mvdir tests/repl2.txt\nmv: cannot move 'tests/mvdir' to 'tests/repl2.txt': File exists\nexit 1\n")
 
     check("mv onto a missing directory with a trailing slash", s.run("mv tests/hello.txt tests/nosuchdir/"),
-          "mv tests/hello.txt tests/nosuchdir/\nmv: tests/nosuchdir/: Not a directory\nexit 1\n")
+          "mv tests/hello.txt tests/nosuchdir/\nmv: cannot move 'tests/hello.txt' to 'tests/nosuchdir/': Not a directory\nexit 1\n")
 
     s.run("mkdir tests/multidst")
     s.run("cp tests/hello.txt tests/msrc1.txt")
@@ -99,7 +102,7 @@ def run(ctx):
           "cat tests/multidst/msrc2.txt\n" + notes_txt)
     check("mv with several sources onto a non-directory is a usage error", s.run("mv tests/x tests/y tests/z"),
           "mv tests/x tests/y tests/z\n"
-          "usage: mv SRC SRC... DIR  (more than one source requires an existing directory destination)\nexit 1\n")
+          "mv: target 'tests/z' is not a directory\nexit 1\n")
 
     # ================================================================= stat
     def stat_block(name, size, kind, ro, exe, dt):
@@ -131,7 +134,7 @@ def run(ctx):
           stat_block("tests/statfresh.txt", len(hello_txt), "regular file", "no", "no", "1980-01-01 00:00:00"))
 
     check("stat a missing file", s.run("stat tests/nosuchstat"),
-          "stat tests/nosuchstat\nstat: tests/nosuchstat: No such file or directory\nexit 1\n")
+          "stat tests/nosuchstat\nstat: cannot stat 'tests/nosuchstat': No such file or directory\nexit 1\n")
 
     # ================================================================= cp: multi-source + directory dest
     s.run("mkdir tests/cpdst")
@@ -146,9 +149,9 @@ def run(ctx):
     check("chmod on several files at once", s.run("chmod -w tests/chmod1.txt tests/chmod2.txt"),
           "chmod -w tests/chmod1.txt tests/chmod2.txt\n")
     check("...first file is now read-only", s.run("cp tests/hello.txt tests/chmod1.txt"),
-          "cp tests/hello.txt tests/chmod1.txt\ncp: tests/chmod1.txt: Permission denied\nexit 1\n")
+          "cp tests/hello.txt tests/chmod1.txt\ncp: cannot create regular file 'tests/chmod1.txt': Permission denied\nexit 1\n")
     check("...second file is now read-only", s.run("cp tests/hello.txt tests/chmod2.txt"),
-          "cp tests/hello.txt tests/chmod2.txt\ncp: tests/chmod2.txt: Permission denied\nexit 1\n")
+          "cp tests/hello.txt tests/chmod2.txt\ncp: cannot create regular file 'tests/chmod2.txt': Permission denied\nexit 1\n")
 
     s.run("mkdir tests/rtree")
     s.run("mkdir tests/rtree/sub")
@@ -156,9 +159,9 @@ def run(ctx):
     s.run("cp tests/hello.txt tests/rtree/sub/f2.txt")
     check("chmod -w -R recurses into a directory", s.run("chmod -w -R tests/rtree"), "chmod -w -R tests/rtree\n")
     check("...a direct child is now read-only", s.run("cp tests/hello.txt tests/rtree/f1.txt"),
-          "cp tests/hello.txt tests/rtree/f1.txt\ncp: tests/rtree/f1.txt: Permission denied\nexit 1\n")
+          "cp tests/hello.txt tests/rtree/f1.txt\ncp: cannot create regular file 'tests/rtree/f1.txt': Permission denied\nexit 1\n")
     check("...and so is a grandchild, two levels down", s.run("cp tests/hello.txt tests/rtree/sub/f2.txt"),
-          "cp tests/hello.txt tests/rtree/sub/f2.txt\ncp: tests/rtree/sub/f2.txt: Permission denied\nexit 1\n")
+          "cp tests/hello.txt tests/rtree/sub/f2.txt\ncp: cannot create regular file 'tests/rtree/sub/f2.txt': Permission denied\nexit 1\n")
 
     # ================================================================= trivial/moderate flags
     # The shell's own "start a fresh line before drawing the next prompt" behavior (used for
@@ -191,7 +194,7 @@ def run(ctx):
     check("head -c", s.run("head -c 5 tests/hello.txt"), "head -c 5 tests/hello.txt\n" + hello_txt[:5] + "\n")
     check("tail -c", s.run("tail -c 5 tests/hello.txt"), "tail -c 5 tests/hello.txt\n" + hello_txt[-5:])
     check("head -c and -n together is a usage error", s.run("head -n 1 -c 1 tests/hello.txt"),
-          "head -n 1 -c 1 tests/hello.txt\nusage: head [-n N | -c N] [file]\nexit 1\n")
+          "head -n 1 -c 1 tests/hello.txt\nhead: options '-n' and '-c' are mutually exclusive\nTry 'head --help' for more information.\nexit 1\n")
 
     # ================================================================= --help
     check("mkdir --help", s.run("mkdir --help"), "mkdir --help\nusage: mkdir DIR...\n")
@@ -229,3 +232,40 @@ def run(ctx):
     check("false --help", s.run("false --help"), "false --help\nusage: false\n")
     check("pwd --help", s.run("pwd --help"), "pwd --help\nusage: pwd\n")
     check("clear --help", s.run("clear --help"), "clear --help\nusage: clear\n")
+
+    # ================================================================= GNU-shaped diagnostics
+    # Option and operand errors: GNU's wording, then its `Try` line. (Bare `prog: path: reason` stays
+    # for cat/wc/tee, where GNU words it that way too.)
+    def try_line(prog):
+        return f"Try '{prog} --help' for more information.\n"
+
+    def refused(cmd, message):
+        prog = cmd.split()[0]
+        check(f"{cmd!r} is refused", s.run(cmd), f"{cmd}\n{prog}: {message}\n{try_line(prog)}exit 1\n")
+
+    refused("cat -x", "invalid option -- 'x'")
+    refused("cat --foo", "unrecognized option '--foo'")
+    refused("wc -lx", "invalid option -- 'x'")
+    refused("tee -z", "invalid option -- 'z'")
+    refused("rm -rq x", "invalid option -- 'q'")
+    refused("hexdump tests/hello.txt tests/notes.txt", "extra operand 'tests/notes.txt'")
+    refused("reboot now", "extra operand 'now'")
+    refused("rm", "missing operand")
+    refused("mkdir", "missing operand")
+    refused("stat", "missing operand")
+    refused("chmod", "missing operand")
+    refused("chmod +x", "missing operand after '+x'")
+    refused("cp", "missing file operand")
+    refused("cp tests/hello.txt", "missing destination file operand after 'tests/hello.txt'")
+    refused("mv", "missing file operand")
+    refused("mv tests/hello.txt", "missing destination file operand after 'tests/hello.txt'")
+
+    # Failures reading input, worded as GNU's head/tail do.
+    check("head on a missing file", s.run("head tests/nosuch.txt"),
+          "head tests/nosuch.txt\nhead: cannot open 'tests/nosuch.txt' for reading: No such file or directory\nexit 1\n")
+    check("tail on a missing file", s.run("tail tests/nosuch.txt"),
+          "tail tests/nosuch.txt\ntail: cannot open 'tests/nosuch.txt' for reading: No such file or directory\nexit 1\n")
+    check("head on a directory", s.run("head tests"),
+          "head tests\nhead: error reading 'tests': Is a directory\nexit 1\n")
+    check("cat on a missing file stays in GNU's bare form", s.run("cat tests/nosuch.txt"),
+          "cat tests/nosuch.txt\ncat: tests/nosuch.txt: No such file or directory\nexit 1\n")

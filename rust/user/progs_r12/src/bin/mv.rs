@@ -7,8 +7,10 @@
 #![no_std]
 #![no_main]
 
+use core::fmt::Write;
+
 use abi::errno::{EEXIST, EINVAL, ENAMETOOLONG, ENOENT, ENOTDIR};
-use progs::{PathBuf, basename, fail, help, unknown_option, usage};
+use progs::{Fd, PathBuf, basename, diag, errmsg, help};
 use userlib::{ATTR_DIRECTORY, ExitCode, rename, stat, unlink};
 
 userlib::entry_with_args!(run);
@@ -19,20 +21,48 @@ const FLAGS: &[(&str, &str)] = &[];
 /// Moves `src` to `dst`, or -- if `dst_is_dir` -- into `dst` under `src`'s own basename. Replaces
 /// an existing plain-file target (matching real `mv`(1)/`rename(2)`); refuses (`File exists`)
 /// whenever either side of a replacement would be a directory, since a partial replace could
-/// orphan a directory's contents.
-fn move_one(src: &str, dst: &str, dst_is_dir: bool) -> Result<(), isize> {
+/// orphan a directory's contents. Reports its own failures (GNU's wording where it has some) and
+/// returns `Err(())` for one.
+fn move_one(src: &str, dst: &str, dst_is_dir: bool) -> Result<(), ()> {
     let joined;
     let target: &str = if dst_is_dir {
-        joined = PathBuf::join(dst, basename(src)).ok_or(ENAMETOOLONG)?;
-        joined.as_str()
+        match PathBuf::join(dst, basename(src)) {
+            Some(p) => {
+                joined = p;
+                joined.as_str()
+            }
+            None => {
+                let _ = writeln!(Fd(2), "mv: cannot move '{src}' to '{dst}': {}", errmsg(ENAMETOOLONG));
+                return Err(());
+            }
+        }
     } else {
         dst
     };
 
     if src == target {
-        return Err(EINVAL);
+        let _ = writeln!(Fd(2), "mv: '{src}' and '{target}' are the same file");
+        return Err(());
     }
 
+    match try_move(src, target) {
+        Ok(()) => Ok(()),
+        // The kernel's `rename` refuses moving a directory into itself with EINVAL. That is also its
+        // answer to a name FAT cannot hold, so only say "subdirectory" when the paths look like it.
+        Err(EINVAL) if target.strip_prefix(src).is_some_and(|rest| rest.starts_with('/')) => {
+            let _ = writeln!(Fd(2), "mv: cannot move '{src}' to a subdirectory of itself, '{target}'");
+            Err(())
+        }
+        Err(e) => {
+            let _ = writeln!(Fd(2), "mv: cannot move '{src}' to '{target}': {}", errmsg(e));
+            Err(())
+        }
+    }
+}
+
+/// The move itself, once `target` is settled: probes `target` with `stat`, then renames (replacing
+/// a plain-file target first).
+fn try_move(src: &str, target: &str) -> Result<(), isize> {
     match stat(target) {
         Err(ENOENT) => {
             let r = rename(src, target);
@@ -60,36 +90,42 @@ fn move_one(src: &str, dst: &str, dst_is_dir: bool) -> Result<(), isize> {
 fn run(args: userlib::Args) -> ExitCode {
     // First pass: validate operands, count them, and capture the last one as dst.
     let mut count = 0usize;
+    let mut first: Option<&str> = None;
     let mut dst: Option<&str> = None;
     for arg in args.skip(1) {
         if arg == "--help" {
             return help(USAGE, FLAGS);
         }
         if arg.len() > 1 && arg.starts_with('-') {
-            return unknown_option("mv", arg);
+            return diag::invalid_option("mv", arg);
         }
         count += 1;
+        first.get_or_insert(arg);
         dst = Some(arg);
     }
     let Some(dst) = dst.filter(|_| count >= 2) else {
-        return usage(USAGE);
+        return match first {
+            Some(src) => diag::missing_destination_operand("mv", src),
+            None => diag::missing_file_operand("mv"),
+        };
     };
 
     let dst_is_dir = match stat(dst) {
         Ok(info) => info.attrs & ATTR_DIRECTORY != 0,
         Err(ENOENT) => false,
         Err(e) => {
-            fail("mv", dst, e);
+            diag::cannot("mv", "stat", dst, e);
             return ExitCode(1);
         }
     };
 
     let n_src = count - 1;
     if n_src > 1 && !dst_is_dir {
-        return usage("mv SRC SRC... DIR  (more than one source requires an existing directory destination)");
+        return diag::target_not_directory("mv", dst);
     }
     if dst.ends_with('/') && !dst_is_dir {
-        fail("mv", dst, ENOTDIR);
+        let src = first.unwrap_or(dst);
+        let _ = writeln!(Fd(2), "mv: cannot move '{src}' to '{dst}': {}", errmsg(ENOTDIR));
         return ExitCode(1);
     }
 
@@ -98,8 +134,7 @@ fn run(args: userlib::Args) -> ExitCode {
         if i == count - 1 {
             break; // this operand is dst itself
         }
-        if let Err(e) = move_one(src, dst, dst_is_dir) {
-            fail("mv", src, e);
+        if move_one(src, dst, dst_is_dir).is_err() {
             status = 1;
         }
     }

@@ -3,7 +3,7 @@
 #![no_std]
 #![no_main]
 
-use progs::{fail, help, unknown_option};
+use progs::{diag, help};
 use userlib::{ExitCode, mkdir};
 
 userlib::entry_with_args!(run);
@@ -20,18 +20,18 @@ fn run(args: userlib::Args) -> ExitCode {
             return help(USAGE, FLAGS);
         }
         if arg.len() > 1 && arg.starts_with('-') {
-            return unknown_option("mkdir", arg);
+            return diag::invalid_option("mkdir", arg);
         }
         any = true;
         let result = mkdir(arg);
         if result < 0 {
-            fail("mkdir", arg, result);
+            diag::cannot("mkdir", "create directory", arg, result);
             status = 1;
         }
     }
 
     if !any {
-        return progs::usage(USAGE);
+        return diag::missing_operand("mkdir");
     }
 
     ExitCode(status)

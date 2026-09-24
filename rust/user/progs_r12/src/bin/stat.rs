@@ -12,7 +12,7 @@
 
 use core::fmt::Write;
 
-use progs::{Fd, fail, help, unknown_option};
+use progs::{Fd, diag, help};
 use userlib::{ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, ExitCode, Stat, stat};
 
 userlib::entry_with_args!(run);
@@ -61,7 +61,7 @@ fn run(args: userlib::Args) -> ExitCode {
             return help(USAGE, FLAGS);
         }
         if arg.len() > 1 && arg.starts_with('-') {
-            return unknown_option("stat", arg);
+            return diag::invalid_option("stat", arg);
         }
         any = true;
         if !first {
@@ -71,14 +71,14 @@ fn run(args: userlib::Args) -> ExitCode {
         match stat(arg) {
             Ok(info) => print_one(arg, &info),
             Err(e) => {
-                fail("stat", arg, e);
+                diag::cannot("stat", "stat", arg, e);
                 status = 1;
             }
         }
     }
 
     if !any {
-        return progs::usage(USAGE);
+        return diag::missing_operand("stat");
     }
 
     ExitCode(status)

@@ -10,7 +10,7 @@
 #![no_main]
 
 use abi::errno::EMFILE;
-use progs::{CHUNK, fail, help, unknown_option, write_all};
+use progs::{CHUNK, diag, fail, help, write_all};
 use userlib::{ExitCode, O_APPEND, O_WRONLY, close, open, read};
 
 userlib::entry_with_args!(run);
@@ -37,7 +37,7 @@ fn run(args: userlib::Args) -> ExitCode {
             continue;
         }
         if arg.len() > 1 && arg.starts_with('-') {
-            return unknown_option("tee", arg);
+            return diag::invalid_option("tee", arg);
         }
         if n == MAX_FILES {
             fail("tee", arg, EMFILE);

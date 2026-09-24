@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use progs::{fail, help, unknown_option};
+use progs::{diag, fail, help};
 use userlib::{ExitCode, LINUX_REBOOT_CMD_POWER_OFF, LINUX_REBOOT_CMD_RESTART, reboot};
 
 userlib::entry_with_args!(run);
@@ -22,7 +22,8 @@ fn run(args: userlib::Args) -> ExitCode {
                 cmd = LINUX_REBOOT_CMD_RESTART;
                 what = "cannot restart";
             }
-            _ => return unknown_option("poweroff", arg),
+            _ if arg.starts_with('-') => return diag::invalid_option("poweroff", arg),
+            _ => return diag::extra_operand("poweroff", arg),
         }
     }
     // Only reachable if the kernel somehow rejected a command this program always passes correctly.

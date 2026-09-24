@@ -10,7 +10,9 @@
 #![no_main]
 
 use abi::errno::{EIO, ENAMETOOLONG};
-use progs::{PathBuf, basename, fail, help, unknown_option};
+use core::fmt::Write;
+
+use progs::{Fd, PathBuf, basename, diag, help};
 use userlib::{
     ATTR_DIRECTORY, DIRENT_SIZE, DirEnt, ExitCode, O_RDONLY, close, getdents, open, stat, unlink,
 };
@@ -24,9 +26,33 @@ const FLAGS: &[(&str, &str)] = &[
 ];
 
 /// `.`/`..` and the root are refused outright, `-f` included -- not a POSIX-prompt analogue, a
-/// hard guard `-f` never bypasses (matches GNU).
-fn forbidden(path: &str) -> bool {
-    path == "/" || matches!(basename(path), "." | "..")
+/// hard guard `-f` never bypasses (matches GNU). Returns the message to print (GNU's wording), if
+/// `path` is one of them.
+fn forbidden(path: &str, recursive: bool) -> Option<Message> {
+    if matches!(basename(path), "." | "..") {
+        Some(Message::DotDirectory)
+    } else if path == "/" {
+        Some(if recursive { Message::DangerousRoot } else { Message::RootIsDirectory })
+    } else {
+        None
+    }
+}
+
+enum Message {
+    DotDirectory,
+    DangerousRoot,
+    RootIsDirectory,
+}
+
+/// Prints why `path` was refused, as GNU `rm` words it.
+fn refuse(path: &str, why: Message) {
+    let _ = match why {
+        Message::DotDirectory => {
+            writeln!(Fd(2), "rm: refusing to remove '.' or '..' directory: skipping '{path}'")
+        }
+        Message::DangerousRoot => writeln!(Fd(2), "rm: it is dangerous to operate recursively on '/'"),
+        Message::RootIsDirectory => writeln!(Fd(2), "rm: cannot remove '/': Is a directory"),
+    };
 }
 
 /// Empties the directory at `path` by repeatedly reading and deleting its first entry (recursing
@@ -82,15 +108,15 @@ fn run(args: userlib::Args) -> ExitCode {
                 match flag {
                     'r' => recursive = true,
                     'f' => force = true,
-                    _ => return unknown_option("rm", arg),
+                    _ => return diag::invalid_short("rm", flag),
                 }
             }
             continue;
         }
         any = true;
 
-        if forbidden(arg) {
-            fail("rm", arg, abi::errno::EINVAL);
+        if let Some(why) = forbidden(arg, recursive) {
+            refuse(arg, why);
             status = 1;
             continue;
         }
@@ -99,13 +125,13 @@ fn run(args: userlib::Args) -> ExitCode {
             Ok(info) => info,
             Err(e @ abi::errno::ENOENT) => {
                 if !force {
-                    fail("rm", arg, e);
+                    diag::cannot("rm", "remove", arg, e);
                     status = 1;
                 }
                 continue;
             }
             Err(e) => {
-                fail("rm", arg, e);
+                diag::cannot("rm", "remove", arg, e);
                 status = 1;
                 continue;
             }
@@ -123,13 +149,13 @@ fn run(args: userlib::Args) -> ExitCode {
         };
 
         if let Err(e) = result {
-            fail("rm", arg, e);
+            diag::cannot("rm", "remove", arg, e);
             status = 1;
         }
     }
 
     if !any {
-        return progs::usage(USAGE);
+        return diag::missing_operand("rm");
     }
 
     ExitCode(status)

@@ -5,6 +5,8 @@
 
 #![no_std]
 
+pub mod diag;
+
 use core::fmt;
 
 use userlib::{ExitCode, O_RDONLY, close, open, read, write};
@@ -249,6 +251,7 @@ pub fn parse_lines_or_bytes_args(
     flags: &[(&str, &str)],
     mut args: impl Iterator<Item = &'static str>,
 ) -> Result<LinesOrBytesArgs, ExitCode> {
+    use core::fmt::Write;
     let mut mode = None;
     let mut count = 10;
     let mut file = None;
@@ -257,17 +260,33 @@ pub fn parse_lines_or_bytes_args(
             return Err(help(usage_text, flags));
         } else if arg == "-n" || arg == "-c" {
             if mode.is_some() {
-                return Err(usage(usage_text)); // -n and -c are mutually exclusive
+                // -n and -c are mutually exclusive
+                let _ = writeln!(Fd(2), "{prog}: options '-n' and '-c' are mutually exclusive");
+                diag::try_help(prog);
+                return Err(ExitCode(1));
             }
-            mode = Some(if arg == "-n" { CountMode::Lines } else { CountMode::Bytes });
-            let Some(n) = args.next().and_then(atoi) else {
-                return Err(usage(usage_text));
+            let (which, noun) = if arg == "-n" {
+                (CountMode::Lines, "lines")
+            } else {
+                (CountMode::Bytes, "bytes")
+            };
+            mode = Some(which);
+            // GNU's wording for both problems. A negative count (GNU: "all but the last N") is not
+            // supported, so it is reported as an invalid number too.
+            let Some(value) = args.next() else {
+                let _ = writeln!(Fd(2), "{prog}: option requires an argument -- '{}'", &arg[1..]);
+                diag::try_help(prog);
+                return Err(ExitCode(1));
+            };
+            let Some(n) = atoi(value) else {
+                let _ = writeln!(Fd(2), "{prog}: invalid number of {noun}: '{value}'");
+                return Err(ExitCode(1));
             };
             count = n;
         } else if arg.len() > 1 && arg.starts_with('-') {
-            return Err(unknown_option(prog, arg));
+            return Err(diag::invalid_option(prog, arg));
         } else if file.replace(arg).is_some() {
-            return Err(usage(usage_text));
+            return Err(diag::extra_operand(prog, arg));
         }
     }
     Ok(LinesOrBytesArgs { mode: mode.unwrap_or(CountMode::Lines), count, file })

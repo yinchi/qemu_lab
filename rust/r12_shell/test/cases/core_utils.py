@@ -51,17 +51,17 @@ def run(ctx):
     bin_names = sorted(n[:-4] for n in os.listdir(ctx.bin_dir) if n.endswith(".exe"))
     check("ls -F bin", s.run("ls -F bin"), "ls -F bin\n" + "".join(f"{n}.exe*\n" for n in bin_names))
     check("ls file", s.run("ls tests/hello.txt"),
-          "ls tests/hello.txt\nls: tests/hello.txt: Not a directory\nexit 1\n")
-    check("ls bad option", s.run("ls -x"), "ls -x\nls: unknown option: -x\nexit 1\n")
+          "ls tests/hello.txt\nls: cannot open directory 'tests/hello.txt': Not a directory\nexit 1\n")
+    check("ls bad option", s.run("ls -x"), "ls -x\nls: invalid option -- 'x'\nTry 'ls --help' for more information.\nexit 1\n")
 
     # --- cp ---
     check("cp", s.run("cp tests/hello.txt tests/copy.txt"), "cp tests/hello.txt tests/copy.txt\n")
     check("cat copy", s.run("cat tests/copy.txt"), "cat tests/copy.txt\n" + hello_txt)
     check("cp binary", s.run("cp tests/data.bin tests/data2.bin"), "cp tests/data.bin tests/data2.bin\n")
     check("cp missing source", s.run("cp tests/nosuch.txt tests/x.txt"),
-          "cp tests/nosuch.txt tests/x.txt\ncp: tests/nosuch.txt: No such file or directory\nexit 1\n")
+          "cp tests/nosuch.txt tests/x.txt\ncp: cannot stat 'tests/nosuch.txt': No such file or directory\nexit 1\n")
     check("cp directory source keeps dst", s.run("cp tests/docs tests/copy.txt"),
-          "cp tests/docs tests/copy.txt\ncp: tests/docs: Is a directory\nexit 1\n")
+          "cp tests/docs tests/copy.txt\ncp: -r not specified; omitting directory 'tests/docs'\nexit 1\n")
     check("cp overwrite shorter", s.run("cp tests/docs/example.txt tests/copy.txt"),
           "cp tests/docs/example.txt tests/copy.txt\n")
     check("cat overwritten", s.run("cat tests/copy.txt"), "cat tests/copy.txt\na file in a subdirectory\n")
@@ -74,7 +74,12 @@ def run(ctx):
     check("tail -n 2", s.run(f"tail -n 2 {f}"), f"tail -n 2 {f}\n" + "".join(lines[-2:]))
     check("tail default", s.run(f"tail {f}"), f"tail {f}\n" + "".join(lines[-10:]))
     check("tail -n 100", s.run(f"tail -n 100 {f}"), f"tail -n 100 {f}\n" + hello_txt)
-    check("head bad count", s.run(f"head -n x {f}"), f"head -n x {f}\nusage: head [-n N | -c N] [file]\nexit 1\n")
+    check("head bad count", s.run(f"head -n x {f}"), f"head -n x {f}\nhead: invalid number of lines: 'x'\nexit 1\n")
+    check("head -c bad count", s.run(f"head -c x {f}"), f"head -c x {f}\nhead: invalid number of bytes: 'x'\nexit 1\n")
+    check("tail bad count", s.run(f"tail -n -3 {f}"), f"tail -n -3 {f}\ntail: invalid number of lines: '-3'\nexit 1\n")
+    check("head -n with no count", s.run("head -n"), "head -n\nhead: option requires an argument -- 'n'\nTry 'head --help' for more information.\nexit 1\n")
+    check("cp a file onto itself", s.run("cp tests/hello.txt tests/hello.txt"),
+          "cp tests/hello.txt tests/hello.txt\ncp: 'tests/hello.txt' and 'tests/hello.txt' are the same file\nexit 1\n")
     check("wc", s.run(f"wc {f}"), f"wc {f}\n{len(lines)} {words} {len(hello_txt)} {f}\n")
     check("wc -l", s.run(f"wc -l {f}"), f"wc -l {f}\n{len(lines)} {f}\n")
     check("wc -wc", s.run(f"wc -wc {f}"), f"wc -wc {f}\n{words} {len(hello_txt)} {f}\n")
@@ -92,11 +97,11 @@ def run(ctx):
     check("run with exec bit", s.run("hello"), "hello\nhello from userspace\n")
     check("chmod -w", s.run("chmod -w tests/copy.txt"), "chmod -w tests/copy.txt\n")
     check("cp onto read-only", s.run("cp tests/hello.txt tests/copy.txt"),
-          "cp tests/hello.txt tests/copy.txt\ncp: tests/copy.txt: Permission denied\nexit 1\n")
+          "cp tests/hello.txt tests/copy.txt\ncp: cannot create regular file 'tests/copy.txt': Permission denied\nexit 1\n")
     check("chmod bad mode", s.run("chmod 755 tests/copy.txt"),
-          "chmod 755 tests/copy.txt\nchmod: 755: invalid mode\nexit 1\n")
+          "chmod 755 tests/copy.txt\nchmod: invalid mode: '755'\nexit 1\n")
     check("chmod missing", s.run("chmod +x tests/nosuch"),
-          "chmod +x tests/nosuch\nchmod: tests/nosuch: No such file or directory\nexit 1\n")
+          "chmod +x tests/nosuch\nchmod: cannot access 'tests/nosuch': No such file or directory\nexit 1\n")
 
     # --- tee ---
     check("tee copies stdin to stdout and a file", s.run("tee tests/tee1.txt < tests/hello.txt"),

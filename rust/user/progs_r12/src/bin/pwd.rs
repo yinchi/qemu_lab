@@ -24,8 +24,8 @@ fn run(mut args: userlib::Args) -> ExitCode {
                 );
                 ExitCode(1)
             }
-            _ if arg.starts_with('-') => progs::unknown_option("pwd", arg),
-            _ => progs::usage("pwd"),
+            _ if arg.starts_with('-') => progs::diag::invalid_option("pwd", arg),
+            _ => progs::diag::extra_operand("pwd", arg),
         };
     }
     let mut buf = [0u8; PATH_MAX];

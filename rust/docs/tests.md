@@ -137,7 +137,6 @@ the core utilities every stage shares.
 | `test/cases/*.py` | One module per area (below) |
 | `test/progs/` | A separate Cargo package of test-only EL0 programs: `probe` (pokes at the syscall surface and other odd inputs), `spin` (busy-waits, to type during), `overflow` (overflows the user stack) |
 | `test/mkfixtures.py` | Run by `just disk`: derives an oversized program and ten malformed ELF files from real ones, so no binary blobs are checked in |
-| `test/golden/`, `test/mkgolden.py` | A transcript recorded once from the older r11 kernel, that `line_discipline.py` must reproduce (see below) |
 | `disk/tests/` | On the image as `/tests/`: checked-in text/binary fixtures, plus the generated `*.exe` test programs and malformed ELFs |
 
 The kernel marks only `/bin` executable at boot, so tests `chmod +x` the programs they use from `/tests/`.
@@ -160,17 +159,10 @@ QEMU exiting as failure: `power` (for its `reboot` and `poweroff` steps, where t
 off) and `stack_guard` (the kernel panics on purpose). For those steps they read the serial log and the QEMU process directly, and each runs in its own group, last in its session, since
 nothing can run after.
 
-`line_discipline.py` compares its transcript with `test/golden/step04_r11.json`, recorded once from r11 by
-`mkgolden.py` and checked in (so the tests don't depend on the r11 directory). It pins behavior Step 4 moved
-without changing. Where r12 deliberately differs (`Ctrl+D` on a non-empty line), the script avoids the case
-and a dedicated test covers the new behavior instead; the launcher's error wording (`command not found`), which
-Step 7 changed, is patched in the golden data when it is compared.
-
-A golden is a one-off safety net for one refactoring step, pinned to the stage it was recorded from
-(`step04_r11.json`: Step 4, recorded from r11); it is not a rolling "previous stage" reference. Each stage is a
-self-contained snapshot with its own tests, so a later stage does not inherit r12's goldens. If a future step
-needs the same kind of check against r12's behavior, it records its own with `mkgolden.py` from the r12 kernel.
-Since behavior is expected to diverge deliberately over time, goldens are best kept few and narrow.
+Tests state what the behavior is *as of this stage*, with the expected text written into the check. They do not
+compare against an earlier stage's kernel: each stage is a self-contained snapshot, and behavior is expected to
+diverge deliberately over time (Step 4 once checked `line_discipline.py` against a transcript recorded from r11
+to prove a refactor changed nothing; it was retired afterwards for that reason).
 
 ### Running one module
 

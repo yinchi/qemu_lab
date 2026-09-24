@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use progs::{fail, help, unknown_option, usage};
+use progs::{diag, fail, help};
 use userlib::{ExitCode, LINUX_REBOOT_CMD_RESTART, reboot};
 
 userlib::entry_with_args!(run);
@@ -16,8 +16,8 @@ fn run(mut args: userlib::Args) -> ExitCode {
     if let Some(arg) = args.nth(1) {
         return match arg {
             "--help" => help(USAGE, FLAGS),
-            _ if arg.starts_with('-') => unknown_option("reboot", arg),
-            _ => usage(USAGE),
+            _ if arg.starts_with('-') => diag::invalid_option("reboot", arg),
+            _ => diag::extra_operand("reboot", arg),
         };
     }
     // Only reachable if the kernel somehow rejected the one command this program ever passes.
