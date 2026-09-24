@@ -369,9 +369,6 @@ pub fn unlink(path: &str, remove_dir: bool) -> isize {
     let Some((leaf, parents)) = comps.split_last() else {
         return EINVAL; // can't unlink "/"
     };
-    if *leaf == "." || *leaf == ".." {
-        return EINVAL;
-    }
     let parent = match resolve(parents) {
         Ok(p) => p,
         Err(e) => return e,

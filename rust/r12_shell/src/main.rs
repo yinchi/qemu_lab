@@ -5,7 +5,10 @@ extern crate alloc;
 
 // The kernel's layers, bottom to top: `arch` and `platform` (the CPU and the board), `drivers`
 // (device protocols), the services built on them -- `fs`, `console`, `keyboard` -- then `exec`
-// (programs), `syscall`, and `shell` at the top. A module uses ones at or below its own level.
+// (programs), `syscall`, and `shell` at the top. A module uses ones at or below its own level, with
+// one deliberate exception: `exec::process` calls `syscall::fd`'s `reset_for_launch`/`end_launch` to
+// set up and tear down a program's file-descriptor table around each run, since the table's lifecycle
+// is tied to `syscall::fd`'s own state.
 mod arch;
 mod console;
 mod drivers;
@@ -71,9 +74,9 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
     unsafe { ALLOCATOR.lock().init(&raw mut HEAP as *mut u8, HEAP_SIZE) };
 
     // Needs the allocator above (BiMap is hashmap-backed) but nothing else -- populated this
-    // early because KeyState::describe needs it from its very first call onward (see KEY_NAMES's
-    // doc comment in keyboard/keymap.rs).
-    // SAFETY: sole write, happening before anything could possibly call KeyState::describe.
+    // early because `Token::char()` and `LockState::apply` need it from the first key event onward
+    // (see KEY_NAMES's doc comment in keyboard/keymap.rs).
+    // SAFETY: sole write, happening before any key event can be processed.
     unsafe {
         KEY_NAMES = Some(build_key_names());
     }

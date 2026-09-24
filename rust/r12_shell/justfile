@@ -78,8 +78,14 @@ run: build disk
         -device virtio-keyboard-device \
         -kernel {{BIN}}.elf
 
-# Runs all tests: the host-side unit tests, then the QEMU-driven ones.
-test: test-host test-qemu
+# Runs all tests: the docs check, the host-side unit tests, then the QEMU-driven ones.
+test: check-docs test-host test-qemu
+
+# Fails if a program, syscall or test program has no entry in the docs -- see test/check_docs.py.
+
+# Docs mention everything they must.
+check-docs:
+    python3 {{justfile_directory()}}/test/check_docs.py
 
 # Pure-logic unit tests (ELF validation, stack layout, ...) on the host -- see hosttests/ -- plus the
 # shared `abi` crate's own tests.

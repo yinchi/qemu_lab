@@ -35,7 +35,7 @@ static DMA_POOL_NEXT: AtomicUsize = AtomicUsize::new(0);
 /// Implementation of the `virtio_drivers::Hal` trait for this platform.
 /// (HAL = hardware abstraction layer).
 pub struct VirtioHalImpl;
-// SAFETY: see this module's doc comment -- coherent DMA, MMU off, no IOMMU.
+// SAFETY: see this module's doc comment -- coherent DMA, identity-mapped memory, no IOMMU.
 unsafe impl Hal for VirtioHalImpl {
     /// Allocate `pages` number of pages from the DMA pool.
     /// Since the pool starts out zeroed all we need is to return a memory address

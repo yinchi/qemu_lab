@@ -1,4 +1,6 @@
-//! UART (Universal Asynchronous Receiver-Transmitter) driver for the PL011 peripheral.
+//! UART (Universal Asynchronous Receiver-Transmitter) driver for the PL011 peripheral. Transmit only: the
+//! serial line is the kernel's log and a mirror of the console, and all input arrives through the virtio
+//! keyboard (`keyboard/`).
 
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -7,26 +9,17 @@ use super::base_addresses::UART0_BASE;
 
 /// The board's first UART -- the kernel's serial console, and (mirrored by `syscall/fd.rs`) the
 /// transcript of everything a session prints.
-pub static UART0: Uart = Uart::new(UART0_BASE, 1);
+pub static UART0: Uart = Uart::new(UART0_BASE);
 
 /// Represents a UART (Universal Asynchronous Receiver-Transmitter) peripheral.
 ///
 /// Note that QEMU's `virt` machine, which we use for emulation, allows 1 or 2 UART peripherals,
 /// depending on whether a second `-serial` device is specified.
 pub struct Uart {
-    /// Data register; writing transmits a character, reading receives one
+    /// Data register; writing transmits a character
     dr: *mut u32,
     /// Flag register; a read-only status register
     fr: *const u32,
-    /// Interrupt mask set/clear register
-    #[allow(dead_code)]
-    imsc: *mut u32,
-    /// Interrupt clear register
-    #[allow(dead_code)]
-    icr: *mut u32,
-    /// SPI number for this UART peripheral, used to determine its interrupt ID (32 + SPI).
-    #[allow(dead_code)]
-    pub spi: u32,
 }
 
 // SAFETY: every field is a raw pointer into MMIO register space, and every
@@ -40,22 +33,11 @@ impl Uart {
     /// Transmit buffer full flag; read-only
     pub const TXFF: u32 = 1 << 5;
 
-    /// Receive buffer empty flag; read-only
-    #[allow(dead_code)]
-    pub const RXFE: u32 = 1 << 4;
-
-    /// Interrupt mask bit: receive (RX)
-    #[allow(dead_code)]
-    pub const RX: u32 = 1 << 4;
-
     /// Constructs a new UART instance with the given base address.
-    pub const fn new(base: usize, spi: u32) -> Self {
+    pub const fn new(base: usize) -> Self {
         Self {
             dr: base as *mut u32,
             fr: (base + 0x18) as *const u32,
-            imsc: (base + 0x38) as *mut u32,
-            icr: (base + 0x44) as *mut u32,
-            spi,
         }
     }
 
@@ -76,29 +58,6 @@ impl Uart {
         }
     }
 
-    /// Reads one character from the receive FIFO, if one is available.
-    #[allow(dead_code)]
-    pub fn try_getc(&self) -> Option<u8> {
-        unsafe {
-            if (self.fr.read_volatile() & Self::RXFE) != 0 {
-                None
-            } else {
-                Some((self.dr.read_volatile() & 0xff) as u8)
-            }
-        }
-    }
-
-    /// Enables receive interrupts.
-    #[allow(dead_code)]
-    pub fn enable_rx_interrupt(&self) {
-        unsafe { self.imsc.write_volatile(Self::RX) };
-    }
-
-    /// Clears (acknowledges) a pending receive interrupt.
-    #[allow(dead_code)]
-    pub fn clear_rx_interrupt(&self) {
-        unsafe { self.icr.write_volatile(Self::RX) };
-    }
 }
 
 /// Whether the UART is at the start of a line, so `uart_ensure_newline` knows if it owes one.

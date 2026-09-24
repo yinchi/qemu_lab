@@ -8,6 +8,12 @@
 //! from `console/input_layout.rs`), and may not outgrow the screen: past `rows - 1` rows, further
 //! characters are ignored.
 //!
+//! What a key does depends on the `Mode` (`line.rs`): `Mode::Prompt` (the shell's prompt) edits at a
+//! movable cursor and recalls history (`history.rs`); `Mode::Canonical` (a program's `read(0)`) is a
+//! real tty's cooked mode -- Backspace, Ctrl+U, Ctrl+D, no cursor movement, no history. The full key
+//! table is in `docs/console.md`. The cursor is drawn as an inverted cell, and un-inverted when a line
+//! finishes.
+//!
 //! What the callers keep to themselves: where tokens come from, what a finished line means (the shell runs
 //! it, `read(0)` hands it to the program), and the prompt. The rules that keep this module useful for
 //! the stages after it:
@@ -228,8 +234,12 @@ impl LineDiscipline {
                 // pressed with the cursor anywhere) -- `redraw` is never called again for a
                 // finished line (see this struct's `row` doc comment), so nothing else would.
                 self.draw_cell_at(console, &text, old_cursor, false);
-                self.history.record(&text);
-                self.history.reset_recall();
+                // Only the shell's prompt has a history: what a program reads with `read(0)` is
+                // that program's input, not a command to recall.
+                if self.mode == Mode::Prompt {
+                    self.history.record(&text);
+                    self.history.reset_recall();
+                }
                 // The typed line goes to the UART here, once finished -- a readable transcript
                 // without echoing every keystroke -- and the console moves off the input row
                 // *before* anything else writes a byte, so a launched program's output (or an error

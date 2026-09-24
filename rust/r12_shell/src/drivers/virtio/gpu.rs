@@ -2,7 +2,7 @@
 //! discovered, negotiates a fixed 640x480 resolution -- matching classic VGA mode 0x11's
 //! dimensions, an 80x30 grid at this stage's 8x16 glyph size -- and exposes its pixel buffer as a
 //! `FramebufferInfo` (the console turns that into its own `Framebuffer`; the driver knows nothing
-//! about text). See console.rs's doc comment on why this resolution is chosen once and never
+//! about text). See `console/mod.rs`'s doc comment on why this resolution is chosen once and never
 //! renegotiated.
 //!
 //! Same probing approach as blk.rs: every slot looks identical in the device tree, so each one

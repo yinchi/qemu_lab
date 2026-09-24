@@ -29,7 +29,7 @@ pub const KEY_BACKSPACE: u16 = 14;
 pub const KEY_TAB: u16 = 15;
 pub const KEY_ENTER: u16 = 28;
 pub const KEY_SPACE: u16 = 57;
-// Ctrl+D on an empty line is `read(0)`'s end-of-file -- see `stdin.rs`.
+/// Ctrl+D on an empty line is `read(0)`'s end-of-file -- see `stdin.rs`.
 pub const KEY_D: u16 = 32;
 
 // Step 12 (`Stage12.md`): cursor movement, history, and readline-style Ctrl combinations --

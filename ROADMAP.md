@@ -601,7 +601,10 @@ things the shell shouldn't be built on:
   `SCTLR_EL1` `M | C | I` plus WXN, stack-alignment checks and PAN, page-aligns every linker section, gives
   the user stack an explicit mapping with an unmapped guard, and makes the kernel check every user pointer
   against what is really mapped. Stages 9-11 are deliberately left as they were built. Kernel and user
-  addresses stay identity mapped; only per-process address spaces (Stages 17-19) would change that.
+  addresses stay identity mapped; only per-process address spaces (Stages 17-19) would change that. The
+  kernel's own stack gets the same treatment after the phase's last Step: a 64 KiB unmapped guard below it, and
+  fatal EL1 exceptions run on a separate exception stack, so an overflow is reported ("Kernel stack overflow")
+  rather than faulting again on the stack it just overflowed.
 - The console write path decodes UTF-8 across `write` calls (no more `<invalid utf8>` for binary output
   or a character split at a 4096-byte boundary), draws Unicode with GNU Unifont (Basic Multilingual Plane
   only; wide glyphs take two cells; wrapping follows xterm), and stops flushing the GPU per fragment.
@@ -623,7 +626,8 @@ things the shell shouldn't be built on:
 - **Working directory:** `cd` (a builtin), `pwd` (a program over a new `getcwd` syscall), one path
   resolver with `.`/`..`. `mkdir`, `rm` (with `-r`) and `mv` as utilities over new directory-mutating
   syscalls (`hadris-fat` already has `create_dir`, `delete` and `rename`). `chdir` as a syscall is
-  deliberately absent until state is per-process.
+  deliberately absent until state is per-process. Also `stat`, `tee` and `clear` (over a console `ioctl`),
+  and `poweroff`/`reboot` over one `reboot` syscall that calls PSCI (a real shutdown needs no device).
 - **A lexer that keeps quoting information** (POSIX quoting; `#` only at word start), replacing
   `shlex::split`, which can't tell `echo "|"` from a pipe.
 - **Redirection:** `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`, applied left to right and on builtins too; no fds
@@ -650,15 +654,15 @@ things the shell shouldn't be built on:
 
 **Path to a userspace `sh`.** Not built here, but each prerequisite has an owner:
 
-| A userspace `sh` needs | Provided by |
-|---|---|
-| The shell not running in IRQ context; one input queue independent of its reader | Stage 12, Step 5 |
-| Per-process `cwd`, stdio bindings and `env`, inherited by a child | Stage 16 adds `env`; Stage 19's slots hold a process struct (Stage 12's frame is plain data so it can become that struct) |
-| Two programs resident at once (the shell stays loaded while a child runs) | Stage 19, with Stages 17/18 for window sizing and heap |
-| `spawn`/`wait` syscalls (the fork/exec equivalent) | Stages 19 and 22 |
-| `chdir` (number reserved) and `dup2`-style fd control | new syscalls once state is per-process |
-| Real pipes between resident programs; job control | Stages 23 and 20-22 |
-| `./script` and `sh script` as a real child process | Stage 19+ spawn (Stage 12's `with_scope` is the same operation) |
+| A userspace `sh` needs | Provided by | Stage 12's preparation |
+|---|---|---|
+| The shell not running in IRQ context; one input queue independent of its reader | Stage 12, Step 5 | Done here: the token queue and the eval loop outside the interrupt handler |
+| Per-process `cwd`, stdio bindings and `env`, inherited by a child | Stage 16 adds `env`; Stage 19's slots hold a process struct | `ShellFrame` is plain data with no reference to any static, so it can become that struct |
+| Two programs resident at once (the shell stays loaded while a child runs) | Stage 19, with Stages 17/18 for window sizing and heap | None; noted only |
+| `spawn`/`wait` syscalls (the fork/exec equivalent) | Stages 19 and 22 | `process::run_program` is split into `prepare` (load and set up) and `run` (enter EL0), so the first half can be reused |
+| `chdir` (number reserved) and `dup2`-style fd control | New syscalls once state is per-process | `getcwd` exists; `SYS_CHDIR`'s number is reserved in `abi`; the frame stack keeps redirection and cwd in one place |
+| Real pipes between resident programs; job control | Stages 23 and 20-22 | Pipelines are isolated in `run_pipeline`, so the temp-file design is replaceable |
+| `./script` and `sh script` as a real child process | Stage 19+ spawn | `with_scope` is the same operation a child process would perform |
 
 **Demo:** a `> ` prompt on Stage 6's display; edit a long command mid-line and recall it with Up;
 `cd bin`, `pwd`, `ls`; `echo hello | cat`; `ls > listing.txt`, `cat listing.txt`, `echo more >>

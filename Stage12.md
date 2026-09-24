@@ -24,7 +24,8 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 11b | `tee`, and fixing the `ls -F bin` test's own fragility | done |
 | 11c | `poweroff`/`reboot` via PSCI | done |
 | 12 | Line editing and history | done |
-| 13 | Docs, roadmap, full regression | -- |
+| 13 | Docs, roadmap, docs check (its regression tests run at the end of 13b) | done |
+| 13b | Open-file reference counting (`Rc`) and small syscall-surface fixes | planned |
 
 ## Goal
 Turn Stage 10's launcher into a shell worth typing at -- line editing with history, `cd`/`pwd`/`mkdir`/`rm`/`mv`,
@@ -67,27 +68,27 @@ their subsystem and are pulled into `hosttests/` by path.
 
 ```
 src/
-├── main.rs            crate root: kernel_main, IRQ dispatch (irq_handler), panic handler, heap
-├── util.rs            static_mut_ref!/static_ref! macros                                  (was utils.rs)
-├── arch/              mod.rs; boot.s, vectors.s, context.s (was process.s); mmu.rs; gic.rs (gic_setup/gic_enable, from main.rs)
-├── platform/          mod.rs
-│   ├── base_addresses.rs   the platform's address map: DTB-discovered addresses plus fixed constants (user window included)
-│   ├── uart.rs             PL011 driver, UART0, and the transcript mirror (uart_write/uart_ensure_newline)
-│   └── globals.rs          the kernel's global device statics                              (was devices.rs)
+├── main.rs            crate root: kernel_main, irq_handler, unexpected_exception, panic handler, the kernel heap
+├── util.rs            static_mut_ref!/static_ref! macros
+├── arch/              mod.rs; boot.s, vectors.s (with the exception stack), context.s; mmu.rs (page tables, hardening, the kernel stack guard);
+│                      gic.rs; irq.rs (wait_for_interrupt_unless, without_irqs); psci.rs (system_off/system_reset)
+├── platform/          mod.rs; base_addresses.rs (the address map, user window included); uart.rs (transmit-only PL011 + the transcript mirror);
+│                      globals.rs (the kernel's device statics)
 ├── drivers/           mod.rs
-│   └── virtio/        mod.rs: find_mmio_transport (shared slot probing)
-│       └── hal.rs (was virtio_hal.rs)   blk.rs   gpu.rs (returns a FramebufferInfo)   input.rs (was keyboard.rs: raw events)
-├── fs/                mod.rs: find_entry_checked, read_file_checked
-│   └── blkio.rs (was fat_io.rs; also the VOL static)   files.rs (open-file table, lookup, resolve; owns MAX_OPEN_FILES)   path.rs (P: abspath)
-├── console/           mod.rs: Console, FG/BG
-│   └── framebuffer.rs (the Framebuffer struct, out of console.rs)   font.rs (glyph_for, widths)   cells.rs (P)   utf8.rs (P)   input_layout.rs (P)
+│   └── virtio/        mod.rs (find_mmio_transport); hal.rs; blk.rs; gpu.rs (returns a FramebufferInfo); input.rs (raw events)
+├── fs/                mod.rs (find_entry_checked, read_file_checked)
+│   └── blkio.rs (BlkIo, the VOL static)   files.rs (open-file table, path walk, mkdir/unlink/rename/chmod/stat; MAX_OPEN_FILES)   path.rs (P: abspath)
+├── console/           mod.rs (Console, FG/BG, put_char_at)
+│   └── framebuffer.rs   font.rs (P: glyph_for, widths)   cells.rs (P)   utf8.rs (P)   input_layout.rs (P: rows_needed, fits_on_screen, cursor_position)
 ├── keyboard/          mod.rs
-│   └── keymap.rs   tokens.rs   events.rs (was input.rs)   line.rs (LineBuffer, plus the LINE/INPUT_ROW statics)   stdin.rs
+│   └── events.rs (event -> Token)   keymap.rs (P: held keys, locks, key names)   tokens.rs (P: Token, key constants)   queue.rs (the token queue)
+│       ring_buffer.rs (P)   line.rs (P: LineBuffer, Mode, LineEvent)   history.rs (P)   line_discipline.rs (LineDiscipline, LineOutcome)   stdin.rs (read(0))
 ├── exec/              mod.rs
-│   └── argplan.rs (P)   elfparse.rs (P)   usermem.rs (P)   frame_stack.rs (P)   shell_state.rs (the FRAMES static, cwd, chdir)   elf.rs (maps the window)   process.rs
-├── syscall/           mod.rs: dispatch and the fault path
-│   └── fd.rs          the fd table
-└── shell/             mod.rs: PROMPT, start_prompt, run_line and run (the read-eval loop), shell_err (redirect-aware reporting), run_script_content
+│   └── argplan.rs (P)   elfparse.rs (P)   usermem.rs (P)   frame_stack.rs (P)   shell_state.rs (the FRAMES static, cwd, chdir)   elf.rs (maps the window)
+│       process.rs (prepare/run, entering and leaving EL0)
+├── syscall/           mod.rs (dispatch and the fault path)
+│   └── fd.rs (the fd table and most handlers)   power.rs (reboot)
+└── shell/             mod.rs (PROMPT, start_prompt, run_line, redirection, pipelines, scripts, shell_err, the read-eval loop `run`)
     └── launch.rs (find_program, launch)   lexer.rs (P)   syntax.rs (P: the parser)   builtins.rs (cd, source/./sh)
 ```
 
@@ -100,12 +101,13 @@ table from it); `keyboard::stdin` <-> `syscall::fd` (the UART transcript helpers
 input drawn by the line discipline (`LineDiscipline::redraw`).
 `keyboard/` owns editing and echoing a line -- the buffer, the row it sits on, the redraw after each edit -- given
 whatever prefix to draw (`""` for a program's `read(0)`). `shell/` owns the prompt itself: the `PROMPT` string and when
-a fresh one is drawn. Today `handle_keyboard_irq` does both jobs and lives in `shell.rs`; Step 4 splits it along that
-line. `keyboard/` may call `console` (echo); `console` never calls back.
+a fresh one is drawn. (`handle_keyboard_irq` used to do both jobs, in `shell.rs`; Step 4 split it along that
+line.) `keyboard/` may call `console` (echo); `console` never calls back.
 
 The Step descriptions below were written against r11's file names; `Source layout` above is the current map (for
-example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` is `fs/files.rs`, and Step 4's new
-`line_discipline.rs` will sit in `keyboard/`).
+example `line.rs` is `keyboard/line.rs`, `fd.rs` is `syscall/fd.rs`, `files.rs` is `fs/files.rs`, and Step 4's
+`line_discipline.rs` sits in `keyboard/`). This tree is the layout as built at the end of Stage 12; the layering rule has one
+deliberate exception, recorded in `main.rs`: `exec::process` calls `syscall::fd`'s launch/teardown functions.
 
 ---
 ## Step 0: scaffold `r12_shell` (done)
@@ -1270,8 +1272,8 @@ issues turned up only once actual keystrokes went through QEMU, not from reading
   remaining 42 cells" check now accounts for the cursor itself occupying the cell right after the last typed
   character, which nothing drew there before cursor rendering existed.
 
-**Token handling by mode** (copy into `docs/shell.md`/`docs/progs.md` in Step 13, alongside the grammar/builtins/
-scoping-rules content that section is already planned to cover):
+**Token handling by mode** (now also in `rust/docs/console.md`, which is the version kept up to date; the
+shell's grammar/builtins/scoping rules are in `rust/docs/shell.md`):
 
 | Token | `Mode::Prompt` | `Mode::Canonical` |
 |---|---|---|
@@ -1321,6 +1323,147 @@ at all, in either mode.
   control/pipes reference the same path). Stage 9-11 text untouched.
 - Full `just test` for r12; rebuild/run r09-r11 demos against the modified `user/` crates; final pass on stale comments.
 
+**As built.** Step 13 became a documentation rewrite plus a consistency audit of the code and the docs against
+each other, in that order: the code was made self-consistent first, then the docs were checked against it.
+
+- **`rust/docs/` was rewritten and extended.** `userspace.md` was stale in load-bearing ways (it described the MMU as
+  enforcing at Stage 9, DAIF fully masked while a program runs, an `Argv` API and `process.s`, none of which is
+  true any more) and was split into `mmu.md` and `launching_programs.md`. `virtio.md`, `memory_regions.md`,
+  `build_sequence.md` and `progs.md` were corrected. New: `shell.md`, `console.md` (which holds the token-handling
+  table, superseding the copy above), `filesystem.md`, `syscalls.md`, `tests.md`, and a `README.md` index. The
+  `shell.ebnf` grammar was kept as the spec the lexer and parser implement, with two comments for what EBNF can't
+  express, and two errors in it fixed (`whitespace` is six ASCII characters, not "any Unicode whitespace", and a
+  redirection may be separated from its operand by blanks). `ROADMAP.md`'s userspace-`sh` table gained the planned
+  third column.
+- **The audit's method mattered.** A first documentation audit called `build_sequence.md`/`memory_regions.md` clean
+  and missed eight or more stale items in `virtio.md`, so every new or rewritten document was then re-verified
+  claim by claim by independent readers against the source. That found real errors in the docs, and two in the
+  code (below). It also produced one false alarm, refuted by reading r11's `mmu.rs` (it only ORs `EPD1` into
+  `TCR_EL1` and never sets `SCTLR_EL1.M`, so `T3.5` stands).
+- **Kernel stack guard, added during the audit (separate commit).** The kernel stack sat directly after `.bss`, all
+  mapped read-write, so an overflow silently corrupted statics. `link.ld` now leaves a 64 KiB unmapped guard and
+  `mmu.rs` maps `.data`/`.bss` and the stack as separate regions. The fault arrives at `sync_el1h`, whose
+  register-saving pushes would fault again on the overflowed stack (each retry walking `sp` further down), so
+  `sync_el1h` first switches to a dedicated 64 KiB static exception stack, and `unexpected_exception` reports a
+  `FAR_EL1` inside the guard as "Kernel stack overflow". Tested by a `testhooks`-only builtin
+  (`__overflow_kernel_stack`) and `test/cases/stack_guard.py`.
+- **Two code fixes the doc check found.** Lines read by a program with `read(0)` were being recorded in the shell's
+  command history (`Finished` recorded without checking the mode); it now records only in `Mode::Prompt`, with a
+  regression test. And `files::unlink` had an unreachable `.`/`..` guard (paths are normalized before it runs),
+  now removed.
+- **Dead code removed:** the UART receive/interrupt half, `Console::size`, the keymap `describe` helpers and the
+  `last_held` field they were the only readers of. Stale comments naming renamed files (`console.rs`,
+  `syscall.rs`, `run_program`, `argv`) were fixed, `KEY_D`'s comment became a `///`, and `main.rs`'s layering
+  comment records the one deliberate exception (`exec::process` calls `syscall::fd`).
+- **Deliberately left alone:** the line-by-line comments in `user/progs/`, which explain what `read`'s results mean.
+- **A docs check script** (`test/check_docs.py`, `just check-docs`, first in `just test`): every program in every tier has a
+  `progs.md` row, every `abi` syscall a `syscalls.md` row, every `test/progs` program a `test/README.md` entry, and no
+  test program's name exists under `user/`.
+- **Regression tests moved to the end of Step 13b** (13b-5: r09-r11, then a fresh-checkout `just test`), so that they
+  run once, against the final code, rather than before and after 13b.
+- **Known limitation, fixed by Step 13b below:** a program that `close`s a standard fd the shell redirected to a
+  file closes the shell's own handle, which the shell then closes again after the command.
+- **Verification:** host tests, and the full QEMU suite in 17 groups, pass. The `user/` crates changed only in a
+  doc comment (`userlib`'s `open`).
+
+### Step 13b: open-file reference counting with `Rc`, and small syscall-surface fixes (`fs/files.rs`, `syscall/fd.rs`, `exec/frame_stack.rs`, `shell/mod.rs`, `arch/vectors.s`) (planned)
+Everything the Step 13 documentation check found that is a real behavior problem rather than a wording one,
+deliberately deferred until after that step's code review so it doesn't mix with it. One subsection per problem;
+each records whether it has been agreed.
+
+#### 13b-1: shared and redirected fds need reference counting (agreed)
+- **The problem.** An open file is a numeric handle into `files.rs`'s 13-slot table, with no notion of how many
+  fds refer to it. `2>&1` (`Redirection::Dup`) copies the frame's `File(handle)` binding, so fds 1 and 2 hold the
+  *same* handle, and `close(fd)` destroys the file whatever else still refers to it. Two visible effects: a program
+  that closes stdout under `cmd > f 2>&1` and then writes to stderr gets `EBADF`, and a program that closes a
+  standard fd the shell redirected closes the *shell's own* redirect handle, which the shell then closes again
+  (harmless today, since `close` on an empty slot is just `EBADF`, and nothing found reuses the slot in between).
+  The current `SHELL_OWNED` flag and `close_all`'s skip rule are a stopgap for having the shell in the kernel.
+- **Why now, not at Stage 19.** The roadmap already commits later stages to shared handles: a userspace shell
+  (Stage 19) opens redirect targets through plain `open` and passes fds to children (`dup2`-style control), and real
+  pipes (Stage 23) need to know when the last writer has closed. Neither can be expressed with an ownership flag;
+  both need a reference count.
+- **Design.** An open file becomes `Rc<RefCell<OpenFile>>` (`alloc::rc`; single core, so no atomics).
+  - An fd slot holds a clone; `2>&1` is an `Rc::clone`; a program's exit drops its fd table, which replaces
+    `close_all`; the shell keeps its own clone until a redirected command ends, which replaces `SHELL_OWNED` and
+    `mark_shell_owned`.
+  - `close(fd)` takes the `Rc` out of the slot and tries `Rc::try_unwrap`: the last reference calls
+    `FileWriter::finish` and can still report `EIO`; any other just drops its clone. Implicit drops (a program's
+    exit) ignore errors, as `close_all` does today.
+  - `StdioBinding::File(usize)` in the pure, host-tested `frame_stack.rs` is `Copy` and knows nothing about
+    `OpenFile`. It becomes generic over the file type (`StdioBinding<F>`), instantiated with the `Rc` in the
+    kernel and a stand-in in the host tests; `with_scope` then clones references, which is what a child
+    inheriting them should do.
+  - The 13-open-file cap (`EMFILE`) has no table to run out of any more, so it becomes a live-open counter
+    incremented in `open` and decremented in `OpenFile`'s `Drop`; observable behavior (the 14th `open` fails) is
+    unchanged.
+  - Considered and set aside: a hand-kept `refs[MAX_OPEN_FILES]` array. Smaller now, but hand-rolled bookkeeping
+    that Stages 19 and 23 would have to extend by hand.
+- **Tests.** A `probe` subcommand that closes fd 1 and then writes to fd 2, run as `probe ... > f 2>&1`: stderr
+  must still land in `f`, and the shell's redirect must still commit `f` afterward. The existing fd-limit test
+  (`probe fds`) must still hit `EMFILE` at the same count. Host tests for the generic `StdioBinding`, including
+  that a scoped copy takes and releases references. Full `just test`.
+- **Docs to update with it.** `syscalls.md` (the `close` row's warning, the shared-13 note in "File descriptors"),
+  `filesystem.md` ("Open files", including the shell-owned wording), `shell.md` ("Redirection", handles closed when
+  the segment ends), and this file's Step 13 known-limitation bullet.
+
+#### 13b-2: `getdents` with a buffer smaller than one record (agreed)
+- **The problem.** `files::getdents` copies records while the next one fits (`off + DIRENT_SIZE <= buf.len()`).
+  With a buffer under `DIRENT_SIZE` (261 bytes) the loop never runs and the call returns `0`, which is also what
+  it returns at the end of the listing, so a caller that sizes its buffer wrongly gets a silently empty
+  directory. Every current caller sizes it as `DIRENT_SIZE * BATCH`, so nothing hits it today; it is a trap in the
+  API, not a failure.
+- **The fix.** Return `EINVAL` for a buffer that cannot hold even one record, as Linux does for a buffer too small
+  for one entry. Update the `userlib::getdents` doc, `syscalls.md` and `filesystem.md`, which currently say the
+  call returns `0` in that case.
+- **Test.** A `probe` subcommand calling `getdents` with a too-small buffer and expecting `EINVAL`.
+
+#### 13b-3: `reboot`'s command truncated to 32 bits (agreed)
+- **The problem.** The dispatcher passes `a0 as u32`, so `0x1_4321_FEDC` also powers off.
+- **Is it a wider problem?** No: a sweep of `syscall/` finds exactly two narrowing casts of a user-supplied value,
+  this one and `exit`'s deliberate `(a0 & 0xff)` (only the low 8 bits are a status, as in POSIX). Every other
+  argument stays a full-width `usize`, and the ones that must narrow use the checked form (`chmod` does
+  `u8::try_from(set)` and returns `EINVAL`). `reboot` is the one place that bypasses that pattern.
+- **The fix.** Follow the same pattern: `u32::try_from(a0)`, `EINVAL` if it doesn't fit, then match the command
+  constants; anything but an exact command is `EINVAL`.
+- **The guard.** `#![warn(clippy::cast_possible_truncation)]` at the top of `syscall/mod.rs` (covering `fd.rs` and
+  `power.rs`), so a new silent narrowing shows up. `exit`'s deliberate mask is pulled into its own `let` carrying
+  `#[expect(clippy::cast_possible_truncation, reason = "...")]`: `expect`, unlike `allow`, warns if the lint stops
+  firing, so the exemption can't go stale. Clippy is not part of `just test`, so this is advisory: a new
+  `just lint` recipe (`cargo clippy`) makes it one short command, and the practice is to run it periodically,
+  every few Steps, and clean up what it finds. (The rest of the crate has not been linted this way yet, so the
+  first run will also report other findings.)
+- **Test.** A `probe` subcommand calling `reboot` with a wide command, which must return `EINVAL` and not power
+  off.
+
+#### 13b-4: a review pass over the rewritten code
+After 13b-1 to 13b-3, read what they rewrote (`fs/files.rs`, `syscall/fd.rs`, the redirect and pipeline paths in
+`shell/mod.rs`, `exec/frame_stack.rs`) once more for aliasing, lifetime and stale-comment problems, and update the
+docs the change touches (`syscalls.md`, `filesystem.md`, `shell.md`, the "known limitations" of Step 13). Done after
+the changes, not before, because it is the new code that has not yet been read critically.
+
+#### 13b-5: the regression tests, last (T13.1 and T13.2)
+Run once the code and docs are final, in this order: T13.2, rebuild r09-r11 against the modified `user/` crates and
+run r11's own suite; then T13.1, one clean `just test` from a fresh checkout state (delete `disk.img` and `target/`),
+which also runs the docs check. (The manual check on a real display, T12.6/T13.4, remains the user's.)
+
+#### Deliberately not done here
+- **`open` with `O_APPEND` and no `O_WRONLY`** is accepted as a plain read-only open with the append ignored. That
+  is what POSIX and Linux do (the access mode and `O_APPEND` are separate bits, and append on a read-only open is
+  legal and meaningless), and the mistake is reported on the first `write`, which is `EBADF`, as POSIX specifies
+  for a descriptor not open for writing. No change; `syscalls.md` documents it.
+- **`sync_el1h` overwrites `x0`** when it switches to the exception stack, so the saved trap frame has the wrong
+  `x0`. Nothing reads it: `unexpected_exception` prints only `ESR_EL1`, `ELR_EL1` and `FAR_EL1`, and the system
+  hangs right after. Fixing it needs a scratch register (`TPIDR_EL1`) that can't be tested, and any register would
+  do the same damage. It becomes worth doing if fatal exceptions ever dump the trap frame; the comment in
+  `vectors.s` says so.
+- **`cp`/`mv` self-copy** refuses by comparing path *strings* (`cp a ./a` isn't caught): a proper check needs the
+  kernel's `abspath` on the user side, and a program has no heap to build the normalized path in, so it waits for
+  a shared heapless normalizer (or Stage 18's heap); it stays documented in `progs.md`.
+- **`cd` with no operand** going to `/` waits for `$HOME` in Stage 16.
+- **The 13 open files being shared** with the shell's own redirect handles is inherent to the cap and stays
+  documented.
+
 ---
 ## Design constraints from the forward-awareness decision (apply during Steps 5, 6, 9, 11)
 - `ShellFrame`/stdio bindings are plain data with no dependence on statics inside their own methods (the *stack* of
@@ -1331,6 +1474,8 @@ at all, in either mode.
 - Keep pipe plumbing (Step 11) in one function behind a `run_pipeline` interface.
 
 ## Testing (authoritative; the short "Tests" bullets inside each Step summarize this)
+(This is the plan. As built, the suite is described in `rust/docs/tests.md`; test module names and some case details differ from the
+IDs below, but every ID's behavior is covered.)
 
 ### Infrastructure (built in Step 0, extended as needed)
 - **Two layers.** (1) `just test-host`: pure logic tested on the host with plain `cargo test` -- possible because the
@@ -1520,32 +1665,40 @@ T12.6 manual (`just run`, real display): cursor visibility/blink-free block, fee
 T13.2 r09, r10, r11 build and (r11) pass their tests against the modified `user/` crates. T13.3 docs check script:
 every program in every tier (`user/progs*/src/bin/`) has a `docs/progs.md` row; every syscall in `abi` appears in the docs table;
 every program in `r12_shell/test/progs/` is described in `r12_shell/test/README.md`; nothing test-only exists under `user/`
-(`git diff` adds nothing under `user/progs/`, and only `clear`, `pwd`, `mkdir`, `rm`, `mv` under `user/progs_r12/src/bin/`).
+(no test program's name appears under `user/`). As built: `test/check_docs.py`, run as `just check-docs` and first in `just test`.
 T13.4 the acceptance demo below, run by hand on the display.
 
 ## Stage 12 complete: the final state
-**Boot and kernel structure.** `kernel_main` initializes memory (16 MiB heap), MMU, GIC, block device, FAT volume,
-font, GPU/console, keyboard, then enters the read-eval loop and never returns. Keyboard IRQs only enqueue tokens; the
-shell (kernel-resident, per the ROADMAP) consumes them; programs run with IRQs enabled; `read(0)` pops the same queue
-through the same line discipline. No shell code runs in IRQ context.
-**Kernel modules (new/changed):** `shell.rs` (run_line, builtins, scripts, pipelines), `lexer.rs`, `shell_state.rs`
-(frame stack), `path.rs`, `line_discipline.rs` + `editor.rs` + `history.rs`, `tokenq.rs`, `utf8.rs`, `files.rs` (`resolve`, append,
-mkdir/unlink/rename), `elf.rs` (fallible), explicit user stack + guard, `abi` crate shared with `user/`.
-**Syscalls (all with `abi` constants; Linux aarch64 numbers):** getcwd 17, ioctl 29 (`CONSOLE_CLEAR`; `abi::ioctl`), mkdirat 34, unlinkat 35 (`AT_REMOVEDIR`),
-renameat 38, chmod 53, open 56 (+`O_APPEND`), close 57, getdents 61, read 63, write 64, exit 93; `chdir` (49) reserved,
-unimplemented by design (see the userspace-`sh` table); unknown -> `ENOSYS`, bad pointer -> `EFAULT`.
-**Shell language:** words with `'`/`"`/`\` quoting, `#` comments, `|`, `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`/`>&2`; builtins `cd`, `source`/`.`, `sh`;
-`./script` for exec-bit scripts; no variables/`$?`/`;`/`&&`/globbing/background jobs/fds above 2 (documented as not supported);
-line editing (arrows/Home/End/Delete/Backspace), 
-history; prompt `> `.
-**User programs (`user/progs` and `user/progs_r12`, core utils only):** echo cat ls cp head tail wc hexdump true false chmod (Stage 9-11, the base tier) +
-`clear pwd mkdir rm mv` (new, in `progs_r12`), plus Stage 9's `hello`/`crash`; all with rows in `docs/progs.md`. **Test programs and fixtures**
-live only in `r12_shell/test/progs/` -> `disk/tests/` (`probe overflow spin` + fixtures), documented in
-`r12_shell/test/README.md`; the shared `abi` crate sits beside `userlib` as a library, not a binary.
-**Disk and memory:** 64 MiB FAT16 (`bin/ fonts/ home/ tests/ tmp/`), gitignored image; kernel heap 16 MiB, DMA pool 2 MiB,
-kernel stack 1 MiB, user window unchanged at 2 MiB (variable size is Stage 17).
+(As built at the end of Stage 12; the Steps above record how it got there, and `rust/docs/` describes each part in depth --
+see its `README.md`.)
+
+**Boot and kernel structure.** `kernel_main` initializes the 16 MiB heap and the key-name table, parses the DTB, turns the MMU
+on, sets up the GIC, finds the block device and mounts the FAT volume (marking everything in `/bin` executable), sets up
+the GPU and console, finds the keyboard, draws the first prompt, enables the keyboard interrupt, and enters the read-eval
+loop, which never returns. Keyboard IRQs only enqueue tokens; the shell (kernel-resident, per the ROADMAP) consumes them;
+programs run with IRQs enabled; `read(0)` pops the same queue through the same line discipline. No shell code runs in IRQ
+context. The layered module map is under "Source layout" above.
+**Syscalls (all with `abi` constants; Linux aarch64 numbers):** getcwd 17, ioctl 29 (`CONSOLE_CLEAR`; `abi::ioctl`), mkdirat 34,
+unlinkat 35 (`AT_REMOVEDIR`), renameat 38, chmod 53, open 56 (+`O_APPEND`), close 57, getdents 61, read 63, write 64, newfstatat 79,
+exit 93, reboot 142 (`abi::reboot`, via PSCI); `chdir` (49) reserved, unimplemented by design (see the userspace-`sh` table);
+unknown -> `ENOSYS`, bad pointer -> `EFAULT`. Reference: `docs/syscalls.md`.
+**Shell language:** words with `'`/`"`/`\` quoting, `#` comments, `|`, `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`/`>&2`; builtins `cd`,
+`source`/`.`, `sh`; `./script` for exec-bit scripts; no variables/`$?`/`;`/`&&`/globbing/background jobs/fds above 2 (documented as
+not supported). **Line editing at the prompt:** arrows, Home/End, Delete/Backspace, Ctrl+A/E/U/K, and history (Up/Down); a program's
+`read(0)` gets a real tty's canonical mode (Backspace, Ctrl+U, Ctrl+D as end-of-file or partial delivery). Prompt `> `.
+Reference: `docs/shell.md`, `docs/console.md`, `docs/shell.ebnf`.
+**User programs (`user/progs` and `user/progs_r12`, core utils only):** the base tier (Stages 9-11 and `tee`) is `echo cat ls cp head
+tail wc hexdump true false chmod tee`, plus Stage 9's `hello`/`crash`; `progs_r12` adds `clear pwd mkdir rm mv stat poweroff reboot`
+and overrides `chmod cp head ls tail`; all with rows in `docs/progs.md`. **Test programs and fixtures** live only in
+`r12_shell/test/progs/` -> `disk/tests/` (`probe overflow spin` + fixtures), documented in `r12_shell/test/README.md`; the shared
+`abi` crate sits beside `userlib` as a library, not a binary.
+**Disk and memory:** 64 MiB FAT16 (`bin/ fonts/ home/ tests/ tmp/`), gitignored image. The kernel image is about 23 MiB: heap
+16 MiB, VirtIO DMA pool 2 MiB, DTB buffer 2 MiB, kernel stack 1 MiB below which lies an unmapped 64 KiB guard, and a 64 KiB exception
+stack for fatal exceptions at EL1. The user window is unchanged at 2 MiB (image, unmapped guard, 1 MiB stack; variable size is
+Stage 17). Reference: `docs/memory_regions.md`, `docs/mmu.md`, `docs/filesystem.md`.
 **Docs/repo:** ROADMAP Stage 12 restructured with the Steps and the userspace-`sh` prerequisite table; Stages 13/16/19/22/23/24
-notes updated; `docs/progs.md` (+ a shell section or `docs/shell.md`); r09-r11 untouched and still building.
+notes updated; `rust/docs/` (an index and twelve documents: build, memory, MMU, launching, VirtIO, console, shell, its grammar, filesystem,
+syscalls, programs, tests); r09-r11 untouched.
 **Acceptance demo (run by hand at Step 13):** boot to `> `; `cd bin`, `pwd`, `ls`, `cd /`; type a long command, edit it
 mid-line, recall history with Up; `echo hello | cat`; `ls > listing.txt`, `cat listing.txt`; `echo more >> listing.txt`;
 `mkdir work`, `cd work`, `./../cdbin.sh` and `pwd` (scoped) vs `source ../cdbin.sh` and `pwd` (unscoped); `cp`, `mv`,
@@ -1556,7 +1709,9 @@ image and confirm files created before are still there.
 `$?`, `exit`, `if`/`for`, functions, globbing, `;`/`&&`/`||`, background jobs, here-documents, or fds above 2 until Stage 16
 (variables, `$?`, `$VAR` expansion -- the `exit N` line stands in for `$?` until then) or later stages; `cd` with no operand
 goes to `/` until `$HOME` (also Stage 16); Ctrl+D at the prompt does nothing; single resident program; kernel-resident shell
-(path to userspace `sh` recorded); FAT16 root has 512 slots.
+(path to userspace `sh` recorded); FAT16 root has 512 slots; open files are not reference-counted, so a program closing a
+redirected standard fd affects the shell's own handle (Step 13b); `cp`/`mv` detect a self-copy only when the two path strings are
+identical.
 
 ## Kernel heap growth: what actually limits it (researched from r11's code and build)
 - **Today:** heap = 1 MiB `static mut` in `.bss`; kernel image is ~200 KB text + 5.25 MiB bss (2 MiB virtio DMA pool,
@@ -1608,7 +1763,8 @@ Decided while planning; later Steps may refine these but shouldn't silently reve
    (see the prerequisite table in Step 13 and ROADMAP.md's Stage 12/19 text), not built.
 2. **Each stage is its own codebase:** no shared kernel crate across `rNN_` directories. The `abi` crate is shared only
    with `user/`, which every stage already shares, and is additive.
-3. **Tests belong to this stage** (`disk/tests/`, `test/progs/`); `user/` gets only core utilities (`pwd`, `mkdir`, `rm`, `mv`).
+3. **Tests belong to this stage** (`disk/tests/`, `test/progs/`); `user/` gets only core utilities (`pwd`, `mkdir`, `rm`, `mv`,
+   and later `clear`, `stat`, `tee`, `poweroff`, `reboot`).
 4. **Disk:** 64 MiB FAT16; `r12_shell/disk.img` is gitignored (r06-r11's stay tracked).
 5. **Heap:** the kernel heap grows from 1 MiB to 16 MiB in Step 1 (a static in `.bss`, mapped for free; the real
    ceiling is the fixed user address `0x44000000`, not QEMU's RAM -- see the analysis below).
@@ -1635,14 +1791,36 @@ Decided while planning; later Steps may refine these but shouldn't silently reve
     crate `user/progs_rNN`; stage `rNN` builds every tier up to its own and the highest wins a name collision. Rejected:
     adding programs to the shared crate (broke r11's `bin/` listing test), editing r09-r11's tests, and per-stage local
     program crates (would abandon `user/` as the home of the common utilities).
+15. **Pipes name their temp files with a counter and a prefix** (Step 11): `/tmp/.pipeN`, one counter for the shell's whole
+    lifetime, skipping any name that exists, so a user's file is never clobbered and nested pipelines never collide.
+16. **No escape sequences anywhere in input** (Step 12): keys arrive as structured evdev `Token`s, so an arrow key is one token,
+    not `ESC [ D`; the line discipline has two modes (`Prompt`, `Canonical`) inside one line-based model, and "raw mode" is
+    reserved for Stage 13's editor. History is append-only, skips only a repeat of the *last* line, and discards an edit to a
+    recalled entry when you navigate away (simpler than bash, which keeps it until that line is submitted); only the prompt
+    has history.
+17. **The kernel stack has an unmapped guard, and fatal EL1 exceptions run on their own stack** (after Step 13): a synchronous
+    exception at EL1 switches to a dedicated 64 KiB stack before saving registers, so a stack overflow is reported ("Kernel stack
+    overflow") instead of faulting again on the overflowed stack.
+18. **`poweroff`/`reboot` go through one `reboot` syscall to PSCI** (Step 11c), not a device register or a `shutdown` program:
+    QEMU `virt` provides PSCI with no device discovery, and `shutdown`'s mandatory time operand can't be honored without a clock.
+19. **Inserted Steps take a letter** (`4b`, `4c`, `11b`, `11c`, `13b`) so the numbers the plan already refers to don't shift.
+20. **Open files are to be reference-counted with `Rc`** (Step 13b, planned): the handle-and-flag scheme was a stopgap for an
+    in-kernel shell, and Stages 19 and 23 need shared handles.
 
 ## Files touched
-`rust/r12_shell/src/{main.rs,elf.rs,fd.rs,files.rs,syscall.rs,process.rs,stdin.rs,input.rs,argv.rs,line.rs,console.rs,vectors.s}`,
-new `shell_state.rs`, `shell.rs`, `lexer.rs`, `line_discipline.rs`; `rust/r12_shell/test/run_tests.py`, `justfile`, `disk/` fixtures;
-`rust/user/{userlib,abi}` and `rust/user/progs_r12/src/bin/{clear,pwd,mkdir,rm,mv}.rs` (core utils only);
-`rust/r12_shell/test/progs/` (test programs) and `rust/r12_shell/disk/tests/` (fixtures); `rust/docs/progs.md`;
-`r12_shell/test/README.md`; `.gitignore`; `ROADMAP.md` (Stage 12 summary + forward-connection edits); `Stage12.md` (new, full plan).
+By area (the ground truth for any file is `git log`; this is the shape):
+- **Kernel, `rust/r12_shell/`:** the whole hierarchy under "Source layout" (a copy of r11 reorganized in Step 1b), with
+  new modules for the line discipline and history (`keyboard/`), the wrapped-input layout (`console/input_layout.rs`), the
+  token queue, the shell (`shell/`), the frame stack and shell state (`exec/`), path handling and the open-file table (`fs/`),
+  the power syscall and PSCI (`syscall/power.rs`, `arch/psci.rs`), and `arch/` changes (`mmu.rs` for real, `vectors.s`
+  including the exception stack, `context.s`); `link.ld` (kernel stack guard); `justfile`; `hosttests/`; `test/` (harness,
+  runner, one module per area, `progs/`, fixtures); `disk/` fixtures.
+- **Shared crates, `rust/user/`:** `abi` (new), `userlib`, `progs` (`tee`, additive), and the new tier `progs_r12`
+  (`clear pwd mkdir rm mv stat poweroff reboot` and overrides of `chmod cp head ls tail`); nothing test-only.
+- **Docs and plans:** `rust/docs/` (rewritten and extended in Step 13), `r12_shell/test/README.md`, `ROADMAP.md` (Stage 12
+  summary and forward-connection edits), `Stage12.md`.
 
 ## Verification
 Per Step: `just test` in `r12_shell/` plus the Step's new cases; per Phase: rebuild r09-r11 (`just build`/`just test` in r11) to prove
-`user/` changes stayed compatible; final: manual run (`just run`) on the virtio-gpu display for cursor/history feel.
+`user/` changes stayed compatible; final: manual run (`just run`) on the virtio-gpu display for cursor/history feel. `just test` is the host tests (`hosttests/` and
+the `abi` crate) followed by the QEMU suite (17 groups); see `docs/tests.md`.

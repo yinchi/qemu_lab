@@ -35,7 +35,7 @@ Called at the beginning of every exception going to EL1. Every exception ends on
 - `kernel_exit`, where `eret` restores the saved context and returns to the point of interruption
   (EL0 or EL1 depending on the exception).
 - `resume_kernel` (a program's exit or fault): restores only SP and the callee-saved registers that
-  `enter_el0` saved (see `arch/context.s`) and continues in `run_program`, abandoning this frame.
+  `enter_el0` saved (see `arch/context.s`) and continues in `process::run`, abandoning this frame.
 - `unexpected_exception`, which eventually calls `hang()` via the Rust panic handler, staying in
   EL1.
 */

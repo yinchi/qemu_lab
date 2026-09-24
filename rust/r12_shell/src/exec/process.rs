@@ -20,10 +20,10 @@ use abi::errno::{E2BIG, ENOEXEC};
 unsafe extern "C" {
     /// Checkpoints this project's callee-saved register set and `eret`s
     /// into EL0 (`SPSR_EL1`/`ELR_EL1`/`SP_EL0` already set by
-    /// `run_program`, below). Upholds the ordinary AAPCS64 calling
+    /// `run`, below). Upholds the ordinary AAPCS64 calling
     /// convention exactly, so calling it from Rust needs no special
     /// handling -- see `arch/context.s`'s own doc comment for the full
-    /// reasoning. Reached here only via `sym` (see `run_program`), never
+    /// reasoning. Reached here only via `sym` (see `run`), never
     /// an ordinary Rust call, since `x0`/`x1` need to carry argc/argv
     /// through to the `eret` untouched by anything Rust's own calling
     /// convention might otherwise do with them.
@@ -32,12 +32,12 @@ unsafe extern "C" {
     /// Restores the register set `enter_el0` saved and jumps back into it
     /// directly, making `enter_el0` appear to return `code` -- the program's
     /// exit status, travelling in `x0` like a `longjmp` value. Called from
-    /// `sync_el0_handler` (`syscall.rs`) for `exit` and for a caught segfault
+    /// `sync_el0_handler` (`syscall/mod.rs`) for `exit` and for a caught segfault
     /// alike; never returns itself.
     ///
     /// # Safety
     /// Must only be called from within the `sync_el0_64` handler, after
-    /// `run_program` has actually started a program (so `arch/context.s`'s
+    /// `run` has actually started a program (so `arch/context.s`'s
     /// `KERNEL_CTX` holds a real checkpoint, not its zeroed initial
     /// state).
     pub fn resume_kernel(code: i32) -> !;
@@ -129,8 +129,9 @@ unsafe fn push_cstr_array(sp: usize, floor: usize, items: &[&str]) -> Option<usi
     Some(plan.array)
 }
 
-/// Loads `elf_bytes` and sets a fresh launch up, including the file descriptor table, exit status,
-/// and initial stack with `args` as its `argv`. Returns a `PreparedProgram` on success.
+/// Loads `elf_bytes` and sets a fresh launch up: the ELF mapped into the user window, a reset file
+/// descriptor table, and an initial stack with `args` as its `argv`. Returns a `PreparedProgram` on
+/// success.
 pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, LaunchError> {
     // Set up the initial stack boundaries.
     let stack_top = USER_STACK_TOP;
@@ -140,7 +141,7 @@ pub fn prepare(elf_bytes: &[u8], args: &[&str]) -> Result<PreparedProgram, Launc
     let lens: Vec<usize> = args.iter().map(|s| s.len()).collect();
     argplan::plan(stack_top, floor, &lens).ok_or(LaunchError::ArgsTooBig)?;
 
-    // Load the ELF binary into memory and prepare the file descriptor table for the new program.
+    // Load the ELF binary into the user window.
     let entry = elf::load(elf_bytes)?;
 
     // Reset the file descriptor table for the new program.

@@ -4,8 +4,17 @@
    two alternatives that could both start matching at the same position, whichever matches more
    wins. *)
 
+(* This grammar describes what the shell accepts, not the diagnostics it gives for what it rejects:
+   ";", "&", "(", ")", "<<" and "<&" are excluded from unquoted_start, so they simply fail to match
+   anywhere here, the same as any other unparseable leftover -- but the actual parser (lexer.rs)
+   recognizes each of these specifically and reports a named "not supported" error for it, rather
+   than a generic parse failure. That distinction is an error-reporting choice this grammar doesn't
+   represent. *)
+
 char        ::= ? any single character ? ;
-whitespace  ::= ? any Unicode whitespace character ? ;
+whitespace  ::= " " | "\t" | "\v" | "\f" | "\r" | "\n" ;
+(* only these six characters separate words; any other character, including other Unicode whitespace
+   such as a non-breaking space, is an ordinary word character *)
 
 squote      ::= "'" ;
 dquote      ::= "\"" ;
@@ -49,8 +58,11 @@ in_redir     ::= [ "0" ] "<" ;
 out_redir    ::= [ "1" | "2" ] ">" ;
 append_redir ::= [ "1" | "2" ] ">>" ;
 dup_redir    ::= [ "1" | "2" ] ">&" ;
+(* For the dup_redir variant of redir_op, syntax.rs also checks that the following `token` in the
+   `segment` is "1" or "2" (as text, once quotes and escapes are resolved) and raises a syntax error
+   otherwise. *)
 
-segment     ::= (whitespace | token | redir_op token | comment)* ;
+segment     ::= (whitespace | token | redir_op whitespace* token | comment)* ;
 (* words and redirections interleave in any order/count; a redirection with no operand ("cmd >"
    at end of input) or two "<"/"&" with nothing valid between them ("<<", "<&") simply fail to
    match anything at that position, leaving input unconsumed -- a syntax error, same as any other

@@ -10,7 +10,7 @@
 //! (`VirtIOBlk`, `VirtIOGpu`, `VirtIOInput`). No `VirtIOKeyboard`; the input device is generic.
 //!
 //! `Console` isn't a VirtIO wrapper at all -- it's the software text-rendering layer built on top
-//! of `Gpu::framebuffer()` (see `drivers/virtio/gpu.rs`, `console.rs`). `IdMap` is `arch/mmu.rs`'s
+//! of `Gpu::framebuffer()` (see `drivers/virtio/gpu.rs`, `console/mod.rs`). `IdMap` is `arch/mmu.rs`'s
 //! page table, written once there and read again by `exec/elf.rs` on every program load.
 
 use core::sync::atomic::AtomicU32;

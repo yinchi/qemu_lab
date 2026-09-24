@@ -49,7 +49,7 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
         // EC_SVC64 indicates a 64-bit SVC (syscall) from EL0.
         EC_SVC64 => {
             // SAFETY: regs points at kernel_entry's just-saved frame,
-            // still live on the exception stack -- sole access to it here.
+            // still live on the kernel stack -- sole access to it here.
             let regs = unsafe { &mut *regs };
             let nr = regs.x[8] as usize; // syscall number
             let a0 = regs.x[0] as usize; // first argument
@@ -76,9 +76,9 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                     // Never returns to kernel_exit's normal eret-back-to-EL0
                     // path -- resume_kernel (arch/context.s) restores the register
                     // set enter_el0 checkpointed and jumps straight back into
-                    // run_program's call site instead, handing it the exit status.
+                    // `process::run`'s call site instead, handing it the exit status.
                     // Only the low 8 bits are a status, as in POSIX (`WEXITSTATUS`): 0-255.
-                    // SAFETY: only reachable once run_program has actually
+                    // SAFETY: only reachable once `process::run` has actually
                     // called enter_el0 (context.s's KERNEL_CTX holds a real
                     // checkpoint, not its zeroed initial state).
                     unsafe { process::resume_kernel((a0 & 0xff) as i32) }
@@ -99,7 +99,7 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                 alloc::format!("Segmentation fault (address {far:#x}, ESR_EL1 {esr:#x})\n")
                     .as_bytes(),
             );
-            // SAFETY: only reachable once run_program has actually called
+            // SAFETY: only reachable once `process::run` has actually called
             // enter_el0 (context.s's KERNEL_CTX holds a real checkpoint, not
             // its zeroed initial state).
             unsafe { process::resume_kernel(process::EXIT_FAULT) }

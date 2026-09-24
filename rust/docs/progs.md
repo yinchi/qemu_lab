@@ -8,7 +8,9 @@ have). `just disk` in a stage's directory builds every tier it uses and stages t
 as `<name>.exe`, lowest tier first, so a later tier's binary of the same name replaces an earlier one's -- the
 launcher tries the typed name first and then `name.exe`, so `cat` finds `bin/cat.exe`. This table documents
 observable behavior per stage, not which package a program's source happens to live in. (`userlib`,
-`user/userlib/`, is the runtime underneath them: entry point, syscall wrappers, `Args`.)
+`user/userlib/`, is the runtime underneath them: entry point, syscall wrappers, `Args`.) Programs are started by the
+shell: [`shell.md`](shell.md) describes how a command line (redirections, pipes, scripts) reaches them, and
+[`launching_programs.md`](launching_programs.md) how one is loaded and started. What a program can ask the kernel for is in [`syscalls.md`](syscalls.md).
 
 ## Conventions
 
@@ -26,11 +28,14 @@ option prints `<prog>: unknown option: <arg>` and exits 1.
   coreutils' own `--help` is long-form only in every one of them too, precisely because `-h` already means
   something else in some (`ls -h`/`du -h` human-readable sizes, `cp -h`/`chmod -h` no-dereference) -- `--help` is
   the one form every program here guarantees, for the same reason.
-- **Paths** are absolute or relative to the root -- there is no working directory until Stage 12's shell. Names match
-  case-sensitively; `.` and `..` aren't special.
+- **Paths** are absolute or relative to the working directory (the root before Stage 12's shell, which introduced `cd`);
+  from Stage 12 `.` and `..` are resolved lexically (`a/../b` is `b`, and `..` at the root stays there). Names match
+  case-sensitively.
 - **A lone `-`** is an ordinary file name, not "stdin", wherever a file operand is taken.
-- **stdin** is the keyboard: a read returns one finished line at a time (Backspace already applied), and Ctrl+D on an
-  empty line is end-of-file.
+- **stdin** is the keyboard unless the shell redirected it (`<`, or a pipe, from Stage 12): a read returns one finished
+  line at a time, with Backspace and Ctrl+U (discard the line) already applied. Ctrl+D on an empty line is end-of-file;
+  `From Stage 12:` on a non-empty line it delivers what has been typed so far *without* a newline. Cursor keys, history
+  and the other editing keys belong to the shell's prompt, not to a program's input (see [`console.md`](console.md)).
 - **Adding to this table:** a new program gets a row, with the stage that introduced it. When a later stage gives an
   existing program a new feature, that feature is written in the *Supported* column as `From Stage N: <feature>` and
   removed from *Not supported*, so this stays a per-feature history.
@@ -40,14 +45,14 @@ option prints `<prog>: unknown option: <arg>` and exits 1.
 | Program | Stage | POSIX equivalent | Supported | Deliberately not supported |
 |---|---|---|---|---|
 | `hello`, `crash` | 9 | -- (test programs) | `hello` prints a line and exits; `crash` reads an invalid address to demonstrate the fault path | -- |
-| `echo` | 10 | `echo [-n] args...` | arguments joined by spaces, plus a newline; `From Stage 12: -n` suppresses it | `-e`, escape sequences |
+| `echo` | 10 | `echo [-n] args...` | arguments joined by spaces, plus a newline; `From Stage 12: -n` suppresses it | `-e` and escape sequences (an argument other than a leading `-n`, `-e` included, is printed as ordinary text, not rejected) |
 | `cat` | 11 | `cat [file...]` | zero or more files, concatenated in order; no files = stdin until EOF | `-u` and every GNU flag (`-n`, `-A`, ...) |
-| `ls` | 11 | `ls -1 [-F] [-l] [dir...]` | one entry per line, always (`-1`; no columns); `-F` appends `/` to directories and `*` to files with the executable bit; `dir` defaults to the working directory (`From Stage 12`; root before it); `From Stage 12: -l` long format (`d`/`w`/`x` flags -- directory, writable [FAT's read-only bit inverted, matching Unix's positive-capability convention], executable -- then size, name); `From Stage 12:` several directory operands, each preceded by a `DIR:` header when more than one is given | `-a`/`-R`/`-d` and sorting options; `.`/`..` entries; entries appear in on-disk order, not sorted |
-| `cp` | 11 | `cp SRC... DST` | two or more operands; creates `DST` if absent, replaces its contents if present (a read-only `DST` is refused, and an unreadable `SRC` leaves `DST` untouched); `From Stage 12:` several sources, and a directory as `DST` (each source lands at `DST/basename(SRC)`) | `-r`/`-f`/`-p`/`-i`; preserving attributes or timestamps |
+| `ls` | 11 | `ls -1 [-F] [-l] [dir...]` | one entry per line, always (`-1`; no columns); `-F` appends `/` to directories and `*` to files with the executable bit; `dir` defaults to the working directory (`From Stage 12`; root before it); `From Stage 12: -l` long format (`d`/`w`/`x` flags -- directory, writable [FAT's read-only bit inverted, matching Unix's positive-capability convention], executable -- then size, name); `From Stage 12:` several directory operands, each preceded by a `name:` header line (with a blank line between listings) when more than one is given | `-a`/`-R`/`-d` and sorting options; `.`/`..` entries; entries appear in on-disk order, not sorted |
+| `cp` | 11 | `cp SRC... DST` | two or more operands; creates `DST` if absent, replaces its contents if present (a read-only `DST` is refused, and an unreadable `SRC` leaves `DST` untouched); `From Stage 12:` several sources, and a directory as `DST` (each source lands at `DST/basename(SRC)`); `From Stage 12:` a source whose path is textually identical to its destination (`cp a a`) is refused (`Invalid argument`) -- other spellings of the same file aren't detected | `-r`/`-f`/`-p`/`-i`; preserving attributes or timestamps |
 | `head` | 11 | `head [-n N \| -c N] [file]` | `-n N` (default 10); `From Stage 12: -c N` (byte count, mutually exclusive with `-n`); a file, or stdin | the `-N` shorthand; several files and their `==> name <==` headers |
 | `tail` | 11 | `tail [-n N \| -c N] [file]` | `-n N` (default 10); `From Stage 12: -c N` (byte count, mutually exclusive with `-n`); a named file (read twice, so any size) or stdin (buffered whole, up to 512 KiB) | `-f`; the `+N` form; several files |
 | `wc` | 11 | `wc [-l] [-w] [-c] [-L] [file...]` | any combination of `-l`/`-w`/`-c` (none of `-l`/`-w`/`-c`/`-L` = all three), counts in POSIX's order (lines, words, bytes) separated by single spaces; `From Stage 12: -L` (longest line); `From Stage 12:` several files, each on its own line, plus a `total` line when more than one is given; a file, or stdin | `-m`; locale-aware counting (bytes only) |
-| `hexdump` | 11 | `hexdump -C [file]` (BSD/util-linux; not POSIX, which has only `od`) | the canonical format only: offset, 16 hex bytes, `\|ASCII\|`, and a closing offset line; a file, or stdin | every other flag and custom `-e` formats; collapsing repeated rows into `*` (every row is printed) |
+| `hexdump` | 11 | `hexdump [file]`, producing `hexdump -C`'s output (BSD/util-linux; not POSIX, which has only `od`) | the canonical format only, always (it takes no options, so `-C` itself is refused): offset, 16 hex bytes, `\|ASCII\|`, and a closing offset line; a file, or stdin | every flag, including `-C`, and custom `-e` formats; collapsing repeated rows into `*` (every row is printed) |
 | `true` | 11 | `true` | exits 0 (any argument besides `--help` is ignored) | -- |
 | `false` | 11 | `false` | exits 1 (any argument besides `--help` is ignored) | -- |
 | `chmod` | 11 | `chmod +x\|-x\|+w\|-w [-R] file...` (POSIX symbolic mode with `who` omitted, which POSIX defines as "all"; this is a single-user system) | `+x`/`-x` set/clear the executable bit (`0x40`, this project's own convention -- see `ROADMAP.md`'s Stage 8); `+w`/`-w` clear/set FAT's read-only bit; `From Stage 12:` several files, and `-R` (recurses into directory operands, depth-first) | an explicit `who` (`u`/`g`/`o`/`a`), since there are no classes to tell apart; octal modes; `r` (FAT has no read bit); `s`/`t`/`X` |
@@ -57,7 +62,7 @@ option prints `<prog>: unknown option: <arg>` and exits 1.
 | `rm` | 12 | `rm [-r] [-f] PATH...` | one or more operands, continuing past a failing one; plain `rm` refuses a directory (`Is a directory`) and refuses `.`, `..`, and `/` outright (`-f` never overrides this guard, matching GNU); `-r` drills into a directory before removing it; `-f` skips a missing operand silently instead of reporting it. Deletion is never gated by the target's own read-only bit -- unlike a real prompt-before-overwrite tty session, this project has no non-root identity, and real POSIX conditions that prompt (and `-f`'s suppression of it) on the process *not* having appropriate privileges: deletion is governed by the containing directory, never a file's own mode, so a privileged process was never blocked here either | `-i`; a separate `rmdir` |
 | `mv` | 12 | `mv SRC... DST` | renames within the volume; if `DST` is an existing directory the source moves into it (`DST/basename(SRC)`); if `DST` is an existing plain file it is replaced (source and destination must both be plain files -- replacing across a directory on either side is refused, `File exists`, since a partial replace could orphan a directory's contents); a directory can't be moved into itself or a descendant (`Invalid argument`); `mv a a` is refused; a trailing `/` on `DST` requires an existing directory; more than one source requires an existing directory destination | `-f`, `-i`; attributes and the exec/read-only bits move with the entry automatically (`rename` copies the whole directory entry) |
 | `stat` | 12 | (no POSIX equivalent; the shape below matches common `stat(1)` implementations, scoped to what FAT actually stores) | one or more operands: size, type (regular file/directory), the two tracked attribute bits, and all three real FAT timestamps at their native 2-second resolution (creation, last modified, and last accessed, which FAT stores as a date only -- no time component) | anything not stored by FAT: inode, hard-link count (FAT has none), uid/gid/full permission bits (no user model), symlinks (none exist). Every timestamp reads as whatever's actually stored -- the fixed build-time stamp for a file bundled with the image, or the FAT epoch (1980-01-01) for anything the kernel itself created or wrote this session, since no RTC exists until Stage 14 |
-| `tee` | 12 | `tee [-a] [file...]` | copies stdin to stdout and to zero or more named files at once (POSIX allows zero, an odd but valid way to copy stdin to stdout); `-a` appends to each file instead of truncating it; a file that fails to open is reported and skipped, stdin still passed through and every other file still written; up to 8 files held open at once | `-i` (ignore `SIGINT`; no signal handling exists at all yet) |
+| `tee` | 12 | `tee [-a] [file...]` | copies stdin to stdout and to zero or more named files at once (POSIX allows zero, an odd but valid way to copy stdin to stdout); `-a` appends to each file instead of truncating it (it applies to files named after it: `tee f -a` still truncates `f`); a file that fails to open is reported and skipped, stdin still passed through and every other file still written; up to 8 files held open at once | `-i` (ignore `SIGINT`; no signal handling exists at all yet) |
 | `poweroff` | 12 | `poweroff` (`poweroff(8)`; not POSIX) | powers off the machine via PSCI `SYSTEM_OFF`, reached through the kernel's `reboot` syscall; `--reboot` restarts it instead (PSCI `SYSTEM_RESET`) | scheduling (`shutdown`'s mandatory `TIME` operand) -- there is no RTC until Stage 14, so every action is immediate; `-f`/`-n`/`-w`/wall messages |
 | `reboot` | 12 | `reboot` (`reboot(8)`; not POSIX) | restarts the machine via PSCI `SYSTEM_RESET` -- equivalent to `poweroff --reboot` | `-f`/`-n`/`-w` |
 
@@ -66,6 +71,6 @@ host (`disk.img` can be rebuilt with `just disk`).
 
 ## Testing
 
-`just test` in `r11_busybox/` boots the kernel headless and drives it by typing on the virtio keyboard through the
-QEMU monitor's `sendkey`, checking each command's output against the serial log and the resulting disk contents (see
-`r11_busybox/test/run_tests.py`). New programs get cases there.
+Tests for these programs live in the stage that builds them: in `r12_shell/test/cases/`, `core_utils.py` (the Stage
+9-11 utilities and `tee`, the regression baseline) and `user_progs.py` (Stage 12's additions), driven through the QEMU harness
+described in [`tests.md`](tests.md). New programs get cases there. (`r11_busybox/` keeps its own, older suite.)

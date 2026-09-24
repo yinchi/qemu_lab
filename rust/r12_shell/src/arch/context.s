@@ -22,10 +22,10 @@ KERNEL_CTX:
 
 /* Saves this project's own callee-saved register set (x19-x30) and SP into KERNEL_CTX, alongside
 the address to resume at (the local label below), then erets into EL0 -- SPSR_EL1/ELR_EL1/SP_EL0
-are already set by the caller (process.rs's run_program). Called with a plain `bl`, like any other
+are already set by the caller (exec/process.rs's `run`). Called with a plain `bl`, like any other
 function.
 
-Once exit()/a caught fault (syscall.rs) calls resume_kernel, execution returns here -- not via
+Once exit()/a caught fault (syscall/mod.rs) calls resume_kernel, execution returns here -- not via
 `eret`'s own continuation (that genuinely never returns), but via resume_kernel restoring every
 register saved below and branching directly to the local label, at which point this function does
 an entirely ordinary `ret`, using the x30 that was live when enter_el0 was first called. x0 is
@@ -64,9 +64,9 @@ enter_el0:
 (enter_el0's own `1:` label) -- not a `ret`, since this isn't returning from a call, it's jumping
 into the middle of a function that's still (from the CPU's perspective) mid-execution, waiting at
 that label. x30 is restored as part of this, so enter_el0's own subsequent `ret` correctly returns
-to run_program's call site once resumed.
+to `run`'s call site once resumed.
 
-Called from sync_el0_handler (syscall.rs) for `exit` and for a caught segfault alike -- never
+Called from sync_el0_handler (syscall/mod.rs) for `exit` and for a caught segfault alike -- never
 returns itself. Takes the exit status in w0 and leaves x0 alone (only x9-x11 and the registers being
 restored are touched), so it reaches enter_el0's `ret` as the return value. */
 .global resume_kernel

@@ -1,5 +1,6 @@
-//! The shell: everything above the syscalls. `launch` starts programs, `argv` splits a typed line
-//! into a command and its arguments, and `run` is the read-eval loop `kernel_main` ends in and never
+//! The shell: everything above the syscalls. `lexer` and `syntax` turn a typed line into a `Pipeline`
+//! of commands with their redirections, `builtins` runs the few commands that change the shell's own
+//! state, `launch` starts programs, and `run` is the read-eval loop `kernel_main` ends in and never
 //! leaves (the role `init` plays): it takes key presses from the token queue, hands them to the line
 //! discipline, and runs the line when Enter finishes it. It is ordinary code running outside any
 //! interrupt -- the keyboard interrupt only feeds the queue (`keyboard/queue.rs`) -- so a program it
@@ -34,8 +35,8 @@ use launch::launch;
 use syntax::{Redirection, Segment};
 
 /// The prompt shown before the line being typed -- fixed text with no relation to the line's own
-/// content, so it's structurally impossible for Backspace (which only ever pops the line buffer, see
-/// `keyboard/line.rs`) to erase into or through it.
+/// content, so it's structurally impossible for any editing key (which only ever touches the line
+/// buffer, see `keyboard/line.rs`) to erase into or through it.
 pub const PROMPT: &str = "> ";
 
 /// Starts a fresh prompt: a new input line on the console (on a fresh row if whatever ran left the

@@ -106,8 +106,9 @@ pub fn read(fd: usize, buf: &mut [u8]) -> isize {
     syscall!(SYS_READ, fd, buf.as_mut_ptr() as usize, buf.len())
 }
 
-/// Opens the file or directory at `path` (absolute, or relative to the root -- there is no
-/// working directory yet) and returns its fd, or a negative error.
+/// Opens the file or directory at `path` and returns its fd, or a negative error. A relative
+/// `path` is taken from the shell's working directory (Stage 12 on; earlier stages have none, and
+/// resolve every path from the root).
 pub fn open(path: &str, flags: usize) -> isize {
     syscall!(SYS_OPEN, path.as_ptr() as usize, path.len(), flags)
 }

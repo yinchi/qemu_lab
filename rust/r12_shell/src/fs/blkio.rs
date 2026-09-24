@@ -4,8 +4,7 @@
 //! Reaches the block device through the shared `BLK` static (see `platform/globals.rs`) rather than owning
 //! one directly: `Blk`'s IRQ completion path (`ack_interrupt`, called from `irq_handler`) has to
 //! stay paired with the same instance `read_blocks_irq`/`write_blocks_irq` block on, for this
-//! program's entire remaining lifetime -- not just once at boot the way Stage 6/7's one-shot font
-//! read used it.
+//! program's entire remaining lifetime.
 
 use core::fmt;
 

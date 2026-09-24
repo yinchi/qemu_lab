@@ -9,15 +9,12 @@
 //! anyway if we need to support such events).
 //!
 //! This module also owns the live global instances of both (`KEY_STATE`/`LOCK_STATE`), plus a
-//! code<->name `BiMap` (`KEY_NAMES`) used to display them -- all reached by `main.rs` via
-//! `utils.rs`'s `static_mut_ref!`/`static_ref!` macros.
+//! code<->name `BiMap` (`KEY_NAMES`) that resolves a key's character and name (`tokens.rs`) -- all
+//! reached via `util.rs`'s `static_mut_ref!`/`static_ref!` macros.
 //!
 //! `code` values are Linux evdev `KEY_*` constants (`input-event-codes.h`) -- confirmed against
 //! QEMU's `virtio-keyboard-device`, which reports codes in that numbering, not raw PS/2 scancodes
 //! or USB HID usage IDs.
-
-use alloc::string::String;
-use core::fmt::Write as _;
 
 use bimap::BiMap;
 
@@ -150,17 +147,12 @@ pub fn build_key_names() -> BiMap<u16, &'static str> {
 /// Tracks which keys are currently held, indexed directly by keycode.
 pub struct KeyState {
     held: [bool; MAX_CODE],
-    /// The last key that was pressed (if still held), else None.
-    /// In other words, `None` may indicate that no key is currently held, or that the last
-    /// key pressed has been released.
-    last_held: Option<u16>,
 }
 
 impl KeyState {
     pub const fn new() -> Self {
         Self {
             held: [false; MAX_CODE],
-            last_held: None,
         }
     }
 
@@ -173,8 +165,6 @@ impl KeyState {
         let idx = code as usize;
 
         // Early return if the index is out of bounds or the key's state hasn't changed.
-        // Ensures correct last_held handling by only updating it when a key's state actually
-        // changes.
         if idx >= MAX_CODE || self.held[idx] == down {
             return false;
         }
@@ -182,49 +172,8 @@ impl KeyState {
         // Update the held state for this key.
         self.held[idx] = down;
 
-        // Update the last_held field if this is a key-down or a key-up of the last_held key.
-        if down {
-            // Key-down
-            self.last_held = Some(code);
-        } else if self.last_held == Some(code) {
-            // Key-up of the last_held key. Clear the last_held field.
-            // We do not keep track of previously held keys beyond the last one; this
-            // is consistent with most systems where releasing the last key pressed stops
-            // any auto-repeat behavior.
-            self.last_held = None;
-        }
-
         // Return success status.
         true
-    }
-
-    /// A space-separated list of the currently held keys' names, in keycode order (not press
-    /// order -- simplest to compute, and the demo has no need to distinguish the two).
-    ///
-    /// SAFETY: KEY_NAMES must already be populated -- true from very early in `kernel_main`
-    /// onward (see `main.rs`), well before this is ever called.
-    #[allow(dead_code)]
-    pub fn describe(&self) -> String {
-        let mut s = String::new();
-        for (code, &held) in self.held.iter().enumerate() {
-            if !held {
-                continue;
-            }
-            if !s.is_empty() {
-                s.push(' ');
-            }
-            // SAFETY: see this method's doc comment.
-            match unsafe { crate::static_ref!(KEY_NAMES) }.get_by_left(&(code as u16)) {
-                Some(name) => s.push_str(name),
-                None => {
-                    let _ = write!(s, "K{code}");
-                }
-            }
-        }
-        if s.is_empty() {
-            s.push_str("(none)");
-        }
-        s
     }
 
     /// Returns whether `code` is currently held. Read-only access for layers built on top of
@@ -232,19 +181,6 @@ impl KeyState {
     /// current state without this module duplicating that interpretation itself.
     pub fn is_held(&self, code: u16) -> bool {
         self.held.get(code as usize).copied().unwrap_or(false)
-    }
-
-    /// Returns the last held key, if any.
-    #[allow(dead_code)]
-    pub fn describe_last_held(&self) -> String {
-        // SAFETY: see this method's doc comment.
-        match self.last_held {
-            Some(code) => match unsafe { crate::static_ref!(KEY_NAMES) }.get_by_left(&code) {
-                Some(name) => String::from(*name),
-                None => String::from("K{code}"),
-            },
-            None => String::from("(none)"),
-        }
     }
 }
 
@@ -276,8 +212,8 @@ impl LockState {
     /// `KEY_NAME_TABLE` is already the one source of truth for what each code is called, so this
     /// avoids a second, independent place that has to agree with it on the same three codes.
     ///
-    /// SAFETY: KEY_NAMES must already be populated -- true well before this is ever called, same
-    /// as `KeyState::describe` (see its doc comment).
+    /// SAFETY: KEY_NAMES must already be populated -- true from the top of `kernel_main`, well
+    /// before the first key event can arrive.
     pub fn apply(&mut self, code: u16, value: u32) -> bool {
         if value != 1 {
             return false;
@@ -295,35 +231,13 @@ impl LockState {
         *bit = !*bit;
         true
     }
-
-    /// A space-separated list of the currently-on lock keys' names.
-    #[allow(dead_code)]
-    pub fn describe(&self) -> String {
-        let mut s = String::new();
-        for (on, name) in [
-            (self.caps, "Caps"),
-            (self.num, "Num"),
-            (self.scroll, "Scroll"),
-        ] {
-            if on {
-                if !s.is_empty() {
-                    s.push(' ');
-                }
-                s.push_str(name);
-            }
-        }
-        if s.is_empty() {
-            s.push_str("(none)");
-        }
-        s
-    }
 }
 
 // Live global instances, populated once by `main.rs`'s `kernel_main` before the keyboard's GIC
 // line (KEYBOARD_SPI, back in main.rs alongside BLK_SPI -- IRQ-routing plumbing, not keymap
 // state) is ever enabled -- from that point on, only `irq_handler` (and what it calls) ever
 // touches them, and at most one `irq_handler` invocation runs at a time (single core, IRQs
-// masked for its duration). Reached via `utils.rs`'s `static_mut_ref!`/`static_ref!` macros,
+// masked for its duration). Reached via `util.rs`'s `static_mut_ref!`/`static_ref!` macros,
 // same as BLK/GPU/CONSOLE/KEYBOARD -- see those macros' doc comments for the SAFETY contract
 // every call site is relying on; it's identical here, just restated there once instead of once
 // per accessor function the way this file used to.
@@ -331,7 +245,8 @@ pub static mut KEY_STATE: Option<KeyState> = None;
 pub static mut LOCK_STATE: Option<LockState> = None;
 
 // KEY_NAMES is populated even earlier than the two above -- right at the top of `kernel_main`,
-// before anything else -- since `KeyState::describe` needs it from the very first call onward. Read-only after that
-// one-time population; nothing ever writes it again, so unlike KEY_STATE/LOCK_STATE only
-// `static_ref!` (never `static_mut_ref!`) is ever used on it.
+// before anything else -- since `Token::char()` and the lock-key lookup (`LockState::apply`) need
+// it from the first key event onward. Read-only after that one-time population; nothing ever writes
+// it again, so unlike KEY_STATE/LOCK_STATE only `static_ref!` (never `static_mut_ref!`) is ever
+// used on it.
 pub static mut KEY_NAMES: Option<BiMap<u16, &'static str>> = None;

@@ -1,40 +1,18 @@
 # r12_shell tests
 
-`just test` runs both layers:
-
-- **`just test-host`** -- plain `cargo test` in `hosttests/` on the host, for the kernel's pure-logic modules
-  (path resolver, lexer, line editor, history, UTF-8 decoder, token queue, ...). A module qualifies by being
-  `no_std` + `alloc` with no dependency on the rest of the kernel; `hosttests/src/lib.rs` pulls each one in by path.
-- **`just test-qemu`** -- `run_tests.py` boots the kernel headless and drives it like a user would, typing on the
-  virtio keyboard through the QEMU monitor's `sendkey` and checking the serial log (which mirrors the console), the
-  display (`screendump`, where the serial log can't tell), and the disk image afterwards (`mcopy`, `fsck.fat -n`).
-  It runs the kernel built with the `testhooks` feature (`just build-test`), which prints a console-flush count when
-  each program ends; the harness strips those lines from transcripts and reads them via `Session.flush_counts()`.
-  It works on a sparse copy of `disk.img`, and fails at once on a `Kernel Panic!` or `Unexpected exception`.
-
-  - `harness.py` -- the `Session` (QEMU + monitor + serial log), key names, `Context`, disk helpers.
-  - `run_tests.py` -- runs every module in `CASES` in one session, then their `verify_disk` checks, then `fsck.fat -n`.
-  - `cases/` -- one module per area, each with `run(ctx)` and optionally `verify_disk(ctx)`. `core_utils.py` is the
-    regression baseline for the `user/progs` utilities; each Step of `Stage12.md` adds its own module.
-
-The whole plan and the per-Step test list are in `../../../Stage12.md`.
-
-## Where things live
-
-Tests belong to this stage: everything test-only lives here or in `disk/tests/`, never in `user/`, which holds
-only the core utilities every stage shares.
-
-- `disk/tests/` -- static fixtures checked in (`hello.txt`, `data.bin`, `docs/example.txt`, `notes.txt`, and the
-  scripts and trees later Steps add), plus the generated `*.exe` test programs
-  and malformed ELFs (gitignored). It is on the disk image as `/tests/`. The kernel marks only `bin/` executable at
-  boot, so the harness runs `chmod +x` on the programs it needs.
-- `mkfixtures.py` -- run by `just disk`: derives `bigpad.exe` (a valid program plus 3 MiB of trailing zeros) and seven
-  malformed ELF files (`elf-*.exe`) from `echo.exe`/`hello.exe`, so no binary blobs are checked in.
-- `progs/` -- a separate Cargo package of test-only EL0 programs, built by `just disk` and staged as
-  `disk/tests/<name>.exe`.
+`just test` runs the host tests (`just test-host`, plain `cargo test` on the kernel's pure-logic modules) and then the
+QEMU tests (`just test-qemu`, which boots the kernel headless and drives it by typing on the virtio keyboard). This
+directory holds the QEMU side: the runner (`run_tests.py`), the harness (`harness.py`), one module per area in
+`cases/`, and the test-only programs below. How both layers work, where everything lives, and how to write a test are
+described in [`docs/tests.md`](../../docs/tests.md); `just check-docs` (`check_docs.py`) also fails if a program, syscall or test program below is undocumented. The plan and per-Step test list are in `Stage12.md`.
 
 ## Test programs
 
+The test-only EL0 programs in `progs/`, a separate Cargo package built by `just disk` and staged on the image as
+`/tests/<name>.exe`:
+
 | Program | Purpose |
 |---|---|
-| `probe` | Pokes at the syscall surface from EL0: `sys-unknown` (an unassigned syscall number), `bad-ptr` (bad/wrapping pointers and lengths to write/read/open/chmod), `fds` (opens files until refused, then closes them), `args ...` (prints argc/argv and what the stack layout guarantees). `frag`/`frag-raw` (a 200-fragment line through the stdout buffer vs. 200 raw writes -- the display flush counts differ), `interleave` (stdout `OUT`, stderr `ERR`, order kept), `bs-wide` (a wide glyph, backspace, `X`). Later Steps add subcommands. |
+| `probe` | Pokes at the syscall surface from EL0: `sys-unknown` (an unassigned syscall number), `bad-ptr` (bad/wrapping pointers and lengths to write/read/open/chmod), `fds` (opens files until refused, then closes them), `args ...` (prints argc/argv and what the stack layout guarantees). `frag`/`frag-raw` (a 200-fragment line through the stdout buffer vs. 200 raw writes -- the display flush counts differ), `interleave` (stdout `OUT`, stderr `ERR`, order kept), `bs-wide` (a wide glyph, backspace, `X`). Several more subcommands (`exit`, `poke`, `poke-w`, `user-ptrs`, `ioctl`, `getcwd`, `sp`, `stack`) are listed in `probe.rs`'s header. |
+| `spin` | `spin N` busy-waits N seconds without reading anything, then prints `spun N` -- there is no sleep syscall, so this is how a test keeps a program running while it types. |
+| `overflow` | Recurses without end, so it runs off the bottom of its stack: the kernel must stop it with a fault (`Segmentation fault ...`, exit status 139) and carry on. |

@@ -66,12 +66,10 @@ impl FrameStack {
             .expect("the frame stack is never empty")
     }
 
-    /// How many frames there are; 1 is just the shell's own.
-    // Not used by production code: `shell::MAX_SCRIPT_DEPTH`'s guard is a separate counter, since it
-    // also has to catch *unscoped* recursion (`source` sourcing itself), which never pushes a frame
-    // at all. Kept as a coherent part of this type's API, alongside `push_copy`/`pop`, and exercised
-    // by this module's own tests.
-    #[allow(dead_code)]
+    /// How many frames there are; 1 is just the shell's own. `with_stdio` uses it to check it
+    /// leaves the stack as it found it. (It does not limit script nesting:
+    /// `shell::MAX_SCRIPT_DEPTH` is a separate counter, since it also has to catch *unscoped*
+    /// recursion -- `source` sourcing itself -- which never pushes a frame at all.)
     pub fn depth(&self) -> usize {
         self.frames.len()
     }

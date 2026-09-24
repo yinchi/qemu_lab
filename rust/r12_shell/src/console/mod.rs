@@ -56,12 +56,6 @@ impl Console {
         }
     }
 
-    /// Returns the screen size in character cells as (cols, rows).
-    #[allow(dead_code)]
-    pub fn size(&self) -> (usize, usize) {
-        (self.cols, self.rows)
-    }
-
     /// Draws `glyph` (`width` cells wide) with its left edge at (`row`, `col`), without moving the
     /// cursor. If it covers only half of a wide glyph already there, the other half is blanked.
     fn draw_glyph(

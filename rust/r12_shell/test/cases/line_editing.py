@@ -5,7 +5,7 @@ shell's prompt (`Mode::Prompt`); a program's `read(0)` (`Mode::Canonical`) stays
 cooked-mode behavior it always was, plus the one POSIX refinement Step 12 adds: Ctrl+D on a
 non-empty line delivers what's typed so far without a newline, rather than doing nothing.
 
-See `Stage12.md`'s Step 12 "Token handling by mode" table for what every key means in each mode.
+See `docs/console.md`'s "Token handling by mode" table for what every key means in each mode.
 """
 
 from harness import (
@@ -166,6 +166,14 @@ def run(ctx):
     # newline of its own either; the one trailing here is `start_prompt`'s `uart_ensure_newline`,
     # inserted because the transcript wasn't already on a fresh line when the next prompt began.
     check("cat exits once Ctrl+D hits an empty line", s.wait_prompt(), "cat\nabc\nabc\nkept\nkept\nabc\n")
+
+    # Lines a program read (`abc`, `kept`) are not shell commands: they never enter the prompt's history.
+    s.run("echo probe")
+    s.keys([UP, UP])  # "echo probe", then the command before it -- `cat`, not `kept`
+    s.keys([HOME])
+    s.type("echo \n")
+    check("lines read by a program are not recorded in the prompt's history",
+          s.wait_prompt(), "echo cat\ncat\n")
 
     # --- T12.4b: Ctrl+D still does nothing at the prompt ---
     s.type("echo x")
