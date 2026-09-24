@@ -49,6 +49,7 @@ static mut STDOUT_BUFFER: StdoutBuffer = StdoutBuffer {
     len: 0,
 };
 
+#[allow(clippy::deref_addrof)]
 fn stdout_buffer() -> &'static mut StdoutBuffer {
     // SAFETY: see STDOUT_BUFFER; callers never hold the reference across a call back into this module.
     unsafe { &mut *(&raw mut STDOUT_BUFFER) }
@@ -121,7 +122,8 @@ pub fn close(fd: usize) -> isize {
 
 /// Fills `buf` with as many whole `DIRENT_SIZE` records as fit from an fd opened on a directory,
 /// picking up where the last call left off. Returns the number of bytes filled -- `0` once the
-/// listing is exhausted -- or a negative error.
+/// listing is exhausted -- or a negative error. `buf` must hold at least one `DIRENT_SIZE` record, or the
+/// call is `EINVAL`, not an empty listing.
 pub fn getdents(fd: usize, buf: &mut [u8]) -> isize {
     syscall!(SYS_GETDENTS, fd, buf.as_mut_ptr() as usize, buf.len())
 }

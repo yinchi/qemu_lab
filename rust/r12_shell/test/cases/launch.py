@@ -72,7 +72,7 @@ def run(ctx):
 
     # --- syscall error values ---
     check("probe without a subcommand", s.run("tests/probe.exe"),
-          "tests/probe.exe\nusage: probe sys-unknown|bad-ptr|fds|close-out|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...\nexit 2\n")
+          "tests/probe.exe\nusage: probe sys-unknown|bad-ptr|fds|close-out|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...\nexit 2\n")
     check("unknown syscall is ENOSYS", s.run("tests/probe.exe sys-unknown"),
           "tests/probe.exe sys-unknown\nunknown syscall: -38\n")
     check("ioctl on a closed fd is EBADF", s.run("tests/probe.exe ioctl 3 1"),
@@ -104,6 +104,20 @@ def run(ctx):
     # --- the fd limit: 16 slots, 3 standard, so exactly 13 opens, and closing frees them ---
     check("fd limit is exactly 13 opens", s.run("tests/probe.exe fds"),
           "tests/probe.exe fds\nopened 13, then -24\nafter closing all: open ok\n")
+
+    # --- getdents: a buffer that cannot hold one record is an error, not an empty listing ---
+    check("getdents with a buffer under one record is EINVAL; a file is still ENOTDIR",
+          s.run("tests/probe.exe getdents-small"),
+          "tests/probe.exe getdents-small\n"
+          "empty buffer: -22\n"
+          "one byte short: -22\n"
+          "on a file, too small: -20\n"
+          "exactly one record: 261\n")
+
+    # --- reboot's command is the whole register, not its low 32 bits ---
+    check("reboot with a wide command is EINVAL and does not power off",
+          s.run("tests/probe.exe reboot-wide"),
+          "tests/probe.exe reboot-wide\nreboot(0x14321fedc): -22\n")
 
     # --- argv layout ---
     check("argv, with an empty argument", s.run('tests/probe.exe args a "" b'),

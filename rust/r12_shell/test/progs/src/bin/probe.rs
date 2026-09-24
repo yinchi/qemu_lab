@@ -7,6 +7,10 @@
 //!   probe fds           opens files until the kernel says no, then closes them all
 //!   probe close-out     closes fd 1, tries to write to it, and reports both results on fd 2 -- run as
 //!                      `> f 2>&1` to show that closing one fd leaves the file the other fd shares open
+//!   probe reboot-wide   `reboot` with power-off's command in the low 32 bits and a bit set above them:
+//!                      must be `EINVAL`, not a power-off (this program printing anything proves it lived)
+//!   probe getdents-small  `getdents` with buffers under one record (`EINVAL`), on a file (`ENOTDIR`), and
+//!                      with exactly one record (which must still work after the refused calls)
 //!   probe args ...      prints argc/argv exactly as received, plus what the stack layout guarantees
 //!   probe exit N        exits with status N, passed to the kernel unmasked (so N > 255 tests the mask)
 //!   probe frag          one line of 200 one-digit `write!` fragments (stdout buffer: one console flush)
@@ -53,6 +57,8 @@ fn raw(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> isize {
 }
 
 #[unsafe(no_mangle)]
+// Only `_start` calls this, with the registers the kernel set up.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn main(argc: usize, argv: *const *const u8) -> ! {
     // SAFETY: `_start` forwards the kernel's argc/argv untouched (see userlib's `args`).
     let code = run(unsafe { userlib::args(argc, argv) }, argc, argv);
@@ -79,6 +85,15 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             let closed = userlib::close(1);
             let written = userlib::write(1, b"lost");
             let _ = writeln!(Fd(2), "close(1)={closed} write(1)={written}");
+            0
+        }
+        Some("reboot-wide") => {
+            let wide = 0x1_0000_0000 | abi::reboot::LINUX_REBOOT_CMD_POWER_OFF as usize;
+            let _ = writeln!(out, "reboot({wide:#x}): {}", raw(abi::syscall::SYS_REBOOT, wide, 0, 0, 0));
+            0
+        }
+        Some("getdents-small") => {
+            getdents_small(&mut out);
             0
         }
         Some("args") => {
@@ -165,7 +180,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             None => usage_exit("probe stack KIB"),
         },
         Some("bs-wide") => {
-            let _ = write!(out, "日\u{8}X\n");
+            let _ = writeln!(out, "日\u{8}X");
             0
         }
         Some("interleave") => {
@@ -182,7 +197,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|close-out|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|close-out|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
             2
         }
     }
@@ -225,6 +240,18 @@ fn fds(out: &mut Fd) {
     userlib::close(again as usize);
 }
 
+fn getdents_small(out: &mut Fd) {
+    let dir = userlib::open("/tests", userlib::O_RDONLY);
+    let file = userlib::open("/tests/notes.txt", userlib::O_RDONLY);
+    let mut buf = [0u8; abi::fs::DIRENT_SIZE];
+    let _ = writeln!(out, "empty buffer: {}", userlib::getdents(dir as usize, &mut buf[..0]));
+    let _ = writeln!(out, "one byte short: {}", userlib::getdents(dir as usize, &mut buf[..abi::fs::DIRENT_SIZE - 1]));
+    let _ = writeln!(out, "on a file, too small: {}", userlib::getdents(file as usize, &mut buf[..10]));
+    let _ = writeln!(out, "exactly one record: {}", userlib::getdents(dir as usize, &mut buf));
+    userlib::close(dir as usize);
+    userlib::close(file as usize);
+}
+
 fn print_args(out: &mut Fd, argc: usize, argv: *const *const u8) {
     let _ = writeln!(out, "argc={argc}");
     // SAFETY: as in `main`.
@@ -238,8 +265,8 @@ fn print_args(out: &mut Fd, argc: usize, argv: *const *const u8) {
     unsafe { asm!("mov {}, sp", out(reg) sp) };
     let yes = |b: bool| if b { "yes" } else { "no" };
     let _ = writeln!(out, "argv[argc] is NULL: {}", yes(terminator.is_null()));
-    let _ = writeln!(out, "argv is 16-byte aligned: {}", yes(argv as usize % 16 == 0));
-    let _ = writeln!(out, "sp is 16-byte aligned: {}", yes(sp % 16 == 0));
+    let _ = writeln!(out, "argv is 16-byte aligned: {}", yes((argv as usize).is_multiple_of(16)));
+    let _ = writeln!(out, "sp is 16-byte aligned: {}", yes(sp.is_multiple_of(16)));
 }
 
 /// User-window addresses (see the kernel's `platform/base_addresses.rs`) that are not backed by memory

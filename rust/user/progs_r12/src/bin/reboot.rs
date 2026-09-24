@@ -12,8 +12,8 @@ userlib::entry_with_args!(run);
 const USAGE: &str = "reboot";
 const FLAGS: &[(&str, &str)] = &[];
 
-fn run(args: userlib::Args) -> ExitCode {
-    for arg in args.skip(1) {
+fn run(mut args: userlib::Args) -> ExitCode {
+    if let Some(arg) = args.nth(1) {
         return match arg {
             "--help" => help(USAGE, FLAGS),
             _ if arg.starts_with('-') => unknown_option("reboot", arg),

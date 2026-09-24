@@ -100,6 +100,26 @@ test-host:
     (cd {{justfile_directory()}}/hosttests && cargo test --target "$HOST")
     (cd {{justfile_directory()}}/../user/abi && cargo test --target "$HOST")
 
+# Clippy over every crate this stage builds: the kernel (once as `just build` builds it, once with
+# `testhooks`), the shared crates its programs use, the test programs and the two host-side crates. Not part
+# of `just test`; run it every few Steps and fix what it finds. Fails on the first crate with a warning.
+
+# Clippy on every crate, warnings denied.
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGET=aarch64-unknown-none-softfloat
+    HOST="$(rustc -vV | sed -n 's/^host: //p')"
+    cd {{justfile_directory()}}
+    cargo clippy --target ${TARGET} --release -- -D warnings
+    cargo clippy --target ${TARGET} --release --features testhooks -- -D warnings
+    for crate in ../user/userlib ../user/progs ../user/progs_r12 test/progs; do
+        (cd ${crate} && cargo clippy --target ${TARGET} --release -- -D warnings)
+    done
+    for crate in hosttests ../user/abi; do
+        (cd ${crate} && cargo clippy --target "${HOST}" --all-targets -- -D warnings)
+    done
+
 # Boots the kernel headless and drives it by typing on the virtio keyboard through the QEMU
 # monitor's `sendkey`, checking each command's output (from the serial log) and the resulting
 # disk contents -- see test/run_tests.py. Works on a copy of disk.img, so it never modifies it.

@@ -1,6 +1,11 @@
 //! `SVC`-based syscalls and the segfault path, both reached from
 //! `sync_el0_64` (`arch/vectors.s`) via `sync_el0_handler`. The fd table those syscalls act on is
 //! in `syscall/fd.rs`.
+//!
+//! A user-supplied register value must not be narrowed silently (a `reboot` command that only matched
+//! after losing its top 32 bits was one): the lint below flags any `as` cast that can truncate in this
+//! module and its children, and the ones that must narrow use `try_from` or carry a reason.
+#![warn(clippy::cast_possible_truncation)]
 
 pub mod fd;
 pub mod power;
@@ -37,6 +42,15 @@ pub struct TrapFrame {
     pub spsr_el1: u64,
 }
 
+// A saved register is 64 bits and so is a `usize` here, so `reg` loses nothing.
+const _: () = assert!(usize::BITS == u64::BITS);
+
+/// A saved register's value as a `usize`, whole.
+#[expect(clippy::cast_possible_truncation, reason = "usize is as wide as a register (asserted above)")]
+fn reg(value: u64) -> usize {
+    value as usize
+}
+
 /// Called from `sync_el0_64` with the trap frame's address in `x0`.
 /// Decodes `ESR_EL1`'s `EC` field to tell a deliberate syscall apart from
 /// a fault -- see the three arms below for what each one does.
@@ -51,11 +65,11 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
             // SAFETY: regs points at kernel_entry's just-saved frame,
             // still live on the kernel stack -- sole access to it here.
             let regs = unsafe { &mut *regs };
-            let nr = regs.x[8] as usize; // syscall number
-            let a0 = regs.x[0] as usize; // first argument
-            let a1 = regs.x[1] as usize; // second argument
-            let a2 = regs.x[2] as usize; // third argument
-            let a3 = regs.x[3] as usize; // fourth argument
+            let nr = reg(regs.x[8]); // syscall number
+            let a0 = reg(regs.x[0]); // first argument
+            let a1 = reg(regs.x[1]); // second argument
+            let a2 = reg(regs.x[2]); // third argument
+            let a3 = reg(regs.x[3]); // fourth argument
 
             // Dispatch the syscall based on its number.
             match nr {
@@ -71,17 +85,19 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                 SYS_UNLINKAT => regs.x[0] = fd::unlink(a0, a1, a2) as u64,
                 SYS_RENAMEAT => regs.x[0] = fd::rename(a0, a1, a2, a3) as u64,
                 SYS_NEWFSTATAT => regs.x[0] = fd::stat(a0, a1, a2) as u64,
-                SYS_REBOOT => regs.x[0] = power::reboot(a0 as u32) as u64,
+                SYS_REBOOT => regs.x[0] = power::reboot(a0) as u64,
                 SYS_EXIT => {
                     // Never returns to kernel_exit's normal eret-back-to-EL0
                     // path -- resume_kernel (arch/context.s) restores the register
                     // set enter_el0 checkpointed and jumps straight back into
                     // `process::run`'s call site instead, handing it the exit status.
                     // Only the low 8 bits are a status, as in POSIX (`WEXITSTATUS`): 0-255.
+                    #[expect(clippy::cast_possible_truncation, reason = "the mask keeps 8 bits by design")]
+                    let status = (a0 & 0xff) as i32;
                     // SAFETY: only reachable once `process::run` has actually
                     // called enter_el0 (context.s's KERNEL_CTX holds a real
                     // checkpoint, not its zeroed initial state).
-                    unsafe { process::resume_kernel((a0 & 0xff) as i32) }
+                    unsafe { process::resume_kernel(status) }
                 }
                 _ => regs.x[0] = ENOSYS as u64, // no such syscall
             }

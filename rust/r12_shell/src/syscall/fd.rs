@@ -147,14 +147,18 @@ mod testhooks {
 
     static mut FLUSHES: usize = 0;
 
-    pub fn count_flush() {
+    #[allow(clippy::deref_addrof)]
+    fn flushes() -> &'static mut usize {
         // SAFETY: single core, IRQs masked in syscalls (see FD_TABLE).
-        unsafe { *(&raw mut FLUSHES) += 1 };
+        unsafe { &mut *(&raw mut FLUSHES) }
+    }
+
+    pub fn count_flush() {
+        *flushes() += 1;
     }
 
     pub fn report_and_reset() {
-        // SAFETY: as above.
-        let n = unsafe { core::mem::replace(&mut *(&raw mut FLUSHES), 0) };
+        let n = core::mem::replace(flushes(), 0);
         // Save and restore the line-start flag around this line: the harness strips it from the
         // transcript entirely (see `TESTHOOK_LINE` in `test/harness.py`), so it must be invisible to
         // `uart_ensure_newline`'s bookkeeping too, or a real line right before it that did *not* end

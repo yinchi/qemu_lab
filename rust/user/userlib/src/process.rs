@@ -156,6 +156,9 @@ pub unsafe fn args(argc: usize, argv: *const *const u8) -> Args {
 macro_rules! entry_with_args {
     ($run:path) => {
         #[unsafe(no_mangle)]
+        // Only `_start` (start.s) calls this, with the registers the kernel set up; it is not an API
+        // that could be handed an arbitrary pointer.
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         pub extern "C" fn main(argc: usize, argv: *const *const u8) -> ! {
             // SAFETY: `_start` (start.s) forwards these straight from the kernel's `eret`,
             // upholding `args`'s contract by construction.

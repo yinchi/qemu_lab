@@ -4,6 +4,11 @@
 //!
 //! Modules are added as the Steps in `Stage12.md` create them.
 
+#![allow(
+    clippy::new_without_default,
+    reason = "these modules are `pub` only so the tests can reach them; in the kernel they are private, where the lint does not apply"
+)]
+
 extern crate alloc;
 
 #[path = "../../src/exec/argplan.rs"]

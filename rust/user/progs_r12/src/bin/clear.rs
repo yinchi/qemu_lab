@@ -11,8 +11,8 @@ userlib::entry_with_args!(run);
 const USAGE: &str = "clear";
 const FLAGS: &[(&str, &str)] = &[];
 
-fn run(args: userlib::Args) -> ExitCode {
-    if args.skip(1).next() == Some("--help") {
+fn run(mut args: userlib::Args) -> ExitCode {
+    if args.nth(1) == Some("--help") {
         return progs::help(USAGE, FLAGS);
     }
     let result = userlib::ioctl(1, CONSOLE_CLEAR, 0);

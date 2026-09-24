@@ -474,7 +474,7 @@ mod tests {
     fn refuses_segment_file_ranges_beyond_the_file() {
         for (off, filesz) in [
             (120u64, 17u64),
-            (137, 0 + 1),
+            (137, 1),
             (u64::MAX, 1),
             (100, u64::MAX),
             (1 << 40, 16),

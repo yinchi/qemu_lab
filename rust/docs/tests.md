@@ -16,6 +16,12 @@ docs are complete (below):
 `test/progs/` is not described in `test/README.md`, or a test program's name also exists under `user/`.
 Adding a program or syscall without documenting it therefore fails `just test`.
 
+Linting is separate and not part of `just test`: `just lint` runs clippy, with warnings denied, over every crate
+the stage builds (the kernel, also with `testhooks`; `userlib`, `progs`, `progs_r12`, `test/progs`; and
+`hosttests` and `abi` on the host), and is worth running every few Steps. It is clean as of Step 13b. `syscall/` additionally
+warns on any `as` cast that can truncate (`clippy::cast_possible_truncation`), so a user-supplied register value
+is never narrowed silently.
+
 A behavior gets a host test when it can, and a QEMU test when it has to. Many features get both: the
 lexer's grammar is host-tested, and `pipes.py` checks that a pipeline actually runs.
 

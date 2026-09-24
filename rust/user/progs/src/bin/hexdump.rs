@@ -78,7 +78,7 @@ fn run(args: userlib::Args) -> ExitCode {
         let _ = write!(out, "{offset:08x} ");
 
         // Print the hex representation of each byte in the row.
-        for i in 0..WIDTH {
+        for (i, byte) in row.iter().enumerate() {
 
             // Add an extra space in the middle of the row (8 bytes) for readability.
             if i == WIDTH / 2 {
@@ -87,7 +87,7 @@ fn run(args: userlib::Args) -> ExitCode {
 
             // Print the hex representation of each byte in the row.
             if i < filled {
-                let _ = write!(out, " {:02x}", row[i]);
+                let _ = write!(out, " {:02x}", byte);
             } else {
                 // Print spaces for bytes that were not filled in the last row.
                 let _ = write!(out, "   ");

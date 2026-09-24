@@ -140,7 +140,9 @@ with `EBUSY` instead of silently emptying `f`.
 | 6&ndash;260 | the name, NUL-padded to `NAME_MAX` (255) |
 
 That is `DIRENT_SIZE` = 261 bytes per entry. Entries come in **on-disk order, not sorted**; the volume-label
-pseudo-entry, `.` and `..` are skipped.
+pseudo-entry, `.` and `..` are skipped. The buffer must hold at least one record: a smaller one is `EINVAL`,
+because the `0` that would otherwise come back means &ldquo;no more entries&rdquo; and a caller with a
+too-small buffer would silently see an empty directory (Linux does the same).
 
 ## Attributes and permissions
 

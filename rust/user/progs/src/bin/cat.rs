@@ -50,11 +50,9 @@ fn run(args: userlib::Args) -> ExitCode {
     }
 
     // If no file arguments were provided, read from stdin.
-    if !any_file {
-        if let Err(e) = copy(0, 1) {
-            fail("cat", "stdin", e);
-            status = 1;
-        }
+    if !any_file && let Err(e) = copy(0, 1) {
+        fail("cat", "stdin", e);
+        status = 1;
     }
 
     // Return the exit status; an error on any file or stdin will result in a

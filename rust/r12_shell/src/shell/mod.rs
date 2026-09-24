@@ -223,6 +223,7 @@ static mut PIPE_COUNTER: usize = 0;
 /// nothing works out within `MAX_PIPE_NAME_ATTEMPTS` tries.
 fn next_pipe_path() -> Result<String, String> {
     // SAFETY: see PIPE_COUNTER.
+    #[allow(clippy::deref_addrof)]
     let counter = unsafe { &mut *(&raw mut PIPE_COUNTER) };
     for _ in 0..MAX_PIPE_NAME_ATTEMPTS {
         let path = format!("{PIPE_PREFIX}{counter}");

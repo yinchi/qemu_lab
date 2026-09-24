@@ -68,8 +68,8 @@ mod tests {
         let lens = [4, 0, 7, 1];
         let p = plan(TOP, FLOOR, &lens).unwrap();
         assert_eq!(p.strings[0], TOP - 5);
-        for i in 1..lens.len() {
-            assert_eq!(p.strings[i], p.strings[i - 1] - (lens[i] + 1));
+        for (i, len) in lens.iter().enumerate().skip(1) {
+            assert_eq!(p.strings[i], p.strings[i - 1] - (len + 1));
         }
         // The last string is above the pointer array, with room for argc + 1 pointers.
         assert!(p.array + 8 * (lens.len() + 1) <= *p.strings.last().unwrap());

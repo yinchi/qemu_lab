@@ -25,7 +25,7 @@ this file is the full plan: every Step, its tests, the state the stage ends in, 
 | 11c | `poweroff`/`reboot` via PSCI | done |
 | 12 | Line editing and history | done |
 | 13 | Docs, roadmap, docs check (its regression tests run at the end of 13b) | done |
-| 13b | Open-file reference counting (`Rc`) and small syscall-surface fixes | in progress: 13b-1 done |
+| 13b | Open-file reference counting (`Rc`) and small syscall-surface fixes | in progress: 13b-1 to 13b-3 done |
 
 ## Goal
 Turn Stage 10's launcher into a shell worth typing at -- line editing with history, `cd`/`pwd`/`mkdir`/`rm`/`mv`,
@@ -1423,7 +1423,7 @@ each records whether it has been agreed.
   `filesystem.md` ("Open files", including the shell-owned wording), `shell.md` ("Redirection", handles closed when
   the segment ends), and this file's Step 13 known-limitation bullet.
 
-#### 13b-2: `getdents` with a buffer smaller than one record (agreed)
+#### 13b-2: `getdents` with a buffer smaller than one record (done)
 - **The problem.** `files::getdents` copies records while the next one fits (`off + DIRENT_SIZE <= buf.len()`).
   With a buffer under `DIRENT_SIZE` (261 bytes) the loop never runs and the call returns `0`, which is also what
   it returns at the end of the listing, so a caller that sizes its buffer wrongly gets a silently empty
@@ -1433,8 +1433,13 @@ each records whether it has been agreed.
   for one entry. Update the `userlib::getdents` doc, `syscalls.md` and `filesystem.md`, which currently say the
   call returns `0` in that case.
 - **Test.** A `probe` subcommand calling `getdents` with a too-small buffer and expecting `EINVAL`.
+- **As built.** `files::getdents` checks `buf.len() < DIRENT_SIZE` right after the directory check, so a non-directory
+  fd is still `ENOTDIR` whatever the buffer size. `probe getdents-small` (in `launch.py`) tries an empty buffer and
+  one 260 bytes long (both `-22`), a file with a 10-byte buffer (`-20`), and then exactly one record (`261`),
+  which also shows that the refused calls did not advance the directory. All in-tree callers already pass
+  `DIRENT_SIZE * BATCH`. `syscalls.md`, `filesystem.md` and `userlib`'s `getdents` doc say `EINVAL`.
 
-#### 13b-3: `reboot`'s command truncated to 32 bits (agreed)
+#### 13b-3: `reboot`'s command truncated to 32 bits (done)
 - **The problem.** The dispatcher passes `a0 as u32`, so `0x1_4321_FEDC` also powers off.
 - **Is it a wider problem?** No: a sweep of `syscall/` finds exactly two narrowing casts of a user-supplied value,
   this one and `exit`'s deliberate `(a0 & 0xff)` (only the low 8 bits are a status, as in POSIX). Every other
@@ -1445,12 +1450,31 @@ each records whether it has been agreed.
 - **The guard.** `#![warn(clippy::cast_possible_truncation)]` at the top of `syscall/mod.rs` (covering `fd.rs` and
   `power.rs`), so a new silent narrowing shows up. `exit`'s deliberate mask is pulled into its own `let` carrying
   `#[expect(clippy::cast_possible_truncation, reason = "...")]`: `expect`, unlike `allow`, warns if the lint stops
-  firing, so the exemption can't go stale. Clippy is not part of `just test`, so this is advisory: a new
-  `just lint` recipe (`cargo clippy`) makes it one short command, and the practice is to run it periodically,
-  every few Steps, and clean up what it finds. (The rest of the crate has not been linted this way yet, so the
-  first run will also report other findings.)
+  firing, so the exemption can't go stale. Clippy is not part of `just test`, so this is advisory, and the practice is to run
+  it periodically, every few Steps, and clean up what it finds. It first looked like `cargo clippy` needed no
+  recipe, but the stage builds seven crates (the kernel, three shared or test-program crates, and two host-side
+  ones), so `just lint` runs them all with warnings denied.
 - **Test.** A `probe` subcommand calling `reboot` with a wide command, which must return `EINVAL` and not power
   off.
+- **As built.** `power::reboot` takes the whole `usize` and matches `u32::try_from(cmd)` against the two commands;
+  the dispatcher no longer casts. `syscall/mod.rs` has the `#![warn(clippy::cast_possible_truncation)]` guard. Two
+  places narrow deliberately and say so: `exit`'s `& 0xff` (an `#[expect]` with a reason) and the new `reg`
+  helper, which reads a saved 64-bit register as a `usize` under a `const` assertion that the two are the same
+  width (without it the lint flags all five register reads, as a false positive on a 64-bit target). Test:
+  `probe reboot-wide` (`launch.py`) prints `-22` and the machine stays up.
+- **First clippy run over every crate**, which the guard prompted. Findings, all fixed:
+  - Kernel: three `deref_addrof` lint hits on the `&mut *(&raw mut STATIC)` idiom (the crate's pattern is a
+    one-line accessor with `#[allow(clippy::deref_addrof)]`; the pipe counter and the `testhooks` flush counter
+    got the same).
+  - `hosttests`: `new_without_default` (the kernel's types are `pub` there only so the tests reach them, so
+    `hosttests/src/lib.rs` allows it with a reason), `needless_range_loop` and `identity_op` in two tests.
+  - `user/` crates, which every stage from r09 builds, so **T13.2 must rebuild r09-r11 against them**: the
+    `entry_with_args!` macro's generated `main` (a *deny*-level `not_unsafe_ptr_arg_deref`, which stopped every
+    program from being linted at all; allowed, since only `_start` calls it), `userlib`'s stdout buffer accessor,
+    `tail`'s stdin buffer, `args.skip(1).next()` to `args.nth(1)` in `true`/`false`/`clear`, `reboot`'s
+    never-looping `for`, an index loop in `hexdump`, a collapsible `if` in `cat`, and in `probe` a `write!` ending
+    in a newline and two `% 16 == 0` checks.
+  - No behavior changed apart from the `reboot` fix; the full suite passes. `just lint` is clean.
 
 #### 13b-4: a review pass over the rewritten code
 After 13b-1 to 13b-3, read what they rewrote (`fs/files.rs`, `syscall/fd.rs`, the redirect and pipeline paths in

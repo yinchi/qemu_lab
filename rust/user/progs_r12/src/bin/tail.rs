@@ -158,6 +158,7 @@ fn tail_stdin(mode: CountMode, count: usize) -> Result<(), isize> {
     // up to the limit.
     //
     // SAFETY: this program is single-threaded and this is the only reference to STDIN_BUF.
+    #[allow(clippy::deref_addrof)]
     let buf = unsafe { &mut *(&raw mut STDIN_BUF) };
 
     // Read all of stdin into the buffer, up to the limit.

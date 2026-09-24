@@ -271,14 +271,19 @@ pub fn write(file: &FileRef, bytes: &[u8]) -> isize {
 }
 
 /// Batched reading of directory entries. Fills `buf` with as many directory entries as can fit in
-/// one call. Returns the number of bytes written to `buf`. Moves the `next` index in the
-/// directory `file` accordingly.
+/// one call. Returns the number of bytes written to `buf` (`0` once the listing is exhausted), moving
+/// the `next` index in the directory `file` accordingly; `ENOTDIR` if `file` is not a directory, and
+/// `EINVAL` if `buf` cannot hold even one `DIRENT_SIZE` record -- otherwise the `0` it would return
+/// could not be told apart from the end of the listing.
 pub fn getdents(file: &FileRef, buf: &mut [u8]) -> isize {
     let mut file = file.borrow_mut();
     let Kind::Dir { recs, next } = &mut file.kind else {
         // If the file is not a directory, return `ENOTDIR`.
         return ENOTDIR;
     };
+    if buf.len() < DIRENT_SIZE {
+        return EINVAL;
+    }
 
     let mut off = 0;
     while *next < recs.len() && off + DIRENT_SIZE <= buf.len() {
