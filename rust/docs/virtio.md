@@ -1,6 +1,6 @@
 # VirtIO drivers and supporting modules
 
-This file describes the VirtIO drivers and supporting modules implemented in Rust, as of `r13_rtc/` (`src/drivers/virtio/`); where an earlier stage differed, the text says so. The addresses these devices live at are in [`memory_regions.md`](memory_regions.md), and the page table the HAL relies on is in [`mmu.md`](mmu.md).
+This file describes the VirtIO drivers and supporting modules implemented in Rust, as of `r14_file_times/` (`src/drivers/virtio/`); where an earlier stage differed, the text says so. The addresses these devices live at are in [`memory_regions.md`](memory_regions.md), and the page table the HAL relies on is in [`mmu.md`](mmu.md).
 
 ## Overview
 
@@ -74,7 +74,7 @@ For example, if the user presses and releases Caps Lock, then holds down 'A' whi
 
 The GPU driver (`drivers/virtio/gpu.rs`) negotiates a fixed 640x480 resolution once, in `Gpu::framebuffer()` (which calls the `virtio_drivers` crate's `change_resolution`), and returns a `FramebufferInfo` &mdash; pointer, width, height and stride &mdash; describing the DMA-backed pixel buffer in RAM. `flush()` dumps the framebuffer contents to the display. The resolution is fixed thereafter, and the driver knows nothing about text.
 
-We also provide a `Console` abstraction that interacts with the GPU driver to render text output to the display, using functions such as `put_char` and `move_cursor` (the list below is the `r06`-`r11` API; `r13_rtc` changed it -- see "Stage 12 onward" under Font handling).  A call chain may include (all within `console.rs`, which became `console/mod.rs` in r12):
+We also provide a `Console` abstraction that interacts with the GPU driver to render text output to the display, using functions such as `put_char` and `move_cursor` (the list below is the `r06`-`r11` API; `r14_file_times` changed it -- see "Stage 12 onward" under Font handling).  A call chain may include (all within `console.rs`, which became `console/mod.rs` in r12):
 
 - `write_char()`: handles `\n`, `\r`, and `\t`, which move the cursor accordingly (a `\n` on the last row also calls `scroll_up()` to make room for the new line), and otherwise writes a character to the current cursor position using `putc`.
 - `putc()`: writes a character to the current cursor position on the framebuffer, using `put_char`, and then advances the cursor position accordingly — note that in r06-r09 this does not itself scroll if writing runs past the last row (r10 and r11's `putc` scrolls itself).
@@ -97,7 +97,7 @@ The glyph bitmaps are packed into a single contiguous array in CP437 order; howe
 
 #### Stage 12 onward: Unicode with GNU Unifont
 
-`r13_rtc` draws Unicode directly. There is no codepage and no font file on the disk: the glyphs are GNU Unifont's, from the `unifont` crate (`no_std`, MIT; the font data itself is dual-licensed GPLv2+ with the font-embedding exception, or SIL OFL 1.1), compiled into the kernel image's read-only data (about 1.9 MB). `Font`, `cp437.rs`, `spleen.raw` and the boot-time font read are gone. Three small modules under `console/` divide the work, and all three are pure (apart from the `unifont` crate), so they are tested on the host (`hosttests/`):
+`r14_file_times` draws Unicode directly. There is no codepage and no font file on the disk: the glyphs are GNU Unifont's, from the `unifont` crate (`no_std`, MIT; the font data itself is dual-licensed GPLv2+ with the font-embedding exception, or SIL OFL 1.1), compiled into the kernel image's read-only data (about 1.9 MB). `Font`, `cp437.rs`, `spleen.raw` and the boot-time font read are gone. Three small modules under `console/` divide the work, and all three are pure (apart from the `unifont` crate), so they are tested on the host (`hosttests/`):
 
 - **Bytes to characters (`utf8.rs`, pure).** A program's console output is UTF-8, but a `write` can end in the middle of a character (`cat` sends 4096-byte chunks). `Utf8Decoder` decodes one byte at a time, keeps its state between calls, and yields `char`s. Each maximal invalid sequence becomes one U+FFFD and the decoder resynchronizes (the WHATWG algorithm, so overlong forms, surrogates and values above U+10FFFF are invalid). The UART mirror still carries the raw bytes. `syscall/fd.rs`'s `console_write` is the caller.
 - **Characters to glyphs (`font.rs`).** `glyph_for(c)` returns `unifont::get_glyph(c)`: a `Glyph::Halfwidth` (8x16 pixels) or `Glyph::Fullwidth` (16x16). The crate covers the Basic Multilingual Plane only, so a character with no glyph -- everything above U+FFFF included -- and any control character the console does not interpret draws U+FFFD. `cell_width(c)` is 2 for a fullwidth glyph, 0 for the few code points that draw nothing (`is_zero_width`: zero-width space, joiners and directional marks (U+200B..U+200F), the word joiner, variation selectors, the byte-order mark) and 1 otherwise; the width comes from the glyph itself, with no East Asian Width table.

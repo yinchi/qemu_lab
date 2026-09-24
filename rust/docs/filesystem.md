@@ -1,7 +1,7 @@
 # The filesystem
 
 Programs see a single FAT16 volume mounted at `/`. The kernel does not implement FAT itself: the
-[`hadris-fat`](https://crates.io/crates/hadris-fat) crate does, and `rust/r13_rtc/src/fs/` is the glue
+[`hadris-fat`](https://crates.io/crates/hadris-fat) crate does, and `rust/r14_file_times/src/fs/` is the glue
 between it, the block device below and the syscalls above.
 
 ```mermaid
@@ -112,8 +112,8 @@ runs at a time, and the shell never reads and writes one path at once. What it d
   also reads the stale bytes past the new end. If it shrinks across a cluster boundary, the freed clusters
   are gone from the chain: the reader gets `EIO`, or, if another file has since been given those clusters,
   reads that file's bytes. `hadris-fat` revalidates the entry on each read, but only by short name and creation
-  time, which catches a deleted file yet not a rewritten one (and, since every entry is stamped with the FAT epoch until Stage 14, not
-  delete-and-recreate either).
+  time, which catches a deleted file yet not a rewritten one (a delete-and-recreate within the same second
+  gets the same creation stamp, so it is not caught either).
 - `unlink` and `rename` do not look at open fds either.
 - FAT has no inodes, so there is no Unix behaviour to imitate, where an open file keeps its old contents after
   it is truncated or unlinked. The options are refusal or stale data.
@@ -172,8 +172,16 @@ by the containing directory alone, as for a privileged process on Unix.
 | `stat` | Every field a FAT entry stores: size, attributes, created/modified date-time, accessed date. Dates are FAT's packed encoding, not calendar values; the root has no entry of its own and reports size 0, directory, and the FAT epoch. |
 | `chmod` | As above. |
 
-Timestamps are what is stored: the fixed build-time stamp for files bundled into the image, and the FAT epoch
-(1980-01-01) for anything the kernel itself creates or writes, since nothing stamps a file from the real-time clock (which exists as of Stage 13, for `date`) until Stage 14.
+Timestamps are what is stored. Anything the kernel creates or writes is stamped from the real-time clock
+(`fs/rtc_time.rs`, handed to `hadris-fat` when the volume is mounted): creating a file or directory sets its
+created and modified times, writing moves the modified time, and the accessed date is today's. **They are UTC.**
+FAT has no time-zone field and Windows reads the fields as local time, but the kernel never interprets a stamp:
+it writes what the clock says and `stat` hands the fields back raw, so reading and writing agree, as on Linux with
+`mount -o tz=UTC`. Turning a stamp into a user's local time is a display matter for the program that prints it
+(Stage 17's `$TZ`), and the stored bytes do not change with the zone. FAT holds 1980 to 2107 in 2-second steps
+(the created time also has a 10 ms field, which carries the odd second), so a clock outside that range, or an
+unset RTC reading 1970, is clamped whole to the nearest end (`fs/fattime.rs`, host-tested). Files bundled into the
+image keep the fixed stamp `folder_to_img.sh` gave them; this stage's `just disk` builds the image with `TZ=UTC` (mtools writes the stamp as local time), so it is identical on every host.
 
 `mkdir`, `unlink` and `rename` map `hadris-fat`'s errors through one function (`map_fat_err`): `AlreadyExists` to
 `EEXIST`, `DirectoryNotEmpty` to `ENOTEMPTY`, `InvalidPath`/`InvalidFilename` to `EINVAL`, `NoFreeSpace`/

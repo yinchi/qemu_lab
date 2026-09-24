@@ -762,9 +762,18 @@ reflects something other than a fixed value.
 **Demo:** `cp` a file (or redirect into one), `stat` it, and inspect its directory entry, and confirm the
 timestamp reflects real "now" -- rather than the fixed build-time value every other file on the
 image still carries.
-Side effects to plan for: Stage 12's tests pin the FAT epoch for kernel-created entries (the `stat` checks in
-`user_progs.py`), and `progs.md`/`filesystem.md` say "no RTC until Stage 13"; both change here. Real creation times
-also make `hadris-fat`'s stale-entry check (name plus creation time) meaningfully stronger, at one-second resolution.
+**As built.** `r14_file_times` is `r13_rtc` plus: `fs/rtc_time.rs`, a `TimeProvider` reading the PL031 that the volume is
+mounted with (`FatVolumeBuilder::new(blk_io).time_provider(&RTC_TIME).open()` in `main.rs`), and `fs/fattime.rs`, the pure
+Unix-seconds-to-FAT-fields conversion (on `chrono`, no zones; host-tested, including the clamping of a clock outside 1980 to
+2107, such as an unset RTC reading 1970). No program changed: `cp`, `mkdir`, `tee`, redirects and `mv` stamp through
+`hadris-fat` as before. **Timestamps are stored in UTC** -- FAT has no zone field and Windows reads its fields as local time,
+but the kernel never interprets a stamp (`stat` hands the raw fields back), so reading and writing agree, as with Linux's
+`mount -o tz=UTC`; converting to a user's zone is a display matter for Stage 17's `$TZ`. This stage's `just disk` builds the image
+with `TZ=UTC` (set in its justfile, not in the shared `folder_to_img.sh`, so earlier stages' images and tests are untouched),
+since mtools writes `SOURCE_DATE_EPOCH` as local time and the bundled fixtures' fixed stamp should not depend on the host. Tests: `stat` checks a new directory and a copied file are created and modified within seconds of the host's clock,
+that an append moves the modified time on (by the wait) and leaves the creation time, that a rewrite and a redirect-created
+file are stamped too, and that a bundled fixture keeps its build-time stamp. Real creation times make `hadris-fat`'s stale-entry
+check (name plus creation time) stronger, to one-second resolution.
 
 ---
 

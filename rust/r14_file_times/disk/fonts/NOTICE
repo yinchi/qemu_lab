@@ -1,0 +1,9 @@
+This directory no longer holds a font: the console's glyphs are GNU Unifont's, compiled into the
+kernel by the `unifont` crate (https://crates.io/crates/unifont, MIT), which embeds Unifont's
+`unifont.hex` (https://unifoundry.com/unifont/). Stage 12 Step 2b describes why.
+
+GNU Unifont is copyright Roman Czyborra, Paul Hardy and contributors. Its glyphs are dual-licensed:
+GNU GPL version 2 or later with the GNU Font Embedding Exception, or the SIL Open Font License 1.1.
+
+Earlier stages read Spleen (BSD 2-Clause, Frederic Cambus, https://github.com/fcambus/spleen) from
+this directory; r14 does not. The directory stays because tests use it as a second directory.

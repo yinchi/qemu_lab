@@ -2,7 +2,7 @@
 
 The interface between an EL0 program and the kernel. The definitions are in the shared `abi` crate
 (`rust/user/abi/`), which both the kernel and `userlib` depend on, so the two sides cannot disagree about a
-number or a constant. The kernel's side is `rust/r13_rtc/src/syscall/`; programs normally reach it through
+number or a constant. The kernel's side is `rust/r14_file_times/src/syscall/`; programs normally reach it through
 `userlib` (`rust/user/userlib/`) rather than issuing `svc` themselves.
 
 ## Calling convention
