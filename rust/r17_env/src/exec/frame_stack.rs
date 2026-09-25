@@ -1,11 +1,17 @@
 //! The shell's state that a script or a redirect must be able to save and restore: the working
-//! directory and the three standard streams' bindings, held as a stack of frames. (Stage 17 adds the
-//! environment to the frame; it becomes, in effect, the per-process state a child inherits.)
+//! directory, the three standard streams' bindings and the shell's variables, held as a stack of frames. It is,
+//! in effect, the per-process state a child inherits.
+//!
+//! **Variables** are POSIX's: each has a name, a value and an `exported` flag. All of them can be read (`$NAME`);
+//! only the exported ones are handed on to a program (its `envp`) and to a script run as its own process.
+//! Assigning keeps a variable's flag (a new one is not exported); `export` sets the flag; `unset` removes.
 //!
 //! Two different scoping operations, deliberately not one:
-//! - `with_scope`: push a copy of the whole frame, run, pop. Everything the code inside changes -- the
-//!   working directory, the stream bindings -- is gone afterwards. What a script run as its own process
-//!   (`./script.sh`, `sh script.sh`) gets.
+//! - `with_scope`: push a *child process's* frame, run, pop. It starts with the working directory and stream
+//!   bindings of the frame it was pushed on, but only the **exported** variables, all of them exported, as a real
+//!   child process would inherit them. Everything the code inside changes -- the working directory, the stream
+//!   bindings, the variables -- is gone afterwards. What a script run as its own process (`./script.sh`,
+//!   `sh script.sh`) gets. (`source` pushes nothing: it runs against the current frame.)
 //! - `with_stdio`: replace some stream bindings on the *current* frame, run, put them back -- and nothing
 //!   else. A `cd` done inside stays done. What every redirect uses, builtins included, so that
 //!   `cd dir > f` still changes directory.
@@ -34,6 +40,26 @@ pub enum StdioBinding<F> {
     File(F),
 }
 
+/// A shell variable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Var {
+    pub name: String,
+    pub value: String,
+    /// Whether programs the shell starts (and scripts run as their own process) receive it.
+    pub exported: bool,
+}
+
+/// Whether `name` is a valid variable name: a letter or `_`, then letters, digits and `_`.
+pub fn is_valid_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+/// The name given to a variable operation was not a valid name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidName;
+
 /// One level of shell state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellFrame<F> {
@@ -41,7 +67,65 @@ pub struct ShellFrame<F> {
     pub cwd: String,
     /// Where stdin, stdout and stderr go.
     pub stdio: [StdioBinding<F>; 3],
-    // Stage 17 adds `env` here.
+    /// The shell's variables, in the order they were first set.
+    pub vars: Vec<Var>,
+}
+
+// Read by the launcher (Step 2: `exported`), the expander (Step 3: `var`) and `export` (`is_exported`, Step 4's
+// overlay), not yet: tested here, unused by the kernel until those Steps.
+#[allow(dead_code)]
+impl<F> ShellFrame<F> {
+    /// The value of the variable `name`, if it is set (exported or not).
+    pub fn var(&self, name: &str) -> Option<&str> {
+        self.vars.iter().find(|v| v.name == name).map(|v| v.value.as_str())
+    }
+
+    /// Whether `name` is set and exported.
+    pub fn is_exported(&self, name: &str) -> bool {
+        self.vars.iter().any(|v| v.name == name && v.exported)
+    }
+
+    /// Sets `name` to `value`. An existing variable keeps its exported flag and its place in the order; a new
+    /// one is not exported.
+    pub fn set_var(&mut self, name: &str, value: &str) -> Result<(), InvalidName> {
+        if !is_valid_name(name) {
+            return Err(InvalidName);
+        }
+        match self.vars.iter_mut().find(|v| v.name == name) {
+            Some(v) => v.value = String::from(value),
+            None => self.vars.push(Var {
+                name: String::from(name),
+                value: String::from(value),
+                exported: false,
+            }),
+        }
+        Ok(())
+    }
+
+    /// `export NAME[=VALUE]`: with a value, sets the variable and exports it; without one, exports it if it is
+    /// set and does nothing if it is not (there is nothing to mark).
+    pub fn export_var(&mut self, name: &str, value: Option<&str>) -> Result<(), InvalidName> {
+        if !is_valid_name(name) {
+            return Err(InvalidName);
+        }
+        if let Some(value) = value {
+            self.set_var(name, value)?;
+        }
+        if let Some(v) = self.vars.iter_mut().find(|v| v.name == name) {
+            v.exported = true;
+        }
+        Ok(())
+    }
+
+    /// Removes `name`, whether or not it was set.
+    pub fn unset_var(&mut self, name: &str) {
+        self.vars.retain(|v| v.name != name);
+    }
+
+    /// The exported variables as `(name, value)`, in order: what a program gets as its environment.
+    pub fn exported(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.vars.iter().filter(|v| v.exported).map(|v| (v.name.as_str(), v.value.as_str()))
+    }
 }
 
 /// The stack of frames. Never empty: the bottom frame is the shell's own, and is never popped.
@@ -56,6 +140,7 @@ impl<F: Clone> FrameStack<F> {
             frames: alloc::vec![ShellFrame {
                 cwd: String::from("/"),
                 stdio: [StdioBinding::Default, StdioBinding::Default, StdioBinding::Default],
+                vars: Vec::new(),
             }],
         }
     }
@@ -79,10 +164,21 @@ impl<F: Clone> FrameStack<F> {
         self.frames.len()
     }
 
-    /// Pushes a copy of the top frame.
-    pub fn push_copy(&mut self) {
-        let copy = self.top().clone();
-        self.frames.push(copy);
+    /// Pushes the frame a child process would start with: the top frame's working directory and stream
+    /// bindings, and only its exported variables (all of them exported: they are the child's environment).
+    pub fn push_child(&mut self) {
+        let top = self.top();
+        let child = ShellFrame {
+            cwd: top.cwd.clone(),
+            stdio: top.stdio.clone(),
+            vars: top
+                .vars
+                .iter()
+                .filter(|v| v.exported)
+                .cloned()
+                .collect(),
+        };
+        self.frames.push(child);
     }
 
     /// Pops the top frame. Refuses (returns `false`) to pop the shell's own.
@@ -94,10 +190,10 @@ impl<F: Clone> FrameStack<F> {
         true
     }
 
-    /// Runs `f` against a copy of the current frame, then discards it: nothing `f` changes in the
-    /// frame -- its `cd`s, its stream bindings -- survives.
+    /// Runs `f` against a child process's frame (`push_child`), then discards it: nothing `f` changes in the
+    /// frame -- its `cd`s, its stream bindings, its variables -- survives.
     pub fn with_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.push_copy();
+        self.push_child();
         let result = f(self);
         self.pop();
         result
@@ -147,7 +243,7 @@ mod tests {
         let mut s = FrameStack::new();
         assert!(!s.pop());
         assert_eq!(s.depth(), 1);
-        s.push_copy();
+        s.push_child();
         assert!(s.pop());
         assert!(!s.pop());
     }
@@ -164,6 +260,92 @@ mod tests {
         assert_eq!(s.top().cwd, "/bin");
         assert_eq!(s.top().stdio, [Default; 3]);
         assert_eq!(s.depth(), 1);
+    }
+
+    #[test]
+    fn names_are_letters_digits_and_underscores_not_starting_with_a_digit() {
+        for good in ["A", "_", "_x", "HOME", "a1", "TZ2_b"] {
+            assert!(is_valid_name(good), "{good}");
+        }
+        for bad in ["", "1a", "a-b", "a b", "a=b", "é", "$X"] {
+            assert!(!is_valid_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn setting_a_variable_keeps_its_place_and_its_exported_flag() {
+        let mut f = FrameStack::new();
+        let top = f.top_mut();
+        top.set_var("A", "1").unwrap();
+        top.set_var("B", "2").unwrap();
+        top.export_var("A", None).unwrap();
+        top.set_var("A", "one").unwrap(); // replaced: still exported, still first
+        assert_eq!(top.var("A"), Some("one"));
+        assert!(top.is_exported("A") && !top.is_exported("B"));
+        assert_eq!(top.vars.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["A", "B"]);
+        assert_eq!(top.var("C"), None);
+    }
+
+    #[test]
+    fn export_marks_assigns_and_ignores_the_unset() {
+        let mut f = FrameStack::new();
+        let top = f.top_mut();
+        top.export_var("X", Some("1")).unwrap(); // assign and export
+        top.export_var("NOSUCH", None).unwrap(); // nothing to mark
+        assert_eq!(top.var("NOSUCH"), None);
+        top.set_var("Y", "2").unwrap();
+        assert!(!top.is_exported("Y"));
+        top.export_var("Y", None).unwrap();
+        assert_eq!(top.exported().collect::<Vec<_>>(), [("X", "1"), ("Y", "2")]);
+        top.unset_var("X");
+        top.unset_var("NOSUCH"); // harmless
+        assert_eq!(top.exported().collect::<Vec<_>>(), [("Y", "2")]);
+    }
+
+    #[test]
+    fn a_bad_name_is_refused_by_every_setter() {
+        let mut f = FrameStack::new();
+        let top = f.top_mut();
+        assert_eq!(top.set_var("a-b", "x"), Err(InvalidName));
+        assert_eq!(top.export_var("1a", Some("x")), Err(InvalidName));
+        assert_eq!(top.export_var("", None), Err(InvalidName));
+        assert!(top.vars.is_empty());
+    }
+
+    #[test]
+    fn a_child_scope_inherits_only_exported_variables_and_loses_its_changes() {
+        let mut f = FrameStack::new();
+        f.top_mut().export_var("OUT", Some("visible")).unwrap();
+        f.top_mut().set_var("LOCAL", "hidden").unwrap();
+        f.with_scope(|s| {
+            assert_eq!(s.top().var("OUT"), Some("visible"));
+            assert_eq!(s.top().var("LOCAL"), None); // not exported: a child never sees it
+            assert!(s.top().is_exported("OUT")); // and what it got is its own environment
+            s.top_mut().set_var("OUT", "changed").unwrap();
+            s.top_mut().set_var("NEW", "made").unwrap();
+        });
+        assert_eq!(f.top().var("OUT"), Some("visible")); // nothing leaked out
+        assert_eq!(f.top().var("NEW"), None);
+        assert_eq!(f.top().var("LOCAL"), Some("hidden")); // and nothing was lost
+    }
+
+    #[test]
+    fn a_shared_frame_sees_everything_and_keeps_changes_as_source_does() {
+        let mut f = FrameStack::new();
+        f.top_mut().set_var("LOCAL", "hidden").unwrap();
+        // `source` pushes nothing: it works on the current frame.
+        assert_eq!(f.top().var("LOCAL"), Some("hidden"));
+        f.top_mut().set_var("MADE", "1").unwrap();
+        assert_eq!(f.top().var("MADE"), Some("1"));
+    }
+
+    #[test]
+    fn variables_survive_a_redirect_scope() {
+        let mut f = FrameStack::new();
+        f.with_stdio([None, Some(File(1)), None], |s| {
+            s.top_mut().set_var("V", "set inside").unwrap();
+        });
+        assert_eq!(f.top().var("V"), Some("set inside")); // like a `cd` under a redirect
     }
 
     #[test]

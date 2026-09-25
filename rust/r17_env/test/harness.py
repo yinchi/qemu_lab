@@ -246,6 +246,22 @@ def mcopy_out(img_path, name, dest):
     subprocess.run(["mcopy", "-i", img_path, f"::{name}", dest], check=True)
 
 
+ENVIRONMENT_FILE = "etc/environment"
+DEFAULT_ENVIRONMENT = "HOME=/\n"  # what a test kernel boots with unless its module says otherwise
+
+
+def set_environment(img_path, workdir, text):
+    """Puts `text` in the image's `/etc/environment` (the initial environment, read once at boot), or removes
+    the file if `text` is None. Only ever done to a group's private copy of the image, before it boots."""
+    if text is None:
+        subprocess.run(["mdel", "-i", img_path, f"::{ENVIRONMENT_FILE}"], check=True)
+        return
+    local = os.path.join(workdir, "environment")
+    with open(local, "w") as f:
+        f.write(text)
+    subprocess.run(["mcopy", "-i", img_path, "-o", local, f"::{ENVIRONMENT_FILE}"], check=True)
+
+
 CELL_W, CELL_H = 8, 16  # a console cell on the display
 
 

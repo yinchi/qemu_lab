@@ -1,5 +1,5 @@
 //! The commands the shell runs itself instead of launching a program: the ones that have to change the
-//! shell's own state. `cd`, plus `source`/`.` and `sh` (Step 9's scripts -- see `shell::run_script_content`
+//! shell's own state. `cd`, `export`/`unset`, plus `source`/`.` and `sh` (Step 9's scripts -- see `shell::run_script_content`
 //! for the interpreter, this module for how each finds its file). A builtin reports a problem as one
 //! line of text, `cd: <what>`, which the caller prints the way `launch` prints its own errors.
 
@@ -19,7 +19,7 @@ pub fn is_builtin(name: &str) -> bool {
     if name == OVERFLOW_KERNEL_STACK {
         return true;
     }
-    matches!(name, "cd" | "source" | "." | "sh")
+    matches!(name, "cd" | "source" | "." | "sh" | "export" | "unset")
 }
 
 /// Test-only builtin (cargo feature `testhooks`): recurses until the kernel stack overflows into its
@@ -45,6 +45,8 @@ fn overflow(depth: usize) -> usize {
 pub fn run(name: &str, args: &[&str], depth: usize) -> Result<(), String> {
     match name {
         "cd" => cd(args),
+        "export" => export(args),
+        "unset" => unset(args),
         "source" | "." => match args {
             [path] => run_script_file(name, path, false, depth),
             [] => Err(format!("{name}: usage: {name} FILE")),
@@ -82,6 +84,53 @@ fn run_script_file(cmd: &str, path: &str, scoped: bool, depth: usize) -> Result<
     let content =
         core::str::from_utf8(&bytes).map_err(|_| format!("{cmd}: {path}: not valid UTF-8"))?;
     run_script_content(content, scoped, depth).map_err(|e| format!("{cmd}: {path}: {e}"))
+}
+
+/// `export NAME[=VALUE]...`: marks each variable exported -- handed to every program the shell starts and to
+/// scripts run as their own process -- and, with a `=VALUE`, assigns it first. `export NAME` for a variable that
+/// is not set does nothing (there is nothing to mark). Every operand is attempted; each invalid name is reported
+/// (bash's wording) and makes the command fail. `export` alone (bash lists the exports) and `-p` are refused.
+fn export(args: &[&str]) -> Result<(), String> {
+    if args.is_empty() {
+        return Err(String::from("export: usage: export NAME[=VALUE]..."));
+    }
+    let mut problems = String::new();
+    for arg in args {
+        if arg.len() > 1 && arg.starts_with('-') {
+            return Err(format!("export: {arg}: invalid option"));
+        }
+        let (name, value) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (*arg, None),
+        };
+        if shell_state::frames().top_mut().export_var(name, value).is_err() {
+            if !problems.is_empty() {
+                problems.push('\n');
+            }
+            problems.push_str(&format!("export: '{arg}': not a valid identifier"));
+        }
+    }
+    if problems.is_empty() { Ok(()) } else { Err(problems) }
+}
+
+/// `unset NAME...`: removes each variable, set or not (removing an unset one is not an error, as in POSIX).
+/// A name that is not a valid identifier is reported. Options (`-v`, `-f`) are refused.
+fn unset(args: &[&str]) -> Result<(), String> {
+    let mut problems = String::new();
+    for arg in args {
+        if arg.len() > 1 && arg.starts_with('-') {
+            return Err(format!("unset: {arg}: invalid option"));
+        }
+        if !crate::exec::frame_stack::is_valid_name(arg) {
+            if !problems.is_empty() {
+                problems.push('\n');
+            }
+            problems.push_str(&format!("unset: '{arg}': not a valid identifier"));
+            continue;
+        }
+        shell_state::frames().top_mut().unset_var(arg);
+    }
+    if problems.is_empty() { Ok(()) } else { Err(problems) }
 }
 
 /// `cd [DIR]`, POSIX's subset: `cd DIR` makes DIR (absolute, or relative to the working directory) the

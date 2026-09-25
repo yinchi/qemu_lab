@@ -21,6 +21,12 @@ pub mod elfparse;
 pub mod font;
 #[path = "../../src/exec/frame_stack.rs"]
 pub mod frame_stack;
+
+/// The kernel names its modules by their directory (`crate::exec::frame_stack`); here they are all at the top, so
+/// this alias lets a file that reaches across directories (`shell/environment.rs`) compile unchanged in both.
+pub mod exec {
+    pub use crate::frame_stack;
+}
 #[path = "../../src/keyboard/history.rs"]
 pub mod history;
 #[path = "../../src/console/input_layout.rs"]
@@ -31,6 +37,8 @@ pub mod input_layout;
 // still compiles here, not because these tests populate `KEY_NAMES` themselves.
 #[path = "../../src/keyboard/keymap.rs"]
 pub mod keymap;
+#[path = "../../src/shell/environment.rs"]
+pub mod environment;
 #[path = "../../src/shell/lexer.rs"]
 pub mod lexer;
 #[path = "../../src/keyboard/line.rs"]

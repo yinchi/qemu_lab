@@ -32,6 +32,30 @@ pub fn find_entry_checked<'a>(
     Ok(None)
 }
 
+/// Reads the whole file at the absolute path `path` on `vol`: `ENOENT` if any component is missing, `ENOTDIR`
+/// if a directory component is a file, `EISDIR` if the last one is a directory. Takes the volume as an argument
+/// (not the `VOL` static) so boot code can use it before the statics are set up; `files.rs` is what programs'
+/// paths go through once they are.
+pub fn read_path(vol: &FatVolume<BlkIo>, path: &str) -> Result<alloc::vec::Vec<u8>, isize> {
+    use abi::errno::{EISDIR, ENOENT, ENOTDIR};
+    let mut dir = vol.root_dir();
+    let mut components = path.split('/').filter(|c| !c.is_empty()).peekable();
+    while let Some(name) = components.next() {
+        let entry = find_entry_checked(&dir, name)?.ok_or(ENOENT)?;
+        if components.peek().is_some() {
+            if !entry.is_directory() {
+                return Err(ENOTDIR);
+            }
+            dir = dir.open_entry(&entry).map_err(|_| EIO)?;
+        } else if entry.is_directory() {
+            return Err(EISDIR);
+        } else {
+            return read_file_checked(vol, &entry);
+        }
+    }
+    Err(EISDIR) // no components: the root
+}
+
 /// Reads a whole file into a freshly allocated `Vec<u8>`, or `Err(EIO)` if the filesystem can't
 /// deliver it. The caller has already bounded the file's size (see `shell::launch`).
 pub fn read_file_checked(

@@ -6,7 +6,7 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | Step | What | Status |
 |---|---|---|
 | 0 | Plain copy of `r16_brk` as `r17_env` | done |
-| 1 | The variable model (exported flag, `export`, `unset`) and `/etc/environment`; `disk/home` -> `disk/root` | planned |
+| 1 | The variable model (exported flag, `export`, `unset`) and `/etc/environment`; `disk/home` -> `disk/root` | done |
 | 2 | `envp` to programs; `userlib::env`; `env` and `printenv` (new tier `progs_r17`) | planned |
 | 3 | Expansion: `$VAR`, `${VAR}`, `$?`, with field splitting | planned |
 | 4 | Assignments: `NAME=value`, `NAME=value cmd` | planned |
@@ -63,6 +63,19 @@ Tier list unchanged. Verify `just test` = 643 checks, nothing else changed.
 - Image and tests: rename `disk/home` -> `disk/root`, add `disk/etc/environment`; `test/harness.py` gains `mcopy_in`; `test/run_tests.py::run_group` writes the environment
   file into the image copy before `Session(...)`; update `core_utils.py`'s root `ls -F`. QEMU tests: boot-log notes for a bad file (a group with an `ENVIRONMENT` containing a bad
   line, and a missing-file variant), `export`/`unset` errors. (Values are not yet observable from EL0 -- step 2.)
+
+**As built (Step 1).** As planned, with these specifics:
+- `frame_stack.rs`: `Var { name, value, exported }`, `ShellFrame.vars`, `set_var`/`export_var`/`unset_var`/`var`/`is_exported`/`exported()` and `is_valid_name`; `with_scope`
+  now pushes a *child* frame (`push_child`: cwd and streams, exported variables only, all exported); the old `push_copy` is gone. 12 new host tests.
+- `shell/environment.rs` (pure): a line is `NAME=VALUE`, blanks around the name trimmed, the value literal, `#` and blank lines skipped, CRLF tolerated, a repeated name
+  takes its last value in its first place; problems carry a line number and a reason. `hosttests` gained an `exec` alias module so a file that reaches across directories
+  compiles unchanged in both trees. `shell::load_environment` (in `shell/mod.rs`) runs in `main.rs` after the volume mounts and *before the first prompt*, with the local
+  volume (the statics come later), so its notes come first on the serial log; `fs::read_path` reads a file by absolute path from a volume.
+- `export` and `unset` builtins: bash's wording; `export` alone and `-p`, and `unset -v`, are refused (a builtin has no stdout to list on).
+- Image: `disk/home` -> `disk/root`; `disk/etc/environment` holds `HOME=/root` and `TZ=America/Toronto`. Tests write `HOME=/` (or a module's `ENVIRONMENT`) into each
+  group's copy of the image (`harness.set_environment`, `mcopy -o`; `None` removes the file). New modules `environment`, `env_bad`, `env_missing`.
+- `QEMU_TEST_WORKERS=N` overrides the runner's parallelism. Three QEMU processes left running from earlier sessions were using three cores, and with 19 sessions in parallel the
+  timing-sensitive `token_queue` check (typing during a large copy) started failing every time; with 12 workers it is stable.
 
 ## Step 2 -- `envp` to programs, `env` and `printenv`
 - `src/exec/argplan.rs`: generalize `plan` to args + env: strings, then `argv[]`+NULL, then `envp[]`+NULL, 16-byte aligned; `ArgsPlan` gains `envp`. Host tests (existing

@@ -109,7 +109,7 @@ Each module normally runs in **its own group**: its own QEMU instance and its ow
 uses and never assumes a working directory or file left by another. (A module that genuinely must build on
 another's leftover state can share a group with it: add it to that group's list in `GROUPS`.)
 
-Groups run in a thread pool, at most `cpus - 1` at a time. Each group's PASS/FAIL lines are collected and
+Groups run in a thread pool, at most `cpus - 1` at a time (`QEMU_TEST_WORKERS=N` overrides that: worth setting when other work is using the machine, since some checks are timing-sensitive under heavy load). Each group's PASS/FAIL lines are collected and
 printed only after every group has finished, in `GROUPS` order, so the transcript reads the same however the
 sessions happened to interleave. A `Kernel Panic!` or `Unexpected exception` on the serial log fails a session
 at once, at the point it happened, not at the next timeout.
@@ -155,6 +155,7 @@ The kernel marks only `/bin` executable at boot, so tests `chmod +x` the program
 | `power` | `poweroff` and `reboot` (PSCI) |
 | `clock` | The real-time clock: `clock_gettime` (through `probe clock`), and `date` -- the live clock against the host's, and exact output for chosen instants (`date -d @N`) in `America/Toronto` local time and UTC, including both daylight-saving changes of 2024 |
 | `heap` | The user heap: `probe brk` drives the `brk` syscall (growing by a page and a byte, zeroed writable memory, the kernel's pointer check, shrinking, and what is refused) and `heapuse` allocates like a real program (big `Vec`, small boxes, `String`, growth, an allocation that cannot fit, reuse after a free); a program's heap is unmapped for the next |
+| `environment`, `env_bad`, `env_missing` | The shell's variables and the initial environment (`/etc/environment`, read once at boot): the boot note, what `export` and `unset` accept and refuse; a file with bad lines (each skipped and reported with its line number) and no file at all. A module picks the file its group boots with by setting `ENVIRONMENT` (the text, or `None` to remove it); the harness writes it into the group's copy of the image, `HOME=/` by default |
 | `audit` | The programs that moved to the user heap in Stage 16: `ls` sorted by name, `tail` on stdin past the old 512 KiB buffer, `tee` past its old 8 files, and `chmod -R`/`rm -r` on a tree deeper than the kernel's open-file limit |
 | `large` | Arbitrarily large binaries: `bigimage` (about 11 MiB of memory) runs and checks every byte range, a second run sees a fresh `.bss`, none of it stays mapped for the next program, and an image that cannot fit the ceiling, or a file bigger than half the kernel heap, is refused |
 

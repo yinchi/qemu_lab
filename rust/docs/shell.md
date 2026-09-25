@@ -138,6 +138,8 @@ Only what has to change the shell's own state is built in.
 | Command | Behavior |
 |---|---|
 | `cd [DIR]` | Make `DIR` (absolute, or relative to the working directory) the working directory. With no operand, go to `/` (POSIX says `$HOME`; Stage 17 switches to it). `cd -`, `-L` and `-P` are refused with an explanation, as is more than one operand. On any error the directory is unchanged. |
+| `export NAME[=VALUE]...` | Mark each variable **exported** -- handed to every program the shell starts, and to scripts run as their own process -- and, with a `=VALUE`, assign it first. `export NAME` for a variable that is not set does nothing. Every operand is attempted; a name that is not a valid identifier (`[A-Za-z_][A-Za-z0-9_]*`) is reported as bash does, `export: 'a-b': not a valid identifier`. `export` alone and `-p` are refused. (Stage 17, Step 1: nothing reads a variable yet -- programs get them in Step 2, `$NAME` in Step 3.) |
+| `unset NAME...` | Remove each variable, set or not. An invalid name is reported; options are refused. |
 | `source FILE`, `. FILE` | Run the lines of `FILE` in the *current* shell state: a `cd` inside it sticks. |
 | `sh FILE` | Run the lines of `FILE` in a *scope* of its own, as a child shell process would: its `cd`s and redirections are gone afterwards. |
 
@@ -170,13 +172,16 @@ frame stack's depth, because `source` never pushes a frame and would otherwise e
 ## The shell's state: the frame stack
 
 Everything a script or a redirect must be able to save and restore lives in one **frame**
-(`exec/frame_stack.rs`): the working directory, and where each of the three standard streams goes
+(`exec/frame_stack.rs`): the working directory, where each of the three standard streams goes
 (`StdioBinding::Default` &mdash; the keyboard for stdin, the console for stdout and stderr &mdash; or an open
-file). The frames form a stack whose bottom frame is the shell's own and is never popped. Two different
+file), and the shell's variables (each a name, a value and an `exported` flag: all can be read, only exported ones
+are handed on to children). The frames form a stack whose bottom frame is the shell's own and is never popped. Two different
 operations use it, deliberately not one:
 
-- `with_scope` pushes a copy of the whole frame, runs, and pops: *everything* changed inside is gone
-  afterwards. This is what `sh script` and `./script` use.
+- `with_scope` pushes the frame a *child process* would start with &mdash; the working directory and stream
+  bindings, but only the **exported** variables (all of them exported) &mdash; runs, and pops: *everything* changed
+  inside is gone afterwards. This is what `sh script` and `./script` use. (`source` pushes nothing: it sees and
+  changes every variable.)
 - `with_stdio` replaces some stream bindings on the *current* frame, runs, and puts them back &mdash; and
   nothing else, so a `cd` inside still sticks. This is what every redirection uses, builtins included.
 
@@ -184,7 +189,7 @@ A frame is plain data with no reference to any static, so it can become a per-pr
 when there are processes. The one stack is a static in `exec/shell_state.rs`, which also resolves paths
 against the top frame's working directory and gives each newly launched program the top frame's stream
 bindings. There is one stack, not one per program: at most one program is ever resident, so the shell's state
-*is* the running program's state. Stage 17 adds the environment to the frame. There is deliberately no `chdir`
+*is* the running program's state. There is deliberately no `chdir`
 *syscall* yet, since with one global stack a program's `chdir` would change the shell's directory too.
 
 ## Limits
@@ -201,7 +206,8 @@ bindings. There is one stack, not one per program: at most one program is ever r
 |---|---|
 | `shell/mod.rs` | The read-eval loop, `run_line`, redirection, pipelines, script execution |
 | `shell/lexer.rs`, `shell/syntax.rs` | The grammar (see above) |
-| `shell/builtins.rs` | `cd`, `source`, `.`, `sh` |
+| `shell/builtins.rs` | `cd`, `export`, `unset`, `source`, `.`, `sh` |
+| `shell/environment.rs` | The parser for `/etc/environment` (pure, host-tested); `shell/mod.rs`'s `load_environment` reads it at boot |
 | `shell/launch.rs` | Finding and starting a program |
 | `exec/frame_stack.rs`, `exec/shell_state.rs` | The frame stack and the one global instance |
 | `keyboard/`, `console/input_layout.rs` | Typing a line (see [`console.md`](console.md)) |

@@ -36,8 +36,8 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit
-from harness import Context, Session
+from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env_bad, env_missing
+from harness import DEFAULT_ENVIRONMENT, Context, Session, set_environment
 
 GROUPS = [
     [core_utils],
@@ -61,6 +61,9 @@ GROUPS = [
     [large],
     [heap],
     [audit],
+    [environment],
+    [env_bad],
+    [env_missing],
 ]
 
 
@@ -70,6 +73,9 @@ def worker_count():
     container/cgroup CPU limit, not just the physical core count `cpu_count` reports; anywhere that
     call doesn't exist, `cpu_count` (or a conservative default, if even that is unavailable) stands in.
     Never less than 1, so this still runs somewhere with a single CPU."""
+    override = os.environ.get("QEMU_TEST_WORKERS")  # e.g. QEMU_TEST_WORKERS=12 when the machine is busy with other work
+    if override:
+        return max(1, int(override))
     try:
         cpus = len(os.sched_getaffinity(0))
     except AttributeError:
@@ -86,6 +92,15 @@ def run_group(elf, orig_img, disk_dir, modules):
     workdir = tempfile.mkdtemp(prefix=f"r17-{label}-")
     img = os.path.join(workdir, "disk.img")
     subprocess.run(["cp", "--sparse=always", orig_img, img], check=True)
+    # The initial environment the kernel reads at boot: `HOME=/` unless a module in the group says otherwise
+    # with an `ENVIRONMENT` attribute (text, or None for no file at all). The image built by `just disk` has the
+    # general-use one (HOME=/root, TZ=America/Toronto), which no test should depend on by accident.
+    environment = DEFAULT_ENVIRONMENT
+    for m in modules:
+        if hasattr(m, "ENVIRONMENT"):
+            environment = m.ENVIRONMENT
+            break
+    set_environment(img, workdir, environment)
 
     results = []
 

@@ -11,6 +11,7 @@
 //! fresh one is drawn, is shell policy.
 
 pub mod builtins;
+pub mod environment;
 pub mod launch;
 pub mod lexer;
 pub mod syntax;
@@ -20,10 +21,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use abi::errno::errmsg;
+use hadris_fat::sync::FatVolume;
 
 use crate::console::{BG, Console, FG};
 use crate::exec::shell_state::{self, Frames, Stdio};
-use crate::fs::blkio::VOL;
+use crate::fs::blkio::{BlkIo, VOL};
 use crate::fs::files::{self, FileRef};
 use crate::keyboard::line_discipline::{LINE_DISCIPLINE, LineDiscipline, LineOutcome, Mode};
 use crate::keyboard::queue;
@@ -32,6 +34,40 @@ use crate::platform::uart::{uart_ensure_newline, uart_write};
 use crate::{static_mut_ref, static_ref};
 use launch::launch;
 use syntax::{Redirection, Segment};
+
+/// The environment file: plain `NAME=VALUE` lines (see `environment.rs`), read once at boot.
+const ENVIRONMENT_FILE: &str = "/etc/environment";
+
+/// More than this is not an environment file: it is ignored rather than parsed.
+const ENVIRONMENT_FILE_MAX: usize = 64 * 1024;
+
+/// Reads `/etc/environment` from `vol` into the bottom frame of `frames`, every variable exported, and reports
+/// what it did on `out` (the serial log): a missing or unreadable file is an empty environment, and a bad line is
+/// skipped, never fatal. Takes the volume and frames as arguments because it runs before their statics exist.
+pub fn load_environment(vol: &FatVolume<BlkIo>, frames: &mut Frames, out: &mut impl core::fmt::Write) {
+    let bytes = match crate::fs::read_path(vol, ENVIRONMENT_FILE) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let _ = write!(out, "Environment: {ENVIRONMENT_FILE}: {} -- starting empty.\r\n", errmsg(e));
+            return;
+        }
+    };
+    let text = match core::str::from_utf8(&bytes) {
+        Ok(text) if bytes.len() <= ENVIRONMENT_FILE_MAX => text,
+        _ => {
+            let _ = write!(out, "Environment: {ENVIRONMENT_FILE}: not a text file of at most 64 KiB -- starting empty.\r\n");
+            return;
+        }
+    };
+    let parsed = environment::parse(text);
+    for problem in &parsed.problems {
+        let _ = write!(out, "Environment: {ENVIRONMENT_FILE}: line {}: {} -- ignored.\r\n", problem.line, problem.why);
+    }
+    for (name, value) in &parsed.vars {
+        let _ = frames.top_mut().export_var(name, Some(value)); // names were validated by `parse`
+    }
+    let _ = write!(out, "Environment: {} variable(s) from {ENVIRONMENT_FILE}.\r\n", parsed.vars.len());
+}
 
 /// The prompt shown before the line being typed -- fixed text with no relation to the line's own
 /// content, so it's structurally impossible for any editing key (which only ever touches the line

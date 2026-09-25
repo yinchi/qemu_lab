@@ -42,8 +42,8 @@ def run(ctx):
     check("cat missing", s.run("cat tests/nosuch.txt"),
           "cat tests/nosuch.txt\ncat: tests/nosuch.txt: No such file or directory\nexit 1\n")
     check("cat directory", s.run("cat tests/docs"), "cat tests/docs\ncat: tests/docs: Is a directory\nexit 1\n")
-    check("ls", s.run("ls"), "ls\nbin\nfonts\nhome\ntests\ntmp\n")
-    check("ls -F", s.run("ls -F"), "ls -F\nbin/\nfonts/\nhome/\ntests/\ntmp/\n")
+    check("ls", s.run("ls"), "ls\nbin\netc\nfonts\nroot\ntests\ntmp\n")
+    check("ls -F", s.run("ls -F"), "ls -F\nbin/\netc/\nfonts/\nroot/\ntests/\ntmp/\n")
     # `bin/` is the one directory meant to grow as core utilities are added (unlike the fixed
     # fixtures under `tests/`), so the expected list is derived from what `just disk` actually
     # staged rather than a hand-maintained one -- alphabetical, matching `folder_to_img.sh`'s own

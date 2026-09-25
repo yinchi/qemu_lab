@@ -1,0 +1,4 @@
+# The initial environment: read once at boot, before the first prompt (`shell::load_environment`).
+# Plain NAME=VALUE lines -- not shell syntax: the value is everything after the first "=", literally.
+HOME=/root
+TZ=America/Toronto
