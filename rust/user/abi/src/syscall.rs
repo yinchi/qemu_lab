@@ -52,6 +52,14 @@ pub const SYS_REBOOT: usize = 142;
 /// bad pointer is `EFAULT`.
 pub const SYS_CLOCK_GETTIME: usize = 113;
 
+/// `brk(addr)`: moves the program break -- the end of the heap, which starts right after the program's
+/// image (`.bss` included) -- and returns the break it ended up with. Linux's number and, unlike almost
+/// every other call here, its convention: it does not return an errno. `brk(0)` returns the current break;
+/// a request the kernel cannot grant (below where the heap starts, or past the ceiling, or a mapping
+/// failure) leaves the break alone and returns it unchanged, so the caller compares the result with
+/// what it asked for. Memory between the start and the break is zeroed, writable and never executable.
+pub const SYS_BRK: usize = 214;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +105,10 @@ mod tests {
     #[test]
     fn step13_number_is_linuxs_number() {
         assert_eq!(SYS_CLOCK_GETTIME, 113);
+    }
+
+    #[test]
+    fn step16_number_is_linuxs_number() {
+        assert_eq!(SYS_BRK, 214);
     }
 }

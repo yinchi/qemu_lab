@@ -878,6 +878,25 @@ kernel's own view of what is mapped), that the pages are revoked for the next lo
 ceiling fails cleanly instead of corrupting the stack. The editor (Stage 18) is the first real consumer, and
 opens progressively larger files for its own demo.
 
+**As built (the heap; the audit is the next part).** `r16_brk` is `r15_large_binaries` plus:
+- **The syscall:** `brk(addr)`, Linux's number (214) *and* its convention -- it returns the resulting break, not an errno, and a
+  request it cannot grant returns the old break (`brk(0)` asks). `exec/elf.rs` keeps the break (`Break`: where the heap
+  starts, the byte-exact break, the page-aligned end of what is mapped), reset by every `load`; growing maps and zeroes pages
+  (writable, never executable), shrinking unmaps the pages above and zeroes the rest of the page so regrown memory is zero.
+  The heap starts at the page-aligned end of the image and is capped at `USER_IMAGE_END`, so the stack's guard is the guard
+  between heap and stack, with no second one. Heap pages are recorded in `MAPPED` and `usermem` like any other, so the next
+  load unmaps them and a syscall's pointer check accepts them (`UserMemory::remove`, host-tested, is the new piece).
+- **The allocator:** `userlib`'s optional `heap` feature -- a `#[global_allocator]` that starts empty and calls `brk` when an
+  allocation does not fit (at least 64 KiB, then the heap's current size up to 1 MiB a step), on `linked_list_allocator`'s
+  `Heap`. It is a feature so that a program that does not allocate, and every earlier stage (whose kernels have no `brk`),
+  links none of it. There is no lock: a program is one thread until signals, and those will not allocate.
+- **`date` and `stat` moved to it** (a new tier `user/progs_r16`): they no longer carry a fixed heap of their own; `progs_r15`'s
+  versions stay for Stage 15's kernel.
+- **Tests:** `test/cases/heap.py` -- `probe brk` (grow by a page and a byte, zero and writable, the kernel's pointer check against
+  the break, shrink and the page-tail zeroing, regrow, and every refusal), `heapuse` (an 8 MiB `Vec`, 20000 small boxes freed
+  and reused, a `String`, a `Vec` doubling, a reservation the ceiling cannot hold -- refused, not a panic -- and reuse after a
+  free, each line pinned to a computed value), and that the next program cannot reach a finished program's heap.
+
 ---
 
 ## Stage 17: environment variables -- `r17_env`

@@ -2,7 +2,7 @@
 
 The interface between an EL0 program and the kernel. The definitions are in the shared `abi` crate
 (`rust/user/abi/`), which both the kernel and `userlib` depend on, so the two sides cannot disagree about a
-number or a constant. The kernel's side is `rust/r15_large_binaries/src/syscall/`; programs normally reach it through
+number or a constant. The kernel's side is `rust/r16_brk/src/syscall/`; programs normally reach it through
 `userlib` (`rust/user/userlib/`) rather than issuing `svc` themselves.
 
 ## Calling convention
@@ -65,6 +65,7 @@ unbuffered.
 | 29 | `ioctl` | `fd, request, arg` | Out-of-band control; only the console understands any request. `CONSOLE_CLEAR` (1) clears the screen and homes the cursor. `ENOTTY` for any other request or a non-console fd; `EBADF`. |
 | 142 | `reboot` | `cmd` | Never returns on success. `LINUX_REBOOT_CMD_POWER_OFF` (`0x4321FEDC`) powers off, `LINUX_REBOOT_CMD_RESTART` (`0x01234567`) restarts, both through PSCI. Any other `cmd` is `EINVAL`. No `magic1`/`magic2`/`arg`. |
 | 113 | `clock_gettime` | `clock, out` | `0`, after writing a 16-byte `timespec` to `out` (`TIMESPEC_SIZE`): `tv_sec: i64` then `tv_nsec: i64`, little-endian. Only `CLOCK_REALTIME` (0) exists: the PL031 real-time clock, seconds since 1970-01-01 00:00:00 UTC, so `tv_nsec` is always 0; any other clock is `EINVAL`, a bad `out` is `EFAULT`. Reads a hardware register on every call (there is no cached time), which is why it works in an interrupt-free syscall. |
+| 214 | `brk` | `addr` | The new **program break**, or the old one if it could not move -- **not an errno**: Linux's convention, kept. The break is the end of the heap, which starts right after the program's image (`.bss` included), page-aligned; `brk(0)` returns it. Everything between the start and the break is zeroed, writable and never executable; growing maps and zeroes pages, shrinking unmaps the pages above the new break and zeroes the rest of the page it lands in. A request below the start, or above `USER_IMAGE_END` (the stack's guard), is refused: the break is returned unchanged, so a caller checks `brk(want) == want`. `userlib`'s heap (the `heap` feature) is a `#[global_allocator]` on top of this. |
 | 49 | `chdir` | | **Reserved, not implemented** (`ENOSYS`). Its number is held so a later stage doesn't have to pick one; see below. |
 
 `chdir` is deliberately missing: with one global shell state, a program's `chdir` would change the *shell's*

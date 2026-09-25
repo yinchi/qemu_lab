@@ -1,0 +1,26 @@
+# The programs Stage 16 changes: `date` and `stat` use the user heap (`userlib`'s `heap` feature) instead of each
+# carrying a fixed one. A tier of its own, as the scheme in `../progs_r12/Cargo.toml` describes (a stage `rNN`
+# builds the base tier and every `progs_rMM` with MM <= NN, highest tier wins a name): Stage 15's kernel has no
+# `brk`, so `progs_r15`'s versions stay as they were.
+[package]
+name = "progs_r16"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+abi = { path = "../abi" }
+userlib = { path = "../userlib", features = ["heap"] }
+progs = { path = "../progs" }
+progs_r12 = { path = "../progs_r12" }
+progs_r15 = { path = "../progs_r15" }  # LOCAL_ZONE
+# Calendar dates and `strftime`. `alloc` is the feature that enables formatting, and it needs the user heap.
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# The whole IANA database (about 1 MB of data in the binary; the loader's ceiling grew for it, Stage 15).
+chrono-tz = { version = "0.10", default-features = false }
+getargs = { version = "0.5", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

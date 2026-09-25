@@ -38,6 +38,26 @@ static mut USER_MEMORY: UserMemory = UserMemory::new();
 /// SAFETY (every access): as `USER_MEMORY`.
 static mut MAPPED: Vec<(usize, usize)> = Vec::new();
 
+/// The running program's heap: where it starts (the page-aligned end of the image, `.bss` included), the
+/// program break as the program last set it (byte-exact, from `brk`), and the page-aligned end of what is
+/// mapped for it. Reset by every `load`. The heap pages are the last `chunks` entries of `MAPPED`.
+/// SAFETY (every access): as `USER_MEMORY`.
+struct Break {
+    start: usize,
+    current: usize,
+    mapped_end: usize,
+    chunks: usize,
+}
+
+static mut BREAK: Break = Break { start: 0, current: 0, mapped_end: 0, chunks: 0 };
+
+/// Accessor for `BREAK`.
+#[allow(clippy::deref_addrof)]
+fn heap_break() -> &'static mut Break {
+    // SAFETY: see BREAK.
+    unsafe { &mut *(&raw mut BREAK) }
+}
+
 /// The user memory the running program has mapped (see `usermem.rs`).
 #[allow(clippy::deref_addrof)]
 pub fn user_memory() -> &'static UserMemory {
@@ -192,6 +212,10 @@ pub fn load(elf_bytes: &[u8]) -> Result<usize, ElfError> {
         }
     }
 
+    // 5. The heap starts empty, right after the image; `program_break` grows it on request.
+    let image_end = parsed.segments.iter().map(|seg| pages_of(seg).1).max().unwrap_or(USER_BASE);
+    *heap_break() = Break { start: image_end, current: image_end, mapped_end: image_end, chunks: 0 };
+
     // The page table code invalidates the TLB entry of every page it changes; this final broad
     // invalidate is belt and braces, and cheap next to a program load.
     // SAFETY: barriers and a TLB invalidate, no memory effects.
@@ -200,4 +224,61 @@ pub fn load(elf_bytes: &[u8]) -> Result<usize, ElfError> {
     }
 
     Ok(parsed.entry)
+}
+
+/// `brk`: moves the program break to `request` and returns it -- or, if that cannot be done, returns it
+/// unchanged. `0` (or the current break) asks where it is. The heap can neither go below where it starts
+/// (the end of the image) nor up into the stack's guard (`USER_IMAGE_END`). Growing maps and zeroes the new
+/// pages (mapped writable and never executable, like the stack); shrinking unmaps the pages above the new
+/// break and zeroes the rest of the page it lands in, so memory that is grown again is always zero.
+pub fn program_break(request: usize) -> usize {
+    let brk = heap_break(); // a syscall never runs while `load` does
+    if request == 0 || request == brk.current {
+        return brk.current;
+    }
+    if request < brk.start || request > USER_IMAGE_END {
+        return brk.current;
+    }
+    let want_end = (request + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    // SAFETY: see USER_MEMORY / MAPPED.
+    #[allow(clippy::deref_addrof)]
+    let (memory, mapped) = unsafe { (&mut *(&raw mut USER_MEMORY), &mut *(&raw mut MAPPED)) };
+    let _user = mmu::user_access(); // the kernel zeroes user pages below, which PAN would forbid
+
+    if want_end > brk.mapped_end {
+        if set_pages(brk.mapped_end, want_end, Some(data_attributes())).is_err() {
+            return brk.current;
+        }
+        // SAFETY: just mapped writable; nothing else uses them.
+        unsafe { core::ptr::write_bytes(brk.mapped_end as *mut u8, 0, want_end - brk.mapped_end) };
+        mapped.push((brk.mapped_end, want_end));
+        brk.chunks += 1;
+        memory.add(brk.mapped_end, want_end, true);
+    } else if want_end < brk.mapped_end {
+        // Unmap from the top: whole chunks first, then the part of the last one above the new end.
+        while brk.chunks > 0 {
+            let Some(&(start, end)) = mapped.last() else { break };
+            if end <= want_end {
+                break;
+            }
+            let cut = start.max(want_end);
+            if set_pages(cut, end, None).is_err() {
+                return brk.current; // leaves the rest mapped and recorded; the next load unmaps it
+            }
+            memory.remove(cut, end);
+            mapped.pop();
+            if cut > start {
+                mapped.push((start, cut));
+                break;
+            }
+            brk.chunks -= 1;
+        }
+        // SAFETY: the page `request` lands in is still mapped writable.
+        unsafe { core::ptr::write_bytes(request as *mut u8, 0, want_end - request) };
+        // SAFETY: barriers and a TLB invalidate, no memory effects.
+        unsafe { core::arch::asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb") };
+    }
+    brk.mapped_end = want_end;
+    brk.current = request;
+    request
 }

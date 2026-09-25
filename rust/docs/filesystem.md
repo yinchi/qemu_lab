@@ -1,7 +1,7 @@
 # The filesystem
 
 Programs see a single FAT16 volume mounted at `/`. The kernel does not implement FAT itself: the
-[`hadris-fat`](https://crates.io/crates/hadris-fat) crate does, and `rust/r15_large_binaries/src/fs/` is the glue
+[`hadris-fat`](https://crates.io/crates/hadris-fat) crate does, and `rust/r16_brk/src/fs/` is the glue
 between it, the block device below and the syscalls above.
 
 ```mermaid

@@ -7,7 +7,7 @@ edition = "2024"
 # `user/progs`, which holds only the core utilities every stage shares.
 [dependencies]
 abi = { path = "../../../user/abi" }
-userlib = { path = "../../../user/userlib" }
+userlib = { path = "../../../user/userlib", features = ["heap"] }  # `heapuse` allocates
 progs = { path = "../../../user/progs" }
 
 [profile.dev]

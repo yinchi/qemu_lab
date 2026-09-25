@@ -96,6 +96,6 @@ host (`disk.img` can be rebuilt with `just disk`).
 
 ## Testing
 
-Tests for these programs live in the stage that builds them: in `r15_large_binaries/test/cases/`, `core_utils.py` (the Stage
+Tests for these programs live in the stage that builds them: in `r16_brk/test/cases/`, `core_utils.py` (the Stage
 9-11 utilities and `tee`, the regression baseline) and `user_progs.py` (Stage 12's additions), driven through the QEMU harness
 described in [`tests.md`](tests.md). New programs get cases there. (`r11_busybox/` keeps its own, older suite.)

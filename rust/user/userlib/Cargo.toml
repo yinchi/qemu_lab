@@ -5,3 +5,9 @@ edition = "2024"
 
 [dependencies]
 abi = { path = "../abi" }
+# The user heap (`src/heap.rs`), behind a feature so a program that never allocates -- and every stage before
+# Stage 16, whose kernels have no `brk` -- links none of it. A program that wants `alloc` enables `heap`.
+linked_list_allocator = { version = "0.10.6", default-features = false, optional = true }
+
+[features]
+heap = ["dep:linked_list_allocator"]

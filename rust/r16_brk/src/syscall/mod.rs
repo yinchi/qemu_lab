@@ -20,7 +20,7 @@ use crate::platform::uart::uart_ensure_newline;
 // familiarity -- see its module doc), the same ones `userlib` issues them with.
 use abi::errno::ENOSYS;
 use abi::syscall::{
-    SYS_CHMOD, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_EXIT, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT,
+    SYS_BRK, SYS_CHMOD, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_EXIT, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT,
     SYS_NEWFSTATAT, SYS_OPEN, SYS_READ, SYS_REBOOT, SYS_RENAMEAT, SYS_UNLINKAT, SYS_WRITE,
 };
 
@@ -88,6 +88,8 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                 SYS_NEWFSTATAT => regs.x[0] = fd::stat(a0, a1, a2) as u64,
                 SYS_REBOOT => regs.x[0] = power::reboot(a0) as u64,
                 SYS_CLOCK_GETTIME => regs.x[0] = time::clock_gettime(a0, a1) as u64,
+                // Not an errno convention (Linux's): the new break, or the old one if it could not move.
+                SYS_BRK => regs.x[0] = crate::exec::elf::program_break(a0) as u64,
                 SYS_EXIT => {
                     // Never returns to kernel_exit's normal eret-back-to-EL0
                     // path -- resume_kernel (arch/context.s) restores the register

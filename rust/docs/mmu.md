@@ -187,6 +187,8 @@ block
       USER_IMAGE_END
       space:2
     end
+    heap["Heap, grown by brk\n(from the end of the image, up to USER_IMAGE_END)"]
+    space
     image["User image, up to ~31 MiB\n(only the pages it needs are mapped)"]
     block
       columns 1
@@ -197,6 +199,7 @@ block
   style stack fill:#570,stroke:#333,stroke-width:2px
   style guard fill:#101300,stroke:#333,stroke-width:2px
   style unmapped fill:#000,stroke:#333,stroke-width:2px
+  style heap fill:#640,stroke:#333,stroke-width:2px
   style image fill:#750,stroke:#333,stroke-width:2px
 ```
 
@@ -208,7 +211,7 @@ stays at the top of the window however big the image is. The limit is enforced b
 lie within that range or the load fails with `SegmentOutsideWindow`, and no two segments may share a
 4 KiB page (`SegmentsShareAPage`), so page padding counts against the budget too.
 
-Static objects are mapped into the user image region (`.bss` section), while local variables live on the user stack. There is no user heap (until Stage 16); programs use fixed-size objects only, or a small fixed heap of their own (`date`'s 128 KiB). The gap between the last segment and the guard is where Stage 16's heap will grow.
+Static objects are mapped into the user image region (`.bss` section), while local variables live on the user stack. Since Stage 16 there is also a **heap**, described next.
 
 One more limit sits in front of all this: the file is read whole into the kernel heap before it is parsed, so an
 executable *file* larger than half the 16 MiB kernel heap (8 MiB, `MAX_PROGRAM_SIZE` in `shell/launch.rs`) is refused
@@ -216,8 +219,42 @@ as `Exec format error` however valid it is. That is a limit on the file, not the
 an image of tens of MiB is still fine if most of it is `.bss` (`bigimage`, in the tests, is about 11 MiB of memory in a
 3 MiB file).
 
-Nothing is mapped between the last segment and the stack, so a stack that overflows &mdash; or a
-wild pointer into the gap &mdash; faults instead of silently running into the program's own data.
+### The user heap (Stage 16)
+
+Each program has a **program break** (`brk`, syscall 214, see [`syscalls.md`](syscalls.md)): the end of its heap. It
+starts at the page-aligned end of the image (`.bss` included), and `elf.rs` keeps it, with the heap's start and how much
+is mapped, in one small `Break` record that every `load` resets. Moving the break up maps and zeroes pages there
+(writable, never executable, like the stack); moving it down unmaps the pages above it and zeroes the rest of the page it
+lands in, so memory that is grown again is always zero. The heap cannot go below where it starts, or above
+`USER_IMAGE_END`, so it can never reach the stack's guard; a request the kernel cannot grant returns the old break, not an
+error (Linux's convention).
+
+The kernel only moves the break. Turning it into `Vec`/`String`/`Box` is `userlib`'s `heap` feature: a
+`#[global_allocator]` that starts empty, asks `brk` for memory when an allocation does not fit (a 64 KiB chunk at least,
+then growth by the heap's current size up to 1 MiB a step, so a program makes a handful of calls, not one per
+allocation), and hands it to `linked_list_allocator`'s `Heap`, the crate the kernel's own heap uses, for the free lists.
+Freed memory returns to those lists and is reused, but the break itself never moves down on its own. The feature is
+optional: a program that does not enable it links none of it, and it needs a kernel with `brk` (Stage 16 on). A heap
+page is one more range the loader records (`MAPPED`), so the next program's load unmaps it with everything else, and
+`usermem` records it so a syscall's pointer check accepts it.
+
+**The window is a fixed partition, reserved whether or not it is used.** Nothing records a reservation (there is no frame
+allocator, no free list of physical pages): it holds because of the layout. The 32 MiB from `USER_BASE` to
+`0x4600_0000` is real RAM (QEMU's default 128 MiB runs to `0x4800_0000`) that the kernel never touches, and only one
+program is resident at a time, so a `brk` up to `USER_IMAGE_END` can always be granted: it writes page-table entries and
+zeroes pages, and nothing has to check that a page is free. That is why the heap never negotiates for memory, and it is
+the price of the design: **up to about 31 MiB of RAM (the window less the stack, the guard and the image) sits unused but
+unavailable while a small program runs** -- not to the kernel, not to anything else. It stays that way until Stage 19,
+when two programs can be resident at once and each can no longer be given the whole window: then the physical memory
+behind each must be split or tracked (two fixed windows, or per-process page tables and a frame allocator), and a `brk`
+can genuinely fail for lack of memory. The layout also assumes the RAM is there: with less than about 96 MiB
+(`-m 64`, say) the window would run past the end of RAM, and nothing checks that at boot.
+
+The one dynamic allocation in mapping a page is its level-3 page table (4 KiB per 2 MiB mapped) from the kernel heap;
+the tables are kept after a program is unmapped.
+
+Nothing is mapped between the heap's break (or the last segment, before a heap exists) and the stack, so a stack that
+overflows &mdash; or a wild pointer into the gap &mdash; faults instead of silently running into the program's own data.
 The guard itself isn't checked by any code: it is simply the unmapped gap the image limit keeps
 segments out of.
 The rest of RAM outside the kernel image and this window is deliberately left unmapped, not mapped

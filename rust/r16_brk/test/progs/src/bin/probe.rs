@@ -7,6 +7,9 @@
 //!   probe fds           opens files until the kernel says no, then closes them all
 //!   probe close-out     closes fd 1, tries to write to it, and reports both results on fd 2 -- run as
 //!                      `> f 2>&1` to show that closing one fd leaves the file the other fd shares open
+//!   probe brk           the program break: where the heap starts, growing by a page and a byte, zero and writable
+//!                      memory, the kernel's own pointer check against it, shrinking (unmapped, and the rest of the
+//!                      page zeroed), and the requests that are refused (below the start, into the stack's guard)
 //!   probe clock         `clock_gettime`: the real-time clock (plausible, `tv_nsec` 0), other clock ids (`EINVAL`) and
 //!                      bad output pointers (`EFAULT`)
 //!   probe leak-write PATH [crash]  writes a line to PATH and ends without closing it, by exiting or (`crash`)
@@ -38,7 +41,7 @@
 use core::arch::asm;
 use core::fmt::Write;
 
-use abi::syscall::{SYS_CHMOD, SYS_CLOCK_GETTIME, SYS_GETDENTS, SYS_OPEN, SYS_READ, SYS_WRITE};
+use abi::syscall::{SYS_CHMOD, SYS_CLOCK_GETTIME, SYS_GETCWD, SYS_GETDENTS, SYS_OPEN, SYS_READ, SYS_WRITE};
 use progs::Fd;
 
 /// A raw syscall with up to four arguments -- deliberately not `userlib`'s, which only ever sends
@@ -89,6 +92,10 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             let closed = userlib::close(1);
             let written = userlib::write(1, b"lost");
             let _ = writeln!(Fd(2), "close(1)={closed} write(1)={written}");
+            0
+        }
+        Some("brk") => {
+            brk_probe(&mut out);
             0
         }
         Some("clock") => {
@@ -217,7 +224,7 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|close-out|clock|leak-write|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
+            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|close-out|brk|clock|leak-write|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
             2
         }
     }
@@ -258,6 +265,58 @@ fn fds(out: &mut Fd) {
     let again = userlib::open("/tests/notes.txt", userlib::O_RDONLY);
     let _ = writeln!(out, "after closing all: {}", if again >= 0 { "open ok" } else { "open failed" });
     userlib::close(again as usize);
+}
+
+/// The stack's guard begins here (`USER_IMAGE_END`): the highest the break may go.
+const HEAP_LIMIT: usize = 0x45EF_0000;
+
+fn brk_probe(out: &mut Fd) {
+    use core::ptr::{read_volatile, write_volatile};
+    const PAGE: usize = 4096;
+    let start = userlib::brk(0);
+    let _ = writeln!(out, "start: page-aligned {}", start.is_multiple_of(PAGE));
+    let _ = writeln!(out, "brk(0) again: same {}", userlib::brk(0) == start);
+
+    // Grow by three pages and a byte: the break is exactly what was asked, four pages are mapped.
+    let want = start + 3 * PAGE + 1;
+    let _ = writeln!(out, "grow +3 pages +1 byte: granted {}", userlib::brk(want) == want);
+    let heap = start as *mut u8;
+    let mut zero = true;
+    for i in 0..4 * PAGE {
+        // SAFETY: the four pages were just mapped writable.
+        unsafe {
+            zero &= read_volatile(heap.add(i)) == 0;
+            write_volatile(heap.add(i), 0xAB);
+        }
+    }
+    let _ = writeln!(out, "fresh memory: zero {zero}, writable");
+
+    // The kernel checks a pointer against what is mapped: the last mapped page is fine, one past it is not.
+    // (`getcwd` writes the working directory's path, which is short, at the pointer.)
+    let end = start + 4 * PAGE;
+    let _ = writeln!(out, "kernel write at the last mapped bytes: {}", raw(SYS_GETCWD, end - 64, 64, 0, 0) > 0);
+    let _ = writeln!(out, "kernel write across the end: {}", raw(SYS_GETCWD, end - 32, 64, 0, 0));
+    let _ = writeln!(out, "kernel write just past it: {}", raw(SYS_GETCWD, end, 64, 0, 0));
+
+    // Shrink to the middle of the first page: the pages above go, and the rest of that page is zeroed.
+    let keep = start + 100;
+    let _ = writeln!(out, "shrink to +100: granted {}", userlib::brk(keep) == keep);
+    // SAFETY: the first page is still mapped.
+    let (below, above) = unsafe { (read_volatile(heap.add(50)), read_volatile(heap.add(200))) };
+    let _ = writeln!(out, "shrink: below the break kept {}, above it zeroed {}", below == 0xAB, above == 0);
+    let _ = writeln!(out, "shrink: the page above is unmapped: {}", raw(SYS_GETCWD, start + PAGE, 64, 0, 0));
+    let _ = writeln!(out, "regrow: granted {}", userlib::brk(start + 2 * PAGE) == start + 2 * PAGE);
+    // SAFETY: the two pages are mapped again.
+    let regrown = unsafe { read_volatile(heap.add(200)) == 0 && read_volatile(heap.add(PAGE + 5)) == 0 };
+    let _ = writeln!(out, "regrow: zero again {regrown}");
+
+    // What is refused leaves the break where it was.
+    let now = userlib::brk(0);
+    let _ = writeln!(out, "below the start: unchanged {}", userlib::brk(start - 1) == now);
+    let _ = writeln!(out, "into the stack's guard: unchanged {}", userlib::brk(HEAP_LIMIT + 1) == now);
+    let _ = writeln!(out, "the whole address space: unchanged {}", userlib::brk(usize::MAX) == now);
+    let _ = writeln!(out, "up to the guard exactly: granted {}", userlib::brk(HEAP_LIMIT) == HEAP_LIMIT);
+    let _ = writeln!(out, "back down: granted {}", userlib::brk(start) == start);
 }
 
 fn clock(out: &mut Fd) {

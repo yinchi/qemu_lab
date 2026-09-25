@@ -61,6 +61,28 @@ impl UserMemory {
         self.regions = merged;
     }
 
+    /// Forgets `start..end`: it is unmapped again. A region that straddles it is cut in two, or trimmed. (The heap
+    /// gives memory back when the program break moves down.)
+    pub fn remove(&mut self, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+        let mut kept: Vec<Region> = Vec::with_capacity(self.regions.len() + 1);
+        for r in self.regions.drain(..) {
+            if r.end <= start || r.start >= end {
+                kept.push(r); // untouched
+                continue;
+            }
+            if r.start < start {
+                kept.push(Region { start: r.start, end: start, writable: r.writable });
+            }
+            if r.end > end {
+                kept.push(Region { start: end, end: r.end, writable: r.writable });
+            }
+        }
+        self.regions = kept;
+    }
+
     /// Whether every byte of `ptr..ptr+len` is mapped -- and writable, if `write`. An empty range is
     /// always fine (nothing is touched), wherever it points.
     pub fn allows(&self, ptr: usize, len: usize, write: bool) -> bool {
@@ -148,6 +170,36 @@ mod tests {
                 writable: true
             }]
         );
+    }
+
+    #[test]
+    fn removing_a_range_trims_splits_or_drops_regions() {
+        let mut m = UserMemory::new();
+        m.add(BASE, BASE + 0x4000, true);
+        m.remove(BASE + 0x3000, BASE + 0x4000); // the top page goes: trimmed
+        assert_eq!(m.regions(), &[Region { start: BASE, end: BASE + 0x3000, writable: true }]);
+        assert!(!m.allows(BASE + 0x3000, 1, false));
+        m.remove(BASE + 0x1000, BASE + 0x2000); // the middle: split in two
+        assert_eq!(
+            m.regions(),
+            &[
+                Region { start: BASE, end: BASE + 0x1000, writable: true },
+                Region { start: BASE + 0x2000, end: BASE + 0x3000, writable: true },
+            ]
+        );
+        m.remove(BASE, BASE + 0x1_0000); // everything
+        assert!(m.regions().is_empty());
+    }
+
+    #[test]
+    fn removing_leaves_neighbours_and_empty_ranges_alone() {
+        let mut m = sample();
+        m.remove(BASE + 0x8000, BASE + 0x9000); // maps nothing: no change
+        m.remove(BASE + 0x3000, BASE + 0x3000); // empty
+        assert_eq!(m.regions().len(), 3);
+        m.remove(BASE + 0x2000, BASE + 0x4000); // exactly the data region
+        assert!(m.allows(BASE, 16, false) && !m.allows(BASE + 0x2000, 1, false));
+        assert!(m.allows(BASE + 0x20_0000 - 8, 8, true)); // the stack is unharmed
     }
 
     #[test]
