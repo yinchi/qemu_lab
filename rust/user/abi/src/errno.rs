@@ -12,6 +12,9 @@ pub const E2BIG: isize = -7;
 pub const ENOEXEC: isize = -8;
 /// Bad file descriptor.
 pub const EBADF: isize = -9;
+/// Cannot allocate memory -- returned by no syscall (the kernel refuses a `brk` it cannot grant by returning the old
+/// break); a program uses it for a user-space allocation that failed.
+pub const ENOMEM: isize = -12;
 /// Permission denied.
 pub const EACCES: isize = -13;
 /// Bad address.
@@ -47,6 +50,7 @@ pub fn errmsg(code: isize) -> &'static str {
         E2BIG => "Argument list too long",
         ENOEXEC => "Exec format error",
         EBADF => "Bad file descriptor",
+        ENOMEM => "Cannot allocate memory",
         EACCES => "Permission denied",
         EFAULT => "Bad address",
         EEXIST => "File exists",
@@ -81,15 +85,15 @@ mod tests {
     #[test]
     fn new_values_are_linux_numbers() {
         assert_eq!(
-            [E2BIG, ENOEXEC, EFAULT, EEXIST, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY],
-            [-7, -8, -14, -17, -25, -28, -34, -36, -38, -39]
+            [E2BIG, ENOEXEC, ENOMEM, EFAULT, EEXIST, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY],
+            [-7, -8, -12, -14, -17, -25, -28, -34, -36, -38, -39]
         );
     }
 
     #[test]
     fn every_error_has_a_message() {
         for code in [
-            ENOENT, EIO, E2BIG, ENOEXEC, EBADF, EACCES, EFAULT, EEXIST, ENOTDIR, EISDIR, EINVAL,
+            ENOENT, EIO, E2BIG, ENOEXEC, EBADF, ENOMEM, EACCES, EFAULT, EEXIST, ENOTDIR, EISDIR, EINVAL,
             EMFILE, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY,
         ] {
             assert_ne!(errmsg(code), "Unknown error", "{code}");

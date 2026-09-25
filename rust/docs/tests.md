@@ -155,6 +155,7 @@ The kernel marks only `/bin` executable at boot, so tests `chmod +x` the program
 | `power` | `poweroff` and `reboot` (PSCI) |
 | `clock` | The real-time clock: `clock_gettime` (through `probe clock`), and `date` -- the live clock against the host's, and exact output for chosen instants (`date -d @N`) in `America/Toronto` local time and UTC, including both daylight-saving changes of 2024 |
 | `heap` | The user heap: `probe brk` drives the `brk` syscall (growing by a page and a byte, zeroed writable memory, the kernel's pointer check, shrinking, and what is refused) and `heapuse` allocates like a real program (big `Vec`, small boxes, `String`, growth, an allocation that cannot fit, reuse after a free); a program's heap is unmapped for the next |
+| `audit` | The programs that moved to the user heap in Stage 16: `ls` sorted by name, `tail` on stdin past the old 512 KiB buffer, `tee` past its old 8 files, and `chmod -R`/`rm -r` on a tree deeper than the kernel's open-file limit |
 | `large` | Arbitrarily large binaries: `bigimage` (about 11 MiB of memory) runs and checks every byte range, a second run sees a fresh `.bss`, none of it stays mapped for the next program, and an image that cannot fit the ceiling, or a file bigger than half the kernel heap, is refused |
 
 Two modules cannot use the normal `Session.run`/`wait_prompt` for part of what they do, since those treat a panic or

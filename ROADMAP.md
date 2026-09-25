@@ -878,7 +878,7 @@ kernel's own view of what is mapped), that the pages are revoked for the next lo
 ceiling fails cleanly instead of corrupting the stack. The editor (Stage 18) is the first real consumer, and
 opens progressively larger files for its own demo.
 
-**As built (the heap; the audit is the next part).** `r16_brk` is `r15_large_binaries` plus:
+**As built (the heap).** `r16_brk` is `r15_large_binaries` plus:
 - **The syscall:** `brk(addr)`, Linux's number (214) *and* its convention -- it returns the resulting break, not an errno, and a
   request it cannot grant returns the old break (`brk(0)` asks). `exec/elf.rs` keeps the break (`Break`: where the heap
   starts, the byte-exact break, the page-aligned end of what is mapped), reset by every `load`; growing maps and zeroes pages
@@ -896,6 +896,29 @@ opens progressively larger files for its own demo.
   the break, shrink and the page-tail zeroing, regrow, and every refusal), `heapuse` (an 8 MiB `Vec`, 20000 small boxes freed
   and reused, a `String`, a `Vec` doubling, a reservation the ceiling cannot hold -- refused, not a panic -- and reuse after a
   free, each line pinned to a computed value), and that the next program cannot reach a finished program's heap.
+
+**As built (the audit).** Every fixed-capacity stand-in in `user/` was checked against "was this only ever a `Vec`/`String`?". Seven programs
+moved to the heap, as overrides in `user/progs_r16` (the tier scheme: Stage 12-15 kernels have no `brk`, so their tiers keep the
+old versions), with helpers shared through that tier's `lib.rs` (`join`, `read_dir`):
+- **`progs::PathBuf`** (a `PATH_MAX` stack buffer returning `None`) -> `String` in `cp`, `mv`, `rm`, `chmod`. No limit of its own; the
+  kernel still refuses a path over `PATH_MAX` when it is used.
+- **`tail` on stdin**: buffered whole in a fixed 512 KiB, refusing more (`Invalid argument`) -> a growable buffer trimmed to what could
+  still be printed (the last N bytes, or the last N lines), so a stream of any size works in bounded memory.
+- **`tee`**: a fixed array of 8 destination files -> a `Vec`; now limited only by the kernel's 13 open files (one fewer in a pipeline).
+- **`chmod -R`** kept every ancestor directory's descriptor open while recursing (giving out about ten levels down) and **`rm -r`**
+  reopened the directory once per entry -> both list the directory whole (`read_dir`, which closes its descriptor first), then recurse.
+  A 14-level tree now works, and `rm -r` no longer reads a directory once per entry.
+- **`ls`** printed entries in on-disk order because streaming was all it could do -> lists the whole directory and **sorts by name**
+  (bytewise, the C locale), as POSIX `ls` does. Not strictly a stand-in for a fixed buffer, but only the heap made it possible.
+- **`date` and `stat`** (the heap part above): no fixed heaps of their own.
+- `abi` gained `ENOMEM` (-12) for a user-space allocation that failed (`tail` reports a buffer it cannot grow); no syscall returns it.
+
+Checked and **left alone**, because they are not stand-ins: the `CHUNK` (4 KiB) read/write buffers (an I/O size, not a limit), the
+`getdents` batches of 8 records (likewise), `pwd`'s `PATH_MAX` buffer (it is the kernel's own bound), `hexdump`'s 16-byte row, and
+`progs_r12::cli::Operands` walking the arguments twice (it needs no storage). `PathBuf` itself stays in `progs` for the Stage 12-15
+tiers. Tests: `test/cases/audit.py` (sorted `ls`; `tail` over a 1 MB, 100000-line text file and a 3 MiB binary on stdin, including
+`-n 0` and a count past the input; `tee` to ten files and to fourteen, with the kernel's limit reported; `chmod -R` and `rm -r`
+on a tree 14 levels deep).
 
 ---
 
@@ -1060,6 +1083,18 @@ time-slice between two actively-running ones.
 - A second, independent user memory window, alongside the existing one -- Stage 15's per-load
   footprint computation applies to each window independently, so neither program pays for the
   other's size.
+- **The memory half of this is a real change, not just a second window.** Through Stage 18 the user window is a
+  fixed partition of physical RAM (`0x4400_0000` to `0x4600_0000`), identity-mapped and used by one program at a time,
+  so nothing tracks physical pages and nothing is freed at exit: the next `load` unmaps what the last program was
+  given (`docs/mmu.md`, "The window is a fixed partition"). Two resident programs cannot both live there: every
+  program is linked at `0x4400_0000`, so each must see *its own* memory at that address, backed by different
+  physical pages. That takes (1) a page table per resident program, switched on `TTBR0_EL1` when the kernel changes
+  which one runs, with a mapping that is no longer the identity; (2) a **frame allocator** (a bitmap over RAM is
+  enough) to hand out the physical pages behind them, so a `brk` or a load can now fail for lack of memory; and
+  (3) **freeing on exit**: a slot's pages go back when *that* program exits or is killed -- the other slot lives on
+  and a new program may take the slot much later -- so the release moves from the next `load` into the exit and fault
+  paths, while a suspended program keeps its pages. Stage 16's bookkeeping (`MAPPED`, `Break`, `usermem`) moves into
+  a per-slot record almost unchanged.
 - A second, independent saved-EL0-context slot, generalizing `process.s`'s existing
   `enter_el0`/`resume_kernel` checkpoint mechanism. Today, `enter_el0` only ever checkpoints the
   *kernel's* own context (into `KERNEL_CTX`) so `resume_kernel` can return to it once a program

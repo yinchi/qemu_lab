@@ -154,8 +154,8 @@ pub fn help(usage: &str, flags: &[(&str, &str)]) -> ExitCode {
     ExitCode(0)
 }
 
-/// A path built from `dir` and `name` as `dir/name`, without a heap (there is none in EL0 until
-/// Stage 16) -- a fixed `PATH_MAX`-byte buffer instead. Used wherever a program computes a child
+/// A path built from `dir` and `name` as `dir/name`, without a heap (there was none in EL0 before Stage 16;
+/// `progs_r16::join` returns a `String` and has no limit) -- a fixed `PATH_MAX`-byte buffer instead. Used wherever a program computes a child
 /// path itself rather than taking one as an argument (`mv`'s directory-destination case, `rm -r`'s
 /// and `chmod -R`'s recursion).
 pub struct PathBuf {
