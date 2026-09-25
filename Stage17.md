@@ -13,7 +13,7 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 5 | Retire the automatic `exit N` line | done |
 | 6 | Pipeline stages run in a subshell (a discarded copy of the shell's frame) | done |
 | 7 | `$HOME` for `cd` and for where the init shell starts, `$TZ` for `date` and `stat` | done |
-| 8 | `$PATH`: the directories a bare command name is looked up in | planned |
+| 8 | `$PATH`: the directories a bare command name is looked up in | done |
 | 9 | `$PS1`: a limited prompt string (working directory) | planned |
 | 10 | `~/.profile`: a per-user start-up script, run by the init shell | planned |
 | 11 | Docs, roadmap, regression sweep | planned |
@@ -217,6 +217,16 @@ Today `launch.rs::find_program` looks a bare name up in `/bin` only (as `name`, 
   `PATH=` empty => not found, an empty entry skipped, a relative entry, a prefix (`PATH=/tests/bin cmd`) for one command, `PATH` exported to a program (`printenv PATH`), the `.exe` fallback in the second directory, a `/` in the
   name bypasses it, and `$?` = 127 / 126 as before.
 - Docs: `shell.md` "Program lookup" (currently says "no `PATH`-style search") and the builtin/limits text; `progs.md` intro sentence about `/bin`.
+
+**As built (Step 8).** As planned, with these specifics:
+- `shell/path_search.rs` (pure, 8 host tests): `directories(path)` and `candidates(path, name)`; `launch.rs::find_program` walks the candidates, resolving each against the working directory (so a relative entry works), skipping a
+  directory, `ENOENT`, `ENOTDIR` and the root's `EISDIR`, and returning any other error. A candidate that cannot be named counts as missing.
+- One behaviour change beyond the plan: a *directory* named like the command in `/bin` used to be found and then refused as `Is a directory`; it is now skipped, so the answer is `command not found` (nothing in `/bin` is a
+  directory, so no test noticed).
+- A **path** (a name with `/`) is still used as written -- no `.exe` fallback -- which the tests pin (`/bin/hello.exe`, not `/bin/hello`).
+- Gotcha, documented here rather than fixed: with `PATH` unset, `PATH=$PATH:/x` gives `:/x`, which searches only `/x` (the empty entry is skipped and `/bin` is not there). The image sets `PATH=/bin`, so appending works.
+- The tests' `run_status` (`echo $?`) needs `echo` on `PATH`, so a check made with the shell's own `PATH` empty cannot read a status back; `path.py` uses the message there (`not_found_here`).
+- `disk/etc/environment` gains `PATH=/bin`. New `path` group; 1007 checks in all.
 
 ## Step 9 -- `$PS1` (limited)
 The shell starts in `$HOME` and the prompt is a fixed `> `, so `pwd` is the only way to see where you are. A prompt variable fixes that, in a small form.

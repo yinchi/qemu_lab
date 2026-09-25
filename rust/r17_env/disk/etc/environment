@@ -2,3 +2,4 @@
 # Plain NAME=VALUE lines -- not shell syntax: the value is everything after the first "=", literally.
 HOME=/root
 TZ=America/Toronto
+PATH=/bin

@@ -43,6 +43,8 @@ pub mod environment;
 pub mod expand;
 #[path = "../../src/shell/lexer.rs"]
 pub mod lexer;
+#[path = "../../src/shell/path_search.rs"]
+pub mod path_search;
 #[path = "../../src/keyboard/line.rs"]
 pub mod line;
 #[path = "../../src/fs/fattime.rs"]

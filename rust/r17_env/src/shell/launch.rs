@@ -13,31 +13,37 @@ use crate::HEAP_SIZE;
 use crate::exec::{process, shell_state};
 use crate::fs::blkio::BlkIo;
 use crate::fs::{files, read_file_checked};
-use crate::shell::shell_err;
+use crate::shell::{path_search, shell_err};
 
 /// The largest executable `launch` will read into memory: anything bigger is refused as not
 /// executable rather than risking an allocation failure (which would panic the kernel).
 const MAX_PROGRAM_SIZE: usize = HEAP_SIZE / 2;
 
 /// Finds the file a command word names. A word containing `/` is a path, relative to the working
-/// directory unless it starts with `/`. A bare name is looked up in `/bin` (nowhere else -- no
-/// `PATH`-style search, and independent of the working directory), trying the bare name first and
-/// then `name.exe`, Cygwin's own lookup order, so `cat` finds `bin/cat.exe` without the `.exe` ever
-/// being typed. `Err` carries the text to report after `name: `.
+/// directory unless it starts with `/`. A bare name is looked up in the directories of `$PATH`
+/// (`path_search.rs`: `/bin` if it is unset), in order, trying the bare name first and then `name.exe` in
+/// each -- Cygwin's own lookup order, so `cat` finds `bin/cat.exe` without the `.exe` ever being typed. The
+/// first regular file found wins; a directory of that name is skipped, as is a candidate that does not
+/// exist. `Err` carries the text to report after `name: `.
 fn find_program(name: &str) -> Result<FileEntry, &'static str> {
     if name.contains('/') {
         return shell_state::absolute(name)
             .and_then(|path| files::lookup(&path))
             .map_err(errmsg);
     }
-    match files::lookup(&alloc::format!("/bin/{name}")) {
-        Err(ENOENT | ENOTDIR) => {}
-        found => return found.map_err(errmsg),
+    let path = shell_state::frames().top().var("PATH").map(String::from);
+    for candidate in path_search::candidates(path.as_deref(), name) {
+        // A relative `PATH` entry is relative to the working directory; a candidate that cannot even be
+        // named (too long) is one that does not exist.
+        let Ok(absolute) = shell_state::absolute(&candidate) else { continue };
+        match files::lookup(&absolute) {
+            Ok(entry) if entry.is_directory() => {}
+            Ok(entry) => return Ok(entry),
+            Err(ENOENT | ENOTDIR | EISDIR) => {}
+            Err(e) => return Err(errmsg(e)),
+        }
     }
-    match files::lookup(&alloc::format!("/bin/{name}.exe")) {
-        Err(ENOENT | ENOTDIR) => Err("command not found"),
-        found => found.map_err(errmsg),
-    }
+    Err("command not found")
 }
 
 /// The four bytes every ELF file starts with.

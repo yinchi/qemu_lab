@@ -44,7 +44,7 @@ A module qualifies by being `no_std` + `alloc` with **no dependency on the rest 
 
 | Area | Modules |
 |---|---|
-| Shell | `lexer`, `syntax`, `expand`, `frame_stack`, `environment`, `path` |
+| Shell | `lexer`, `syntax`, `expand`, `path_search`, `frame_stack`, `environment`, `path` |
 | Keyboard and line editing | `tokens`, `keymap`, `ring_buffer`, `line`, `history`, `util` |
 | Console | `cells`, `font`, `utf8`, `input_layout` |
 | Program loading | `elfparse`, `argplan`, `usermem` |
@@ -155,6 +155,7 @@ The kernel marks only `/bin` executable at boot, so tests `chmod +x` the program
 | `power` | `poweroff` and `reboot` (PSCI) |
 | `clock` | The real-time clock: `clock_gettime` (through `probe clock`), and `date` -- the live clock against the host's, and exact output for chosen instants (`date -d @N`) in `America/Toronto` local time (the group's `TZ`) and UTC, including both daylight-saving changes of 2024; and, from Stage 17, the zone as `$TZ` (a prefix for one command, `export`, `unset`, empty, unknown, case, a leading `:`, `stat` too) |
 | `heap` | The user heap: `probe brk` drives the `brk` syscall (growing by a page and a byte, zeroed writable memory, the kernel's pointer check, shrinking, and what is refused) and `heapuse` allocates like a real program (big `Vec`, small boxes, `String`, growth, an allocation that cannot fit, reuse after a free); a program's heap is unmapped for the next |
+| `path` | `$PATH`: a bare name searched in order through a list of directories (`name`, then `name.exe`, in each) with two directories of test programs under `/tmp`: a prefix for one command, `PATH=$PATH:...`, precedence, a directory or a file without the exec bit skipped or refused, unset (`/bin`), empty (nowhere) and empty entries (skipped), relative entries, and that a name with a `/` ignores `PATH`. The candidate list is a host test |
 | `home`, `home_bad` | `$HOME`: the shell starts in it (before the first prompt), `cd` with no operand goes to it and sees an overlay (`HOME=/fonts cd`), is not moved by a `cd` in a pipeline stage, and reports an unset, empty or wrong one; a `HOME` that names no directory is noted on the serial log and leaves the shell in `/` (the missing-file case is in `env_missing`) |
 | `assignment` | `NAME=value` alone (a shell variable, not exported until `export`) and before a command (its environment only, restored afterwards, also for an existing variable and for a pipeline stage), values that are expanded but never split, what is not an assignment (`echo A=1`, a quoted or invalid name), and a script's scope against `source`'s |
 | `expansion` | `$NAME`, `${NAME}` and `$?` end to end: values, quoting, field splitting into a program's `argv` (`probe args`), a command word or redirect target that is an expansion (`ambiguous redirect`), and every source of a status (a program, a fault, 127, 126, a syntax error, a builtin, a script). The rules themselves are host tests |

@@ -15,6 +15,7 @@ pub mod environment;
 pub mod expand;
 pub mod launch;
 pub mod lexer;
+pub mod path_search;
 pub mod syntax;
 
 use alloc::format;

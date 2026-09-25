@@ -79,9 +79,16 @@ In summary, the rules are POSIX's, as far as this shell goes:
 ### Program lookup
 
 A command word is a builtin (below) if it names one, otherwise a program. A word containing `/` is a path,
-relative to the working directory unless it starts with `/`; a bare name is looked up in `/bin` only, as
-`name` and then `name.exe`, with no `PATH`-style search. The file must be a regular file with the executable
-attribute bit set. See [`launching_programs.md`](launching_programs.md) for what happens next, including
+relative to the working directory unless it starts with `/`, and is used exactly as written (no `.exe` is added
+to a path). A bare name is searched for in the directories of **`$PATH`**, in order, as `name` and then `name.exe`
+in each -- so `cat` finds `bin/cat.exe` without the `.exe` being typed -- and the first regular file found wins; a
+directory of that name, or a candidate that does not exist, is skipped. `PATH` **unset** means `/bin`, so a shell
+with no environment finds its programs; **set but empty** means nowhere (nothing is found, not even in the working
+directory). An **empty entry** (`a::b`, a leading or trailing `:`) is skipped: POSIX would search the working
+directory there. A **relative entry** is relative to the working directory at the time. The image's
+`/etc/environment` says `PATH=/bin`; `PATH=$PATH:/root/bin` extends it, and `PATH=/tmp/x cmd` searches
+somewhere else for one command. A file that is found must have the executable attribute bit set (else
+`Permission denied`, status 126); a name found nowhere is `command not found` (127). See [`launching_programs.md`](launching_programs.md) for what happens next, including
 the fallback for an executable file that isn't an ELF binary (it is run as a script).
 
 ### Redirection
@@ -293,6 +300,7 @@ bindings (and `launch` gives it the top frame's exported variables as its `envp`
 | `shell/lexer.rs`, `shell/syntax.rs` | The grammar (see above) |
 | `shell/expand.rs` | `$` expansion and field splitting (pure, host-tested) |
 | `shell/builtins.rs` | `cd`, `export`, `unset`, `source`, `.`, `sh` |
+| `shell/path_search.rs` | The candidate paths for a bare command name from `$PATH` (pure, host-tested); `launch.rs` looks each up |
 | `shell/environment.rs` | The parser for `/etc/environment` (pure, host-tested); `shell/mod.rs`'s `load_environment` reads it at boot |
 | `shell/launch.rs` | Finding and starting a program |
 | `exec/frame_stack.rs`, `exec/shell_state.rs` | The frame stack and the one global instance |
