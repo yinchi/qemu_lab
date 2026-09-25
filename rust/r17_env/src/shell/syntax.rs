@@ -23,6 +23,7 @@
 //! Pure `no_std` + `alloc`, with no dependency on the rest of the kernel, so it is tested on the host
 //! (`hosttests/`).
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -72,9 +73,12 @@ pub enum Redirection {
 }
 
 /// One stage of a pipeline (`segment` in `Stage12.md`'s grammar, `rust/docs/shell.ebnf`): the program
-/// (a builtin or a file) and its arguments, plus its own redirections, in the order typed.
+/// (a builtin or a file) and its arguments, plus its own assignments and redirections, in the order typed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Segment {
+    /// `NAME=value` words before the command word, in order: the name and the value's (unexpanded) word. With
+    /// a command they are its environment for as long as it runs; alone they set shell variables.
+    pub assignments: Vec<(String, Word)>,
     /// The words as typed, `$` expansions not yet made. Empty for a stage with only redirections (`> f` is valid:
     /// it creates the file, POSIX-style).
     pub argv: Vec<Word>,
@@ -159,18 +163,24 @@ peg::parser! {
         // point the real code checks it, not by the caller after the fact.
         rule segment(src: &[Token]) -> Segment
             = items:item(src)* {?
+                let mut assignments = Vec::new();
                 let mut argv = Vec::new();
                 let mut redirs = Vec::new();
                 for it in items {
                     match it {
+                        // An assignment is only one before the command word; after it, `A=b` is an argument.
+                        Item::Arg(a) if argv.is_empty() && a.assignment().is_some() => {
+                            let (name, value) = a.assignment().expect("just checked");
+                            assignments.push((String::from(name), value));
+                        }
                         Item::Arg(a) => argv.push(a),
                         Item::Redir(r) => redirs.push(r),
                     }
                 }
-                if argv.is_empty() && redirs.is_empty() {
+                if assignments.is_empty() && argv.is_empty() && redirs.is_empty() {
                     Err("empty-command")
                 } else {
-                    Ok(Segment { argv, redirs })
+                    Ok(Segment { assignments, argv, redirs })
                 }
               }
 
@@ -220,6 +230,7 @@ mod tests {
 
     fn seg(words: &[&str], redirs: Vec<Redirection>) -> Segment {
         Segment {
+            assignments: vec![],
             argv: words.iter().map(|w| Word::literal(w)).collect(),
             redirs,
         }
@@ -429,19 +440,66 @@ mod tests {
         let c = one(r#"echo $x "a $?" > $out"#);
         assert_eq!(
             c.argv[1],
-            Word { parts: vec![Part::Var { name: "x".into(), quoted: false }] }
+            Word::from_parts(vec![Part::Var { name: "x".into(), quoted: false }])
         );
         assert_eq!(
             c.argv[2],
-            Word {
-                parts: vec![
-                    Part::Lit("a ".into()),
-                    Part::Status { quoted: true }
-                ]
-            }
+            Word::from_parts(vec![Part::Lit("a ".into()), Part::Status { quoted: true }])
         );
         let Out { path, .. } = &c.redirs[0] else { panic!("not a > redirection") };
         assert_eq!(path.to_string(), "$out");
+    }
+
+    fn assigns(line: &str) -> Vec<(String, String)> {
+        one(line).assignments.into_iter().map(|(n, v)| (n, v.to_string())).collect()
+    }
+
+    #[test]
+    fn assignments_before_the_command_word() {
+        assert_eq!(assigns("A=1 B=2 cmd x"), [("A".into(), "1".into()), ("B".into(), "2".into())]);
+        assert_eq!(one("A=1 B=2 cmd x").argv, seg(&["cmd", "x"], vec![]).argv);
+        // Alone, they are the whole command.
+        let c = one("A=1");
+        assert_eq!((c.assignments.len(), c.argv.len()), (1, 0));
+        assert_eq!(assigns("A=$x"), [("A".into(), "$x".into())]);
+        assert_eq!(assigns(r#"A="a b""#), [("A".into(), "a b".into())]);
+    }
+
+    #[test]
+    fn after_the_command_word_it_is_an_argument() {
+        assert!(one("cmd A=1").assignments.is_empty());
+        let text = |c: Segment| c.argv.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert_eq!(text(one("cmd A=1")), ["cmd", "A=1"]);
+        assert_eq!(assigns("A=1 cmd B=2"), [("A".into(), "1".into())]);
+        assert_eq!(one("A=1 cmd B=2").argv.len(), 2);
+    }
+
+    #[test]
+    fn what_is_not_a_name_is_the_command() {
+        let c = one("1A=x cmd");
+        assert!(c.assignments.is_empty());
+        assert_eq!(c.argv.len(), 2);
+        let c = one(r#""A"=x"#);
+        assert!(c.assignments.is_empty());
+        assert_eq!(c.argv.len(), 1);
+    }
+
+    #[test]
+    fn redirections_may_be_among_them() {
+        let c = one("A=1 > f cmd B=2 2>&1");
+        assert_eq!(c.assignments.len(), 1);
+        assert_eq!(c.argv.len(), 2);
+        assert_eq!(c.redirs.len(), 2);
+        let c = one("A=1 > f");
+        assert_eq!((c.assignments.len(), c.argv.len(), c.redirs.len()), (1, 0, 1));
+    }
+
+    #[test]
+    fn each_stage_has_its_own() {
+        let p = parse("A=1 a | B=2 b").unwrap().unwrap();
+        assert_eq!(p[0].assignments.len(), 1);
+        assert_eq!(p[1].assignments[0].0, "B");
+        assert_eq!(parse("A=1 |"), Err(SyntaxError::EmptyCommand));
     }
 
     #[test]

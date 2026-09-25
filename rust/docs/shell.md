@@ -126,6 +126,31 @@ a temporary file** under `/tmp/`, not a real pipe.
   reading it &mdash; no streaming, and it needs free disk space. This is a permanent limitation until
   Stage 23 replaces it with real pipes between resident programs.
 
+## Variables and assignments
+
+The shell keeps variables in the current frame (see "The shell's state" below). Each has a name, a value and an
+**exported** flag; the initial ones come from `/etc/environment`, all exported. `$NAME` reads any of them;
+a program's environment (`envp`, what `env` and `printenv` show) is the exported ones.
+
+- **`NAME=value`** on its own sets a shell variable. An existing variable keeps its exported flag; a new one
+  is *not* exported, so a program does not see it until `export NAME`. Several may be given (`A=1 B=$A`), each
+  value seeing the ones before it. The value is expanded (`$X`, `${X}`, `$?`, quotes) but **never split into
+  fields**: `A=$X` keeps every blank of `X`, and `A=$EMPTY` is empty.
+- **`NAME=value command`** gives that one command `NAME` as an exported variable for as long as it runs, and
+  puts things back afterwards (a variable that already existed returns with its old value *and* flag; a new one
+  disappears again). A builtin sees it too while it runs. The command's own words are expanded first, so `FOO=1
+  echo $FOO` prints the old value. If the command's words all expand to nothing (`FOO=1 $NOSUCH`), the
+  assignments are the shell's own, as for a bare assignment.
+- **What is an assignment.** A word that starts with an unquoted `NAME=` (a valid name) and comes before the
+  command word, redirections aside. `echo A=1` prints `A=1`; `"A"=1`, `1A=x` and `a-b=x` are commands (and
+  not found). The name is `[A-Za-z_][A-Za-z0-9_]*`.
+- **`export NAME[=value]`** sets the flag (and assigns); `unset NAME` removes. As in bash, `export`'s operands
+  that look like assignments are expanded as assignments are (`expand_command`): `export A=$X` sets `A` to all
+  of `X`, blanks and all, rather than splitting it into operands. Any other command's `A=$X` argument splits.
+- **Scope.** `./script` and `sh script` run as a child: they start with only the exported variables and
+  nothing they set survives. `source` (and `.`) shares the shell's. A pipeline's stages share one set of
+  variables, so `A=1 | cat` sets `A` in the shell (a process-per-stage shell would confine it).
+
 ## Expansion
 
 Just before a segment runs, each word is given its value (`shell/expand.rs`, pure and host-tested). The
@@ -183,7 +208,7 @@ Only what has to change the shell's own state is built in.
 | Command | Behavior |
 |---|---|
 | `cd [DIR]` | Make `DIR` (absolute, or relative to the working directory) the working directory. With no operand, go to `/` (POSIX says `$HOME`; Stage 17 switches to it). `cd -`, `-L` and `-P` are refused with an explanation, as is more than one operand. On any error the directory is unchanged. |
-| `export NAME[=VALUE]...` | Mark each variable **exported** -- handed to every program the shell starts, and to scripts run as their own process -- and, with a `=VALUE`, assign it first. `export NAME` for a variable that is not set does nothing. Every operand is attempted; a name that is not a valid identifier (`[A-Za-z_][A-Za-z0-9_]*`) is reported as bash does, `export: 'a-b': not a valid identifier`. `export` alone and `-p` are refused. (Stage 17, Step 1: nothing reads a variable yet -- programs get them in Step 2, `$NAME` in Step 3.) |
+| `export NAME[=VALUE]...` | Mark each variable **exported** -- handed to every program the shell starts, and to scripts run as their own process -- and, with a `=VALUE`, assign it first. `export NAME` for a variable that is not set does nothing. Every operand is attempted; a name that is not a valid identifier (`[A-Za-z_][A-Za-z0-9_]*`) is reported as bash does, `export: 'a-b': not a valid identifier`. `export` alone and `-p` are refused. |
 | `unset NAME...` | Remove each variable, set or not. An invalid name is reported; options are refused. |
 | `source FILE`, `. FILE` | Run the lines of `FILE` in the *current* shell state: a `cd` inside it sticks. |
 | `sh FILE` | Run the lines of `FILE` in a *scope* of its own, as a child shell process would: its `cd`s and redirections are gone afterwards. |
@@ -239,7 +264,7 @@ bindings (and `launch` gives it the top frame's exported variables as its `envp`
 
 ## Limits
 
-- No `;`, `&`, `(` `)`, here-documents, `NAME=value` assignments (Stage 17, Step 4), globbing, or control flow; no job
+- No `;`, `&`, `(` `)`, here-documents, globbing, or control flow; no job
   control and a single foreground program at a time. The only expansions are `$NAME`, `${NAME}` and `$?`.
 - Pipes go through files under `/tmp/`, and the shell needs that directory to exist.
 - No tab completion, and no history across reboots.

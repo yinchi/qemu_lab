@@ -73,6 +73,11 @@ dup_redir    ::= [ "1" | "2" ] ">&" ;
    `segment` is "1" or "2" (as text, once quotes and escapes are resolved) and raises a syntax error
    otherwise. *)
 
+assignment  ::= name "=" (expansion | unquoted_tail | piece)* ;
+(* A word that starts with an unquoted name and "=", the value being the rest of the word. lexer.rs marks such
+   a word; syntax.rs makes it an assignment only where it comes before the first word that is not one (an
+   `echo A=1` argument is just a word). Its value is expanded, but not split into fields, by expand.rs. *)
+
 segment     ::= (whitespace | token | redir_op whitespace* token | comment)* ;
 (* words and redirections interleave in any order/count; a redirection with no operand ("cmd >"
    at end of input) or two "<"/"&" with nothing valid between them ("<<", "<&") simply fail to

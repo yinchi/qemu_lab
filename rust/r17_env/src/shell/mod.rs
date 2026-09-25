@@ -129,15 +129,50 @@ fn run_segment(segment: &Segment, depth: usize) -> Launched {
     run_segment_with(segment, [None, None, None], true, depth)
 }
 
-/// The variables as a `$` expansion sees them: the current frame's, and the last status for `$?`.
-fn expand_words(words: &[Word]) -> Vec<String> {
+/// Runs `f` with `Values` for a `$` expansion: the current frame's variables as they are at that moment, and
+/// the last status for `$?`.
+fn with_values<R>(f: impl FnOnce(&Values) -> R) -> R {
     let lookup = |name: &str| shell_state::frames().top().var(name).map(String::from);
-    expand::expand(words, &Values { lookup: &lookup, status: shell_state::last_status() })
+    f(&Values { lookup: &lookup, status: shell_state::last_status() })
+}
+
+/// The words of a command, expanded (`export`'s assignment operands are not split: see `expand_command`).
+fn expand_words(words: &[Word]) -> Vec<String> {
+    with_values(|values| expand::expand_command(words, values))
+}
+
+/// Performs a segment's `NAME=value` words on the top frame, each value expanded when its turn comes, so a
+/// later one sees an earlier (`A=1 B=$A`). With `for_command` they are exported -- the command's environment --
+/// and what they replaced is returned to put back afterwards (`restore_assignments`); without, they are plain
+/// shell variables, which keep an existing variable's exported flag.
+fn apply_assignments(
+    assignments: &[(String, Word)],
+    for_command: bool,
+) -> Vec<(String, Option<(String, bool)>)> {
+    let mut saved = Vec::new();
+    for (name, word) in assignments {
+        let value = with_values(|values| expand::expand_assignment(word, values));
+        let frame = shell_state::frames().top_mut();
+        if for_command {
+            saved.push((name.clone(), frame.saved_var(name)));
+            let _ = frame.export_var(name, Some(&value));
+        } else {
+            let _ = frame.set_var(name, &value);
+        }
+    }
+    saved
+}
+
+/// Puts back what `apply_assignments` replaced, last first (a name assigned twice ends as it began).
+fn restore_assignments(saved: Vec<(String, Option<(String, bool)>)>) {
+    for (name, before) in saved.into_iter().rev() {
+        shell_state::frames().top_mut().restore_var(&name, before);
+    }
 }
 
 /// Runs one segment: expands its words (`$NAME`, `$?`: see `expand.rs`), opens its redirections in order
 /// -- left to right, each already in effect for the ones after it, so `2>&1 > f` and `> f 2>&1` differ --
-/// then the command itself, all under one
+/// performs its `NAME=value` words, then the command itself, all under one
 /// `with_stdio` scope seeded with `overrides`. That scope is why a builtin's own state change (`cd`)
 /// still sticks under a redirect, why a failed redirect leaves exactly the earlier ones of the same
 /// line in effect, and why the error message for that failure (and any launch error) is itself
@@ -147,7 +182,15 @@ fn expand_words(words: &[Word]) -> Vec<String> {
 /// program somehow still held one.
 ///
 /// Expansion happens here, when the segment is about to run, and not when the line is parsed: a stage of a
-/// pipeline sees the variables (and `$?`) as they are when its turn comes.
+/// pipeline sees the variables (and `$?`) as they are when its turn comes. The command's own words are
+/// expanded before any assignment of the segment takes effect (`FOO=1 echo $FOO` prints the old `$FOO`), and
+/// the assignments follow the redirections (so a redirect target sees the old values too).
+///
+/// A segment with a command runs it with its assignments as extra exported variables, put back afterwards
+/// (a builtin sees them while it runs); one with no command -- or whose words all expanded to nothing --
+/// sets the shell's own variables, for good. Every stage of a pipeline shares the one set of variables, so
+/// an assignment alone in a stage (`A=1 | cat`) is not confined to it as it would be in a shell that runs
+/// stages as processes.
 ///
 /// `overrides` is `[None, None, None]` for a plain command (`run_segment`); a pipeline stage
 /// (`run_pipeline`) instead seeds it with the pipe's own binding, which the segment's redirects
@@ -174,7 +217,9 @@ fn run_segment_with(
                 return Launched { status: 1, ran: false }; // shell_err already reported; the command does not run
             }
         }
+        let saved = apply_assignments(&segment.assignments, !argv.is_empty());
         let launched = run_command(&argv, depth);
+        restore_assignments(saved);
         if report && launched.ran && launched.status != 0 {
             shell_err(&format!("exit {}", launched.status));
         }
@@ -224,9 +269,8 @@ fn apply_redirect(frames: &mut Frames, redir: &Redirection) -> bool {
 /// The file name a redirection's word stands for, expanded like any other word but required to come out as
 /// exactly one (bash's `ambiguous redirect`).
 fn redirect_target(word: &Word) -> Result<String, String> {
-    let lookup = |name: &str| shell_state::frames().top().var(name).map(String::from);
-    let values = Values { lookup: &lookup, status: shell_state::last_status() };
-    expand::expand_target(word, &values).map_err(|_| format!("{word}: ambiguous redirect"))
+    with_values(|values| expand::expand_target(word, values))
+        .map_err(|_| format!("{word}: ambiguous redirect"))
 }
 
 /// Resolves `path` against the working directory and opens it for a redirection, in bash's wording

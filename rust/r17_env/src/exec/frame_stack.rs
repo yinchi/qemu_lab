@@ -5,6 +5,8 @@
 //! **Variables** are POSIX's: each has a name, a value and an `exported` flag. All of them can be read (`$NAME`);
 //! only the exported ones are handed on to a program (its `envp`) and to a script run as its own process.
 //! Assigning keeps a variable's flag (a new one is not exported); `export` sets the flag; `unset` removes.
+//! `NAME=value command` gives the command a variable for as long as it runs: the shell sets it exported, and
+//! puts it back afterwards with `saved_var` and `restore_var`.
 //!
 //! Two different scoping operations, deliberately not one:
 //! - `with_scope`: push a *child process's* frame, run, pop. It starts with the working directory and stream
@@ -71,8 +73,7 @@ pub struct ShellFrame<F> {
     pub vars: Vec<Var>,
 }
 
-// Read by the launcher (Step 2: `exported`), the expander (Step 3: `var`) and `export` (`is_exported`, Step 4's
-// overlay), not yet: tested here, unused by the kernel until those Steps.
+// `is_exported` is used by the tests only; the kernel reads a variable's flag through `exported()`.
 #[allow(dead_code)]
 impl<F> ShellFrame<F> {
     /// The value of the variable `name`, if it is set (exported or not).
@@ -115,6 +116,29 @@ impl<F> ShellFrame<F> {
             v.exported = true;
         }
         Ok(())
+    }
+
+    /// What `name` is now -- its value and whether it is exported -- or `None` if it is not set: what
+    /// `restore_var` needs to put it back.
+    pub fn saved_var(&self, name: &str) -> Option<(String, bool)> {
+        self.vars.iter().find(|v| v.name == name).map(|v| (v.value.clone(), v.exported))
+    }
+
+    /// Puts `name` back as `saved_var` found it: the old value and flag, or not set at all. Whatever happened
+    /// to the variable in between (changed, unset) is undone; one that was set before keeps its place in the
+    /// order if it is still there, and otherwise goes to the end.
+    pub fn restore_var(&mut self, name: &str, saved: Option<(String, bool)>) {
+        let Some((value, exported)) = saved else {
+            self.unset_var(name);
+            return;
+        };
+        match self.vars.iter_mut().find(|v| v.name == name) {
+            Some(v) => {
+                v.value = value;
+                v.exported = exported;
+            }
+            None => self.vars.push(Var { name: String::from(name), value, exported }),
+        }
     }
 
     /// Removes `name`, whether or not it was set.
@@ -472,5 +496,49 @@ mod tests {
             });
             assert_eq!(Rc::strong_count(&pipe), 1);
         }
+    }
+
+    #[test]
+    fn a_variable_can_be_saved_and_put_back() {
+        let mut stack = FrameStack::new();
+        let f = stack.top_mut();
+        f.set_var("KEEP", "old").unwrap();
+        f.export_var("EXP", Some("e")).unwrap();
+        f.set_var("LAST", "l").unwrap();
+        let saved: Vec<_> = ["KEEP", "EXP", "NEW"].iter().map(|n| (*n, f.saved_var(n))).collect();
+        assert_eq!(saved[0].1, Some(("old".into(), false)));
+        assert_eq!(saved[1].1, Some(("e".into(), true)));
+        assert_eq!(saved[2].1, None);
+        // The overlay: all three set and exported, with new values.
+        for n in ["KEEP", "EXP", "NEW"] {
+            f.export_var(n, Some("tmp")).unwrap();
+        }
+        assert_eq!(f.exported().count(), 3);
+        for (n, s) in saved {
+            f.restore_var(n, s);
+        }
+        assert_eq!(f.var("KEEP"), Some("old"));
+        assert!(!f.is_exported("KEEP"), "it was not exported before, so it is not now");
+        assert!(f.is_exported("EXP"));
+        assert_eq!(f.var("EXP"), Some("e"));
+        assert_eq!(f.var("NEW"), None);
+        let names: Vec<_> = f.vars.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, ["KEEP", "EXP", "LAST"], "order is as it was");
+    }
+
+    #[test]
+    fn restoring_undoes_what_the_command_did() {
+        let mut stack = FrameStack::new();
+        let f = stack.top_mut();
+        f.export_var("A", Some("1")).unwrap();
+        let saved = f.saved_var("A");
+        f.unset_var("A"); // the command unset it
+        f.set_var("B", "x").unwrap();
+        f.restore_var("A", saved);
+        assert_eq!((f.var("A"), f.is_exported("A")), (Some("1"), true));
+        assert_eq!(f.var("B"), Some("x"), "other variables are left alone");
+        // Restoring "not set" removes what the command made.
+        f.restore_var("B", None);
+        assert_eq!(f.var("B"), None);
     }
 }

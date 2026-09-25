@@ -12,6 +12,10 @@
 //!   else (a digit, another `$`, a blank, the end of the line) is an ordinary character, since there are no
 //!   positional parameters or process ids to name; `${` that is not `${NAME}` is a `bad substitution`.
 //! - `#` starts a comment only at the start of a word: `echo a#b` prints `a#b`, `echo a #b` prints `a`.
+//! - A word that starts with an unquoted `NAME=` (a valid name, then `=`) is marked as a possible assignment;
+//!   whether it is one depends on where it stands in the command (`syntax.rs`: before the command word).
+//!   Quoting or escaping any part of the name, or a name that is not valid (`1A=x`, `a-b=x`), makes it an
+//!   ordinary word.
 //! - `|`, `<`, `>`, `>>` and `>&` end a word and are operators. An unquoted, unescaped word that is just the
 //!   digit `1` or `2` (or `0` before `<`), *immediately* followed by an operator, is that operator's file
 //!   descriptor number (`2>err`, `2>>err`, `2>&1`); anywhere else digits are ordinary text (`a2>x` is the word
@@ -34,6 +38,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
+
+use crate::exec::frame_stack::is_valid_name;
 
 /// A redirection operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,16 +82,18 @@ pub enum Part {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Word {
     pub parts: Vec<Part>,
+    /// If the word starts with an unquoted `NAME=`, the length of `NAME`: the first `Lit` then begins with it.
+    assign: Option<usize>,
 }
 
 impl Word {
     /// A word of the text `text`, taken literally.
     pub fn literal(text: &str) -> Word {
-        Word { parts: vec![Part::Lit(String::from(text))] }
+        Word::from_parts(vec![Part::Lit(String::from(text))])
     }
 
-    /// The word's parts, normalized: adjacent `Lit`s joined.
-    fn from_parts(parts: Vec<Part>) -> Word {
+    /// A word of `parts`, normalized: adjacent `Lit`s joined. Never an assignment (only the lexer says so).
+    pub fn from_parts(parts: Vec<Part>) -> Word {
         let mut merged: Vec<Part> = Vec::with_capacity(parts.len());
         for part in parts {
             match (merged.last_mut(), part) {
@@ -93,7 +101,23 @@ impl Word {
                 (_, part) => merged.push(part),
             }
         }
-        Word { parts: merged }
+        Word { parts: merged, assign: None }
+    }
+
+    /// The word as an assignment, if it could be one: the name and the value, a word of what follows the `=`
+    /// (empty text if nothing does).
+    pub fn assignment(&self) -> Option<(&str, Word)> {
+        let n = self.assign?;
+        let Some(Part::Lit(first)) = self.parts.first() else { return None };
+        let mut parts = Vec::with_capacity(self.parts.len());
+        if first.len() > n + 1 {
+            parts.push(Part::Lit(String::from(&first[n + 1..])));
+        }
+        parts.extend(self.parts[1..].iter().cloned());
+        if parts.is_empty() {
+            parts.push(Part::Lit(String::new()));
+        }
+        Some((&first[..n], Word::from_parts(parts)))
     }
 
     /// The text of a word that has no expansion in it, or `None` if it has one.
@@ -216,9 +240,13 @@ peg::parser! {
         // it starts with a piece instead -- one or more of those same pairs.
         rule word_token() -> Word
             = u:unquoted() ts:tail()* {
+                // Only the leading unquoted run `u` can hold an unquoted `NAME=`.
+                let assign = assignment_name_len(&Word::from_parts(u.clone()).parts);
                 let mut parts = u;
                 parts.extend(ts.into_iter().flatten());
-                Word::from_parts(parts)
+                let mut word = Word::from_parts(parts);
+                word.assign = assign;
+                word
               }
             / ts:tail()+ { Word::from_parts(ts.into_iter().flatten().collect()) }
 
@@ -280,6 +308,13 @@ peg::parser! {
     }
 }
 
+/// The length of the name if `parts` (an unquoted run) starts with `NAME=`.
+fn assignment_name_len(parts: &[Part]) -> Option<usize> {
+    let Some(Part::Lit(text)) = parts.first() else { return None };
+    let eq = text.find('=')?;
+    is_valid_name(&text[..eq]).then_some(eq)
+}
+
 /// Splits `line` into tokens.
 pub fn lex(line: &str) -> Result<Vec<Token>, LexError> {
     shell_lexer::line(line).map_err(|e| classify(&e))
@@ -316,7 +351,7 @@ mod tests {
     }
     /// A word made of `parts`.
     fn parts(parts: Vec<Part>) -> Token {
-        Token::Word(Word { parts })
+        Token::Word(Word::from_parts(parts))
     }
     fn lit(text: &str) -> Part {
         Part::Lit(text.into())
@@ -522,6 +557,52 @@ mod tests {
     fn a_variable_does_not_hide_an_operator() {
         assert_eq!(lexed("echo $x>f"), [w("echo"), parts(vec![var("x", false)]), r(None, Out), w("f")]);
         assert_eq!(lexed("echo $x|cat"), [w("echo"), parts(vec![var("x", false)]), Token::Pipe, w("cat")]);
+    }
+
+    fn assignment(line: &str) -> Option<(String, Word)> {
+        let Token::Word(word) = &lexed(line)[0] else { panic!("not a word") };
+        word.assignment().map(|(name, value)| (name.to_string(), value))
+    }
+
+    #[test]
+    fn a_word_that_starts_with_name_equals_is_an_assignment() {
+        assert_eq!(assignment("A=b"), Some(("A".into(), Word::literal("b"))));
+        assert_eq!(assignment("A="), Some(("A".into(), Word::literal(""))));
+        assert_eq!(assignment("_x1=a=b"), Some(("_x1".into(), Word::literal("a=b"))));
+        assert_eq!(assignment("A=\"a b\"c"), Some(("A".into(), Word::literal("a bc"))));
+        assert_eq!(assignment("A='$x'"), Some(("A".into(), Word::literal("$x"))));
+        assert_eq!(assignment("A=\"\""), Some(("A".into(), Word::literal(""))));
+        assert_eq!(
+            assignment("A=$x"),
+            Some(("A".into(), Word::from_parts(vec![var("x", false)])))
+        );
+        assert_eq!(
+            assignment("A=pre${x}post"),
+            Some(("A".into(), Word::from_parts(vec![lit("pre"), var("x", false), lit("post")])))
+        );
+        assert_eq!(assignment("A=$x"), assignment("A=$x"));
+    }
+
+    #[test]
+    fn anything_else_is_an_ordinary_word() {
+        assert_eq!(assignment("a"), None);
+        assert_eq!(assignment("=x"), None); // no name
+        assert_eq!(assignment("1A=x"), None); // not a valid name
+        assert_eq!(assignment("a-b=x"), None);
+        assert_eq!(assignment("a.b=x"), None);
+        assert_eq!(assignment("\"A\"=x"), None); // the name is quoted...
+        assert_eq!(assignment("A\"=\"x"), None); // ...or the `=` is
+        assert_eq!(assignment("'A'=x"), None);
+        assert_eq!(assignment(r"A\=x"), None);
+        assert_eq!(assignment("$A=x"), None); // an expansion is not a name
+        assert_eq!(assignment("--lines=5"), None);
+    }
+
+    #[test]
+    fn an_assignment_is_still_the_word_as_typed() {
+        assert_eq!(lexed("A=b")[0], Token::Word(Word { parts: vec![lit("A=b")], assign: Some(1) }));
+        assert_eq!(lexed("A=b").len(), 1);
+        assert_eq!(lexed("a=b c=d").len(), 2);
     }
 
     #[test]

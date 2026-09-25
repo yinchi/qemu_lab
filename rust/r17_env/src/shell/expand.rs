@@ -11,6 +11,7 @@
 //!   unquoted `$EMPTY` disappears from the command line. The pieces around it join the first and last field
 //!   (`a$X` with `X="1 2"` is `a1` and `2`).
 //! - A variable that is not set is the empty string. `$?` is the status the caller passes.
+//! - An assignment's value (`A=$X`) is not split at all: `expand_assignment` joins the parts.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -79,6 +80,46 @@ pub fn expand_word(word: &Word, values: &Values) -> Vec<String> {
 /// The arguments `words` become, in order.
 pub fn expand(words: &[Word], values: &Values) -> Vec<String> {
     words.iter().flat_map(|word| expand_word(word, values)).collect()
+}
+
+/// The commands whose operands that look like assignments (`NAME=value`) are expanded as assignments are, not
+/// split into fields: `export A=$X` sets `A` to all of `X`, as it does in bash.
+const DECLARATION_COMMANDS: &[&str] = &["export"];
+
+/// `expand`, for the words of a whole command: the same, except that after a declaration command
+/// (`DECLARATION_COMMANDS`) an operand of the form `NAME=value` becomes the one field `NAME=` and the value
+/// expanded like an assignment's (`expand_assignment`).
+pub fn expand_command(words: &[Word], values: &Values) -> Vec<String> {
+    let declaration = words
+        .first()
+        .and_then(Word::as_literal)
+        .is_some_and(|name| DECLARATION_COMMANDS.contains(&name));
+    if !declaration {
+        return expand(words, values);
+    }
+    let mut fields = expand_word(&words[0], values);
+    for word in &words[1..] {
+        match word.assignment() {
+            Some((name, value)) => {
+                fields.push(alloc::format!("{name}={}", expand_assignment(&value, values)));
+            }
+            None => fields.extend(expand_word(word, values)),
+        }
+    }
+    fields
+}
+
+/// An assignment's value: the parts joined, with no field splitting and so no vanishing (`A=$EMPTY` is empty,
+/// `A=$X` keeps every blank of `X`), whatever the quoting.
+pub fn expand_assignment(word: &Word, values: &Values) -> String {
+    let mut text = String::new();
+    for part in &word.parts {
+        match part {
+            Part::Lit(lit) => text.push_str(lit),
+            other => text.push_str(&values.value(other).unwrap_or_default()),
+        }
+    }
+    text
 }
 
 /// A redirection's file name: `Err` unless `word` becomes exactly one field (bash's `ambiguous redirect`).
@@ -227,6 +268,50 @@ mod tests {
         let lookup = |_: &str| Some(String::from("$N 'q'"));
         let got = expand(&words("echo $A"), &Values { lookup: &lookup, status: 0 });
         assert_eq!(got, ["echo", "$N", "'q'"]);
+    }
+
+    #[test]
+    fn an_assignment_value_is_never_split() {
+        let lookup = |name: &str| match name {
+            "S" => Some(String::from(" a  b ")),
+            "E" => Some(String::new()),
+            _ => None,
+        };
+        let values = Values { lookup: &lookup, status: 3 };
+        let value = |line: &str| {
+            let word = words(line).remove(0);
+            let (_, value) = word.assignment().unwrap();
+            expand_assignment(&value, &values)
+        };
+        assert_eq!(value("A=$S"), " a  b ");
+        assert_eq!(value("A=\"$S\""), " a  b ");
+        assert_eq!(value("A=x${S}y"), "x a  b y");
+        assert_eq!(value("A=$E"), "");
+        assert_eq!(value("A=$NOSUCH"), "");
+        assert_eq!(value("A="), "");
+        assert_eq!(value("A=$?"), "3");
+        assert_eq!(value("A='$S'"), "$S");
+        assert_eq!(value("A=b=c"), "b=c");
+    }
+
+    #[test]
+    fn export_operands_that_are_assignments_are_not_split() {
+        let lookup = |name: &str| match name {
+            "S" => Some(String::from(" a  b ")),
+            "E" => Some(String::new()),
+            _ => None,
+        };
+        let values = Values { lookup: &lookup, status: 0 };
+        let cmd = |line: &str| expand_command(&words(line), &values);
+        assert_eq!(cmd("export A=$S"), ["export", "A= a  b "]);
+        assert_eq!(cmd("export A=$S B=$E C"), ["export", "A= a  b ", "B=", "C"]);
+        assert_eq!(cmd("export A=x$S$S"), ["export", "A=x a  b  a  b "]);
+        // An operand that is not an assignment is split as any other is.
+        assert_eq!(cmd("export $S"), ["export", "a", "b"]);
+        assert_eq!(cmd("export $S=1"), ["export", "a", "b", "=1"]); // `$S=1` does not start with a name
+        assert_eq!(cmd("export a-b=$S"), ["export", "a-b=", "a", "b"]);
+        // Other commands are not declarations.
+        assert_eq!(cmd("echo A=$S"), ["echo", "A=", "a", "b"]);
     }
 
     #[test]

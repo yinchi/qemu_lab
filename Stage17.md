@@ -9,7 +9,7 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 1 | The variable model (exported flag, `export`, `unset`) and `/etc/environment`; `disk/home` -> `disk/root` | done |
 | 2 | `envp` to programs; `userlib::env`; `env` and `printenv` (new tier `progs_r17`) | done |
 | 3 | Expansion: `$VAR`, `${VAR}`, `$?`, with field splitting | done |
-| 4 | Assignments: `NAME=value`, `NAME=value cmd` | planned |
+| 4 | Assignments: `NAME=value`, `NAME=value cmd` | done |
 | 5 | Retire the automatic `exit N` line | planned |
 | 6 | `$HOME` for `cd`, `$TZ` for `date` and `stat` | planned |
 | 7 | Docs, roadmap, regression sweep | planned |
@@ -132,6 +132,16 @@ Tier list unchanged. Verify `just test` = 643 checks, nothing else changed.
   same line takes effect (`FOO=1 echo $FOO` sees the old `$FOO`). A pipeline stage's assignments belong to that stage.
 - Tests: `FOO=bar` then `echo $FOO`, unexported not visible to `printenv`, `export FOO` then visible, `FOO=x printenv FOO` (and gone afterwards), `HOME=/tests cd` (with `pwd`), quoting in
   values, an assignment in a `./script` not leaking but in a `source`d one persisting, `FOO=` (empty) vs unset.
+
+**As built (Step 4).** As planned, with these specifics:
+- The lexer decides what *could* be an assignment (only it knows what was quoted): a word starting with an unquoted valid `NAME=` carries `Word.assign = Some(len)`; `Word::assignment()` splits it into the name and a value
+  word. `syntax.rs` makes it one only before the first non-assignment word (`Segment.assignments`); `A=1` alone is a valid command. `Word::from_parts` is now the public constructor.
+- `expand::expand_assignment` joins the parts with no splitting. `run_segment_with` expands the command's words first, then applies the redirects, then the assignments (`apply_assignments`), runs, and
+  `restore_assignments`. Overlay = `export_var(name, value)` after `ShellFrame::saved_var`; `restore_var` puts back value and flag (and unsets a variable that did not exist), last first. A command whose words all expand to nothing
+  makes its assignments permanent, as in bash.
+- `export`'s operands of the form `NAME=value` are expanded as assignments (`expand::expand_command`, bash's rule for declaration commands): `export A=$X` does not split `X`. Only `export` is one here.
+- Deliberate difference from bash: every stage of a pipeline shares the frame, so `A=1 | cat` sets `A` in the shell.
+- Tests: new `assignment` group and `tests/assign.sh`; 874 checks.
 
 ## Step 5 -- retire the automatic `exit N` line
 - `src/shell/mod.rs`: remove the `report` parameter and the print in `run_segment_with`/`run_pipeline`; the status only feeds `$?`.
