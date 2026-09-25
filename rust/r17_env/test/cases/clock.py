@@ -1,4 +1,4 @@
-"""Last updated: Stage 15 (the local time zone).
+"""Last updated: Stage 17 (the zone comes from `$TZ`).
 
 The real-time clock: the `clock_gettime` syscall (through `probe clock`) and the `date` program.
 
@@ -8,6 +8,9 @@ correctness (leap years, weekdays, every conversion) is in `timefmt`'s host test
 use `date -d @N`, which prints a chosen instant, for the exact-output checks, and only compare the live
 clock loosely.
 """
+
+# The zone `date` and `stat` use is `$TZ`: this group's environment names Toronto, as the expectations below assume.
+ENVIRONMENT = "HOME=/\nTZ=America/Toronto\n"
 
 import datetime
 import re
@@ -19,7 +22,7 @@ TORONTO = ZoneInfo("America/Toronto")
 HELP = (
     "date --help\n"
     "usage: date [-u] [-d @SECONDS] [-I[FMT] | -R | +FORMAT]\n"
-    "  -u  print UTC instead of the local time (America/Toronto)\n"
+    "  -u  print UTC instead of the local time ($TZ)\n"
     "  -d @N  show the time N seconds after 1970-01-01 00:00:00 UTC instead of now\n"
     "  -I[FMT]  ISO 8601: FMT is date (the default), hours, minutes or seconds\n"
     "  -R  RFC 5322 format\n"
@@ -112,5 +115,57 @@ def run(ctx):
     refused("date --now", "unrecognized option '--now'")
     refused("date -d", "option requires an argument -- 'd'")
     check("date --help", s.run("date --help"), HELP)
+
+    # --- the zone is $TZ (Stage 17): an IANA name, UTC when it is unset, empty or unknown ---
+    instant = 1719792000  # 2024-07-01 00:00:00 UTC: summer in every northern zone below
+    fmt = "%a %b %e %H:%M:%S %Z %Y"
+
+    def local(zone):
+        return datetime.datetime.fromtimestamp(instant, tz=ZoneInfo(zone)).strftime(fmt)
+
+    def date_in(command_prefix, zone):
+        cmd = f"{command_prefix}date -d @{instant}"
+        check(cmd, s.run(cmd), f"{cmd}\n{local(zone)}\n")
+
+    date_in("", "America/Toronto")  # the environment file's
+    date_in("TZ=America/Vancouver ", "America/Vancouver")  # for one command
+    date_in("TZ=Europe/London ", "Europe/London")
+    date_in("TZ=Asia/Tokyo ", "Asia/Tokyo")
+    date_in("TZ=:Asia/Tokyo ", "Asia/Tokyo")  # POSIX's leading colon
+    date_in("TZ=UTC ", "UTC")
+    date_in("TZ=Australia/Adelaide ", "Australia/Adelaide")  # a half-hour offset
+    check("the prefix went with the command", s.run("date -d @0 '+%Z'"), "date -d @0 '+%Z'\nEST\n")
+    s.run("export TZ=Europe/London")
+    date_in("", "Europe/London")
+    date_in("TZ=Asia/Tokyo ", "Asia/Tokyo")  # a prefix overrides the exported one
+    s.run("TZ=Asia/Tokyo")  # a plain assignment keeps the variable exported
+    date_in("", "Asia/Tokyo")
+    s.run("unset TZ")
+    date_in("", "UTC")  # unset
+    s.run("export TZ=")
+    date_in("", "UTC")  # empty
+    s.run("export TZ=Mars/Olympus")
+    date_in("", "UTC")  # not in the database
+    s.run("export TZ=america/toronto")
+    date_in("", "UTC")  # names are case-sensitive
+    s.run("export TZ=EST5EDT,M3.2.0,M11.1.0")
+    date_in("", "UTC")  # POSIX rule strings are not understood
+    s.run("export TZ=EST5EDT")
+    date_in("", "EST5EDT")  # ...but the database's own EST5EDT is a name
+    check("-u still wins over TZ", s.run("date -u -d @0 '+%Z'"), "date -u -d @0 '+%Z'\nUTC\n")
+    s.run("unset TZ")
+
+    # `stat` reads it too: the FAT epoch (1980-01-01 00:00:00 UTC) on the root directory.
+    def stat_root(prefix, stamp):
+        cmd = f"{prefix}stat /"
+        check(cmd, s.run(cmd),
+              f"{cmd}\n  File: /\n  Size: {0:<12} Type: directory\n Attrs: read-only=no  exec=no\n"
+              f"Modify: {stamp}\nCreate: {stamp}\n")
+
+    stat_root("", "1980-01-01 00:00:00 UTC")  # TZ is unset by now
+    stat_root("TZ=America/Toronto ", "1979-12-31 19:00:00 EST")
+    stat_root("TZ=UTC ", "1980-01-01 00:00:00 UTC")
+    stat_root("TZ=Asia/Tokyo ", "1980-01-01 09:00:00 JST")
+    stat_root("TZ=Mars/Olympus ", "1980-01-01 00:00:00 UTC")
 
     check("shell alive", s.run("echo ok"), "echo ok\nok\n")

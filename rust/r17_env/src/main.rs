@@ -172,11 +172,6 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
         }
     }
 
-    // The initial environment, from `/etc/environment`, into the shell's bottom frame. Before the first prompt
-    // so its notes on the serial log come first, and with the local volume: the statics are set up below.
-    let mut frames = Frames::new();
-    shell::load_environment(&vol, &mut frames, &mut uart0_writer);
-
     // Find the VirtIO GPU device and set up the console -- polled, not interrupt-driven; see
     // drivers/virtio/gpu.rs's doc comment on why.
     let mut gpu_dev = Gpu::find(BASE_ADDRESSES.virtio_mmio_slots())
@@ -197,9 +192,7 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
 
     let init_keys = KeyState::new();
     let init_locks = LockState::new();
-    let mut line_discipline = LineDiscipline::new();
-    shell::start_prompt(&mut line_discipline, &mut console);
-    gpu_dev.flush();
+    let line_discipline = LineDiscipline::new();
 
     // Hand every piece of state the shell loop and the keyboard queue need over to its static home.
     //
@@ -213,14 +206,15 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
         KEY_STATE = Some(init_keys);
         LOCK_STATE = Some(init_locks);
         LINE_DISCIPLINE = Some(line_discipline);
-        FRAMES = Some(frames);
+        FRAMES = Some(Frames::new()); // the shell's own frame; `shell::run` fills it from `/etc/environment`
         VOL = Some(vol);
     }
     KEYBOARD_SPI.store(kb_spi, Ordering::Relaxed);
     gic_enable(kb_spi);
 
-    // From here on `kernel_main` is the shell's read-eval loop, and never returns: the role `init`
-    // plays. The keyboard interrupt only queues key presses (`irq_handler`); this loop consumes them.
+    // From here on `kernel_main` is the init shell, and never returns. Everything the shell does for itself --
+    // reading its environment, entering `$HOME`, drawing the first prompt -- it does in `shell::run`, before its
+    // read-eval loop. The keyboard interrupt only queues key presses (`irq_handler`); the loop consumes them.
     shell::run()
 }
 

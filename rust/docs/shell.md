@@ -200,13 +200,25 @@ Stage 17 it printed an `exit N` line on stderr after a failing program, as a sta
 only the **last** stage's status counts, so `false | true` is 0 and `true | false` is 1. A program stopped by a
 fault has said so already (`Segmentation fault (address ...)`) and is 139.
 
+## Starting up
+
+`kernel_main` only brings the machine up and then calls `shell::run()`, whose first act (`start_up`, in
+`shell/mod.rs`) is what the shell does for itself: it reads `/etc/environment` into its variables (see "Variables
+and assignments"), then, like a login program would, `chdir`s to `$HOME`, and last draws the first prompt. Its notes
+go to the serial log, all before that first `> `. There is no login or user system, so this is
+the shell's own doing, and nothing else keeps the two together afterwards (as on Linux, `cd` never changes
+`$HOME` and changing `$HOME` never moves the shell). With no `HOME`, or an empty one, it stays in `/`; a `HOME` that names
+no directory is reported on the serial log (`Environment: cannot enter HOME=/x: ... -- staying in /.`) and does the
+same. The general image's file says `HOME=/root`, so the shell starts in `/root`; the prompt does not show the directory
+(it is a fixed `> `), `pwd` does.
+
 ## Builtins
 
 Only what has to change the shell's own state is built in.
 
 | Command | Behavior |
 |---|---|
-| `cd [DIR]` | Make `DIR` (absolute, or relative to the working directory) the working directory. With no operand, go to `/` (POSIX says `$HOME`; Stage 17 switches to it). `cd -`, `-L` and `-P` are refused with an explanation, as is more than one operand. On any error the directory is unchanged. |
+| `cd [DIR]` | Make `DIR` (absolute, or relative to the working directory) the working directory. With no operand, go to `$HOME` (`cd: HOME not set` if it is unset or empty; before Stage 17, `/`). `cd -`, `-L` and `-P` are refused with an explanation, as is more than one operand. On any error the directory is unchanged. |
 | `export NAME[=VALUE]...` | Mark each variable **exported** -- handed to every program the shell starts, and to scripts run as their own process -- and, with a `=VALUE`, assign it first. `export NAME` for a variable that is not set does nothing. Every operand is attempted; a name that is not a valid identifier (`[A-Za-z_][A-Za-z0-9_]*`) is reported as bash does, `export: 'a-b': not a valid identifier`. `export` alone and `-p` are refused. |
 | `unset NAME...` | Remove each variable, set or not. An invalid name is reported; options are refused. |
 | `source FILE`, `. FILE` | Run the lines of `FILE` in the *current* shell state: a `cd` inside it sticks. |
@@ -271,7 +283,7 @@ bindings (and `launch` gives it the top frame's exported variables as its `envp`
   control and a single foreground program at a time. The only expansions are `$NAME`, `${NAME}` and `$?`.
 - Pipes go through files under `/tmp/`, and the shell needs that directory to exist.
 - No tab completion, and no history across reboots.
-- `cd` with no operand goes to `/`, not `$HOME` (Stage 17, Step 7).
+- There is no `~`, and no `$OLDPWD` (`cd -`).
 
 ## Where the code lives
 

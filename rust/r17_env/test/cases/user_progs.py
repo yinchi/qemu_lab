@@ -7,6 +7,9 @@ Fixtures: `disk/tests/hello.txt`, `disk/tests/notes.txt`, `disk/tests/docs/examp
 `disk/tests/tree/` (new: a 3-level directory tree for `rm -r`) -- `a.txt`, `sub1/b.txt`, `sub1/sub2/c.txt`.
 """
 
+# `stat` shows times in `$TZ`; the expectations below are Toronto's.
+ENVIRONMENT = "HOME=/\nTZ=America/Toronto\n"
+
 import calendar
 import os
 import time

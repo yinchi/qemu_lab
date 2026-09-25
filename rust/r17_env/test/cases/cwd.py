@@ -34,7 +34,7 @@ def run(ctx):
     check("cd /", *cd("/"))
     check("cd ./bin/.", *cd("./bin/."))
     check("pwd after cd ./bin/.", s.run("pwd"), "pwd\n/bin\n")
-    check("cd with no operand goes to the root", *cd(""))
+    check("cd with no operand goes to $HOME (the root, in this group)", *cd(""))
     check("pwd after a bare cd", s.run("pwd"), "pwd\n/\n")
     check("cd -- dir", *cd("-- tests"))
     check("pwd after cd -- tests", s.run("pwd"), "pwd\n/tests\n")

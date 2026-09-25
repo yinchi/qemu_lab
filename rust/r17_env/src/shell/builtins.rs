@@ -135,13 +135,22 @@ fn unset(args: &[&str]) -> Result<(), String> {
 }
 
 /// `cd [DIR]`, POSIX's subset: `cd DIR` makes DIR (absolute, or relative to the working directory) the
-/// working directory; with no operand it goes to `/` -- POSIX says `$HOME`, but there is no environment
-/// until Stage 17, which then switches this to `$HOME`. `cd -` (needs `$OLDPWD`) and `-L`/`-P` (there
-/// are no symbolic links to choose about) are refused with a clear error, as is more than one operand.
-/// On any error the working directory is unchanged. `args` excludes the command word.
+/// working directory; with no operand it goes to `$HOME` (`cd: HOME not set` if there is none, or it is empty).
+/// `cd -` (needs `$OLDPWD`) and `-L`/`-P` (there are no symbolic links to choose about) are refused with a
+/// clear error, as is more than one operand. On any error the working directory is unchanged. `args` excludes
+/// the command word.
 fn cd(args: &[&str]) -> Result<(), String> {
-    let target = match args {
-        [] => "/",
+    let home;
+    let target: &str = match args {
+        [] => {
+            home = shell_state::frames()
+                .top()
+                .var("HOME")
+                .filter(|home| !home.is_empty())
+                .map(String::from)
+                .ok_or_else(|| String::from("cd: HOME not set"))?;
+            &home
+        }
         ["-"] => return Err(String::from("cd: -: not supported (there is no $OLDPWD)")),
         ["-L"] | ["-P"] => {
             return Err(format!(

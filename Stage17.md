@@ -12,7 +12,7 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 4 | Assignments: `NAME=value`, `NAME=value cmd` | done |
 | 5 | Retire the automatic `exit N` line | done |
 | 6 | Pipeline stages run in a subshell (a discarded copy of the shell's frame) | done |
-| 7 | `$HOME` for `cd`, `$TZ` for `date` and `stat` | planned |
+| 7 | `$HOME` for `cd` and for where the init shell starts, `$TZ` for `date` and `stat` | done |
 | 8 | Docs, roadmap, regression sweep | planned |
 
 ## Context
@@ -70,8 +70,8 @@ Tier list unchanged. Verify `just test` = 643 checks, nothing else changed.
   now pushes a *child* frame (`push_child`: cwd and streams, exported variables only, all exported); the old `push_copy` is gone. 12 new host tests.
 - `shell/environment.rs` (pure): a line is `NAME=VALUE`, blanks around the name trimmed, the value literal, `#` and blank lines skipped, CRLF tolerated, a repeated name
   takes its last value in its first place; problems carry a line number and a reason. `hosttests` gained an `exec` alias module so a file that reaches across directories
-  compiles unchanged in both trees. `shell::load_environment` (in `shell/mod.rs`) runs in `main.rs` after the volume mounts and *before the first prompt*, with the local
-  volume (the statics come later), so its notes come first on the serial log; `fs::read_path` reads a file by absolute path from a volume.
+  compiles unchanged in both trees. `shell::load_environment` (in `shell/mod.rs`) runs *before the first prompt*, so its notes come first on the serial log (Step 7 moved it from `main.rs` into the shell's own start-up, below);
+  `fs::read_path` reads a file by absolute path from a volume.
 - `export` and `unset` builtins: bash's wording; `export` alone and `-p`, and `unset -v`, are refused (a builtin has no stdout to list on).
 - Image: `disk/home` -> `disk/root`; `disk/etc/environment` holds `HOME=/root` and `TZ=America/Toronto`. Tests write `HOME=/` (or a module's `ENVIRONMENT`) into each
   group's copy of the image (`harness.set_environment`, `mcopy -o`; `None` removes the file). New modules `environment`, `env_bad`, `env_missing`.
@@ -182,11 +182,24 @@ inherits everything.
   unchanged (it replaces the temp-file pipes, not the isolation).
 
 ## Step 7 -- `$HOME` and `$TZ`
+- **The init shell starts in `$HOME`** (added after Step 6): no login or user system, so `shell::enter_home` does the `chdir` itself, once, before the first prompt; no or empty `HOME` => `/`, a `HOME` that is no directory => a serial note and `/`.
 - `src/shell/builtins.rs`: `cd` with no operand goes to `$HOME` (`cd: HOME not set` otherwise); update its doc and `shell.md`'s builtin table.
 - `user/progs_r17`: `date` and `stat` copied from `progs_r16`, `LOCAL_ZONE` replaced by `env::var("TZ")` parsed with `chrono_tz::Tz::from_str` (**verify `FromStr` is available with
   `default-features = false`; if not, enable the feature that provides it**), UTC when unset or unknown; `-u` still forces UTC. `progs_r15`/`progs_r16` versions stay for their kernels.
 - Tests: `clock.py`/`user_progs.py` use `ENVIRONMENT = "HOME=/\nTZ=America/Toronto\n"`; add `TZ=America/Vancouver date ...` (prefix form), `export TZ=...`, `unset TZ` => UTC, a bad name => UTC;
   `cd` no-operand with `HOME` set/unset/reassigned.
+
+**As built (Step 7).** As planned, with these specifics:
+- `cd` with no operand reads `$HOME` when it runs (an overlay counts: `HOME=/fonts cd`); unset or empty is `cd: HOME not set`, status 1, directory unchanged.
+- **The shell starts itself.** `kernel_main` now only brings the machine up (allocator, MMU, GIC, disk, filesystem, GPU/console, keyboard), puts every static in place -- `FRAMES` (an empty frame), `VOL` and
+  the rest, none read by an interrupt handler -- enables the keyboard interrupt, and calls `shell::run()`. `run()` begins with `start_up()`: `load_environment`, `enter_home`, then the first prompt and flush,
+  and only then the read-eval loop. (An earlier cut had `enter_home` in `main.rs` after the prompt was drawn, which put its serial note after the `> `; the harness waits for a log that ends with the prompt, so
+  everything the shell says at start-up must come before it. Loading the environment and entering `$HOME` are also things a shell does for itself, not steps to interleave with hardware set-up.)
+  `load_environment` and `enter_home` are private to `shell/mod.rs` and read the statics; the serial log now reads `Keyboard found ...`, then the `Environment:` notes, then `> `.
+- `progs_r17::local_zone()` = `$TZ` parsed with `Tz::from_str` -- **no chrono-tz feature needed** (the plan's risk) -- with a leading `:` stripped, UTC for unset, empty or unknown; `date` and `stat` in `progs_r17`
+  use it via `entry_with_env!`; `progs_r15`/`progs_r16` keep `LOCAL_ZONE` for their kernels. `progs_r17` now depends on `chrono`, `chrono-tz`, `getargs` and `userlib`'s `heap` feature.
+- Tests: `clock` and `user_progs` get `ENVIRONMENT = "HOME=/\nTZ=America/Toronto\n"`; `clock` gains the `$TZ` section (prefix, `export`, plain assignment keeps the flag, `unset`, empty, unknown, case, POSIX rule string,
+  `EST5EDT`, `-u`, `stat` in four zones); new `home` and `home_bad` groups, and `env_missing` checks `pwd` and `cd`. 967 checks in all.
 
 ## Step 8 -- docs, roadmap, sweep
 `docs/shell.md` (variables, assignment, `export`, expansion, `$?`, the retired line), `docs/progs.md` (`env`, `printenv`, `date`/`stat` and `$TZ`), `docs/launching_programs.md` (`envp` layout

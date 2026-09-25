@@ -1,4 +1,5 @@
-# The programs Stage 17 adds: `env` and `printenv`, which read the environment `userlib::env` decodes. A tier of
+# The programs Stage 17 adds: `env` and `printenv`, which read the environment `userlib::env` decodes, and
+# `date` and `stat`, which take their zone from `$TZ` instead of a constant. A tier of
 # its own, as the scheme in `../progs_r12/Cargo.toml` describes (a stage `rNN` builds the base tier and every
 # `progs_rMM` with MM <= NN, highest tier wins a name): earlier kernels pass no `envp`.
 [package]
@@ -8,9 +9,15 @@ edition = "2024"
 
 [dependencies]
 abi = { path = "../abi" }
-userlib = { path = "../userlib" }
+userlib = { path = "../userlib", features = ["heap"] }  # `chrono` formats through `alloc`
 progs = { path = "../progs" }
 progs_r12 = { path = "../progs_r12" }
+# Calendar dates and `strftime`. `alloc` is the feature that enables formatting, and it needs the user heap.
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# The whole IANA database (about 1 MB of data in the binary; the loader's ceiling grew for it, Stage 15). Zone
+# names parse with `str::parse::<Tz>()`, which needs no feature.
+chrono-tz = { version = "0.10", default-features = false }
+getargs = { version = "0.5", default-features = false }
 
 [profile.dev]
 panic = "abort"

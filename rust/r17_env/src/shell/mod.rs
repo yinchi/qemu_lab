@@ -22,16 +22,15 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use abi::errno::errmsg;
-use hadris_fat::sync::FatVolume;
 
 use crate::console::{BG, Console, FG};
 use crate::exec::shell_state::{self, Frames, Stdio};
-use crate::fs::blkio::{BlkIo, VOL};
+use crate::fs::blkio::VOL;
 use crate::fs::files::{self, FileRef};
 use crate::keyboard::line_discipline::{LINE_DISCIPLINE, LineDiscipline, LineOutcome, Mode};
 use crate::keyboard::queue;
 use crate::platform::globals::{CONSOLE, GPU};
-use crate::platform::uart::{uart_ensure_newline, uart_write};
+use crate::platform::uart::{UART0, UartWriter, uart_ensure_newline, uart_write};
 use crate::{static_mut_ref, static_ref};
 use expand::Values;
 use launch::launch;
@@ -44,10 +43,13 @@ const ENVIRONMENT_FILE: &str = "/etc/environment";
 /// More than this is not an environment file: it is ignored rather than parsed.
 const ENVIRONMENT_FILE_MAX: usize = 64 * 1024;
 
-/// Reads `/etc/environment` from `vol` into the bottom frame of `frames`, every variable exported, and reports
-/// what it did on `out` (the serial log): a missing or unreadable file is an empty environment, and a bad line is
-/// skipped, never fatal. Takes the volume and frames as arguments because it runs before their statics exist.
-pub fn load_environment(vol: &FatVolume<BlkIo>, frames: &mut Frames, out: &mut impl core::fmt::Write) {
+/// Reads `/etc/environment` into the shell's bottom frame, every variable exported, and reports what it did on
+/// `out` (the serial log): a missing or unreadable file is an empty environment, and a bad line is skipped, never
+/// fatal.
+fn load_environment(out: &mut impl core::fmt::Write) {
+    // SAFETY: as `run`'s doc comment says of the statics it uses.
+    let vol = unsafe { static_ref!(VOL) };
+    let frames = shell_state::frames();
     let bytes = match crate::fs::read_path(vol, ENVIRONMENT_FILE) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -70,6 +72,32 @@ pub fn load_environment(vol: &FatVolume<BlkIo>, frames: &mut Frames, out: &mut i
         let _ = frames.top_mut().export_var(name, Some(value)); // names were validated by `parse`
     }
     let _ = write!(out, "Environment: {} variable(s) from {ENVIRONMENT_FILE}.\r\n", parsed.vars.len());
+}
+
+/// Starts the shell in `$HOME`, as a login program would: `chdir` to it. There is no login or user system, so this
+/// is the init shell's own doing, once, at boot, after the environment is loaded. No `HOME` (or an empty one) leaves
+/// the shell in `/`; one that names no directory is reported on `out` (the serial log) and does the same.
+fn enter_home(out: &mut impl core::fmt::Write) {
+    let Some(home) = shell_state::frames().top().var("HOME").filter(|home| !home.is_empty()).map(String::from) else {
+        return;
+    };
+    if let Err(e) = shell_state::chdir(&home) {
+        let _ = write!(out, "Environment: cannot enter HOME={home}: {} -- staying in /.\r\n", errmsg(e));
+    }
+}
+
+/// What the init shell does for itself before it reads its first line, in this order: load its environment, enter
+/// `$HOME`, and draw the first prompt. The notes the first two make go to the serial log, and all of them come
+/// before the prompt's `> `, so that a log ending in `> ` means the shell is ready (the test harness relies on it).
+fn start_up() {
+    let mut serial = UartWriter { uart: &UART0 };
+    load_environment(&mut serial);
+    enter_home(&mut serial);
+    // SAFETY: as `run`'s doc comment says of the statics it uses.
+    unsafe {
+        start_prompt(static_mut_ref!(LINE_DISCIPLINE), static_mut_ref!(CONSOLE));
+        static_mut_ref!(GPU).flush();
+    }
 }
 
 /// The prompt shown before the line being typed -- fixed text with no relation to the line's own
@@ -461,7 +489,8 @@ pub fn shell_err(msg: &str) {
     }
 }
 
-/// The read-eval loop: takes each key press from the token queue, hands it to the line discipline
+/// The init shell, which `kernel_main` ends in and which never returns: `start_up` (environment, `$HOME`, first
+/// prompt), then the read-eval loop: it takes each key press from the token queue, hands it to the line discipline
 /// (`keyboard/line_discipline.rs`), which edits, echoes and finishes the line, and acts on the outcome:
 /// - `LineOutcome::Edited`: nothing more to do but flush the display once the queue is empty.
 /// - `LineOutcome::Finished`: run the line (`launch`, which may run a whole program) or report a parse
@@ -478,6 +507,7 @@ pub fn shell_err(msg: &str) {
 /// only users of the console, the display and the line discipline, and never at the same time; the
 /// interrupt handler touches none of them (it only feeds the queue).
 pub fn run() -> ! {
+    start_up();
     loop {
         let mut needs_flush = false;
 
