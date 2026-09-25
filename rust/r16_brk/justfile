@@ -1,0 +1,131 @@
+BIN := "r16_brk"
+
+# Fixed mkfs.fat volume serial so `just disk` produces a byte-identical disk.img every run
+# instead of a fresh random serial each time -- same as r09_userspace's own justfile.
+VOLUME_SERIAL := "00000000"
+
+# just --list
+default: list
+
+# List available recipes.
+list:
+    cd {{justfile_directory()}} && just --list
+
+# Build the kernel and copy it out of the target/ directory as an ELF file
+build:
+    cd {{justfile_directory()}} && cargo build --target aarch64-unknown-none-softfloat --release
+    cd {{justfile_directory()}} && cp target/aarch64-unknown-none-softfloat/release/{{BIN}} {{BIN}}.elf
+
+# The kernel again with the `testhooks` feature (test-only instrumentation, see syscall/fd.rs), copied
+# out as {{BIN}}-test.elf; the ordinary {{BIN}}.elf that `just run` uses has none of it.
+build-test:
+    cd {{justfile_directory()}} && cargo build --target aarch64-unknown-none-softfloat --release --features testhooks
+    cd {{justfile_directory()}} && cp target/aarch64-unknown-none-softfloat/release/{{BIN}} {{BIN}}-test.elf
+
+# ELF file inspection on the built binary (copied out of target/ by `just build`)
+elf:
+    bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
+
+# Builds disk.img (64 MiB FAT16): every core utility of every program tier up to this stage --
+# ../user/progs (the base tier, Stages 9-11) and ../user/progs_r12 (Stage 12) and ../user/progs_r13 (Stage 13) and ../user/progs_r15 (Stage 15); see
+# docs/progs.md -- staged into disk/bin/ as <name>.exe, tiers copied lowest first so that a later tier's
+# program replaces an earlier tier's of the same name -- the launcher tries the typed name first
+# and then name.exe, same as Cygwin's shell, so `cat` finds bin/cat.exe -- plus this stage's test
+# programs (test/progs, see test/README.md), staged into disk/tests/ next to the static test
+# fixtures already checked in there, plus the empty disk/tmp/ the shell's pipes will use. All of
+# disk/ is handed to folder_to_img.sh along with the static files already staged in it (fonts/,
+# which holds only the Unifont notice now, and the text/binary fixtures the utilities are demoed on).
+
+# Build every program and (re)create disk.img.
+disk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGET=aarch64-unknown-none-softfloat
+    cd {{justfile_directory()}}
+    rm -rf disk/bin
+    mkdir -p disk/bin
+    # Program tiers, lowest first: a later tier's binary overwrites an earlier one's of the same name.
+    # A later stage lists every tier up to its own.
+    for tier in progs progs_r12 progs_r13 progs_r15; do
+        (cd ../user/${tier} && cargo build --target ${TARGET} --release)
+        for src in ../user/${tier}/src/bin/*.rs; do
+            name=$(basename "$src" .rs)
+            cp ../user/${tier}/target/${TARGET}/release/${name} disk/bin/${name}.exe
+        done
+    done
+    (cd test/progs && cargo build --target ${TARGET} --release)
+    rm -f disk/tests/*.exe
+    mkdir -p disk/tests
+    for src in test/progs/src/bin/*.rs; do
+        name=$(basename "$src" .rs)
+        cp test/progs/target/${TARGET}/release/${name} disk/tests/${name}.exe
+    done
+    # Malformed and oversized ELF files derived from the programs just staged.
+    python3 test/mkfixtures.py disk/bin disk/tests
+    # Empty in git (and gitignored), so it has to be created here for folder_to_img.sh to mmd it.
+    rm -rf disk/tmp
+    mkdir -p disk/tmp
+    # TZ=UTC: mtools writes SOURCE_DATE_EPOCH as *local* time, and the kernel reads FAT stamps as UTC (Stage 14),
+    # so the bundled files' fixed stamp must not depend on the build host's zone.
+    TZ=UTC ../folder_to_img.sh disk.img 64M R12SH {{VOLUME_SERIAL}} disk
+
+# Run with serial connected to the terminal (stdio), the FAT-formatted disk over virtio-blk, a
+# virtio-gpu display, and a virtio-keyboard input device.
+
+# Run in QEMU.
+run: build disk
+    qemu-system-aarch64 -M virt -cpu max -nodefaults -serial mon:stdio \
+        -drive if=none,file=disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
+        -kernel {{BIN}}.elf
+
+# Runs all tests: the docs check, the host-side unit tests, then the QEMU-driven ones.
+test: check-docs test-host test-qemu
+
+# Fails if a program, syscall or test program has no entry in the docs -- see test/check_docs.py.
+
+# Docs mention everything they must.
+check-docs:
+    python3 {{justfile_directory()}}/test/check_docs.py
+
+# Pure-logic unit tests (ELF validation, stack layout, ...) on the host -- see hosttests/ -- plus the
+# shared `abi` crate's own tests.
+# `--target` is the host triple because this directory's .cargo/config.toml defaults to the
+# kernel's; hosttests/ is its own workspace so it doesn't inherit this package's dependencies.
+
+# Host-side unit tests.
+test-host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    HOST="$(rustc -vV | sed -n 's/^host: //p')"
+    (cd {{justfile_directory()}}/hosttests && cargo test --target "$HOST")
+    (cd {{justfile_directory()}}/../user/abi && cargo test --target "$HOST")
+
+# Clippy over every crate this stage builds: the kernel (once as `just build` builds it, once with
+# `testhooks`), the shared crates its programs use, the test programs and the two host-side crates. Not part
+# of `just test`; run it every few Steps and fix what it finds. Fails on the first crate with a warning.
+
+# Clippy on every crate, warnings denied.
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGET=aarch64-unknown-none-softfloat
+    HOST="$(rustc -vV | sed -n 's/^host: //p')"
+    cd {{justfile_directory()}}
+    cargo clippy --target ${TARGET} --release -- -D warnings
+    cargo clippy --target ${TARGET} --release --features testhooks -- -D warnings
+    for crate in ../user/userlib ../user/progs ../user/progs_r12 ../user/progs_r13 ../user/progs_r15 test/progs; do
+        (cd ${crate} && cargo clippy --target ${TARGET} --release -- -D warnings)
+    done
+    for crate in hosttests ../user/abi; do
+        (cd ${crate} && cargo clippy --target "${HOST}" --all-targets -- -D warnings)
+    done
+
+# Boots the kernel headless and drives it by typing on the virtio keyboard through the QEMU
+# monitor's `sendkey`, checking each command's output (from the serial log) and the resulting
+# disk contents -- see test/run_tests.py. Works on a copy of disk.img, so it never modifies it.
+
+# QEMU-driven tests.
+test-qemu: build-test disk
+    python3 {{justfile_directory()}}/test/run_tests.py {{justfile_directory()}}/{{BIN}}-test.elf {{justfile_directory()}}/disk.img
