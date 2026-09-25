@@ -7,6 +7,7 @@ A minimal Operating System for the QEMU emulator.
   - event-based input: pressing an arrow key is one event, not an `\x1b[` escape sequence
 - Userspace programs and system calls (with kernel space / userspace separation)
 - Pipes and redirection
+- Environment variables
 - UTF-8 and wide character support (input is US QWERTY-only, but UTF-8 files can be read and displayed correctly, subject to Unifont limitations)
 
 ![screenshot](image.png)
