@@ -163,9 +163,10 @@ groups.
 For more details of the above memory regions, see [`memory_regions.md`](memory_regions.md).
 
 Finally, user space starts at 0x4400_0000 (`USER_BASE`, in `base_addresses.rs`), meaning the kernel
-is assigned 64 MiB of virtual address space. The user window is 2 MiB (`USER_SIZE`) and nothing in
-it is mapped until a user program is loaded, when `elf::load` maps the program image at the bottom
-and a stack at the top, with an unmapped guard in between:
+is assigned 64 MiB of virtual address space. The user window is a 32 MiB *ceiling* (`USER_SIZE`, ending at
+`0x4600_0000`), not an allocation: nothing in it is mapped until a user program is loaded, when `elf::load` maps
+exactly the pages that program's image needs at the bottom and a 1 MiB stack at the top, with an unmapped guard
+in between (a small program is a few pages; a program with tens of MiB of `.bss` gets tens of MiB):
 
 ```mermaid
 block
@@ -186,7 +187,7 @@ block
       USER_IMAGE_END
       space:2
     end
-    image["User image, up to ~960 KiB"]
+    image["User image, up to ~31 MiB\n(only the pages it needs are mapped)"]
     block
       columns 1
       space:2
@@ -199,21 +200,30 @@ block
   style image fill:#750,stroke:#333,stroke-width:2px
 ```
 
-`USER_SIZE`, `USER_STACK_SIZE` and `USER_GUARD_SIZE` are the fixed inputs; the image's share is
+`USER_SIZE`, `USER_STACK_SIZE` and `USER_GUARD_SIZE` are the fixed inputs; the most an image can have is
 whatever is left: `USER_IMAGE_END = USER_BASE + USER_SIZE - USER_STACK_SIZE - USER_GUARD_SIZE`, i.e.
-2 MiB &minus; 1 MiB &minus; 64 KiB = 960 KiB. It is enforced by the ELF parser
+32 MiB &minus; 1 MiB &minus; 64 KiB = 31 MiB less 64 KiB (before Stage 15, with a 2 MiB window, 960 KiB). The stack
+stays at the top of the window however big the image is. The limit is enforced by the ELF parser
 (`elfparse::parse(bytes, USER_BASE, USER_IMAGE_END)`): every `PT_LOAD` segment, `.bss` included, must
 lie within that range or the load fails with `SegmentOutsideWindow`, and no two segments may share a
 4 KiB page (`SegmentsShareAPage`), so page padding counts against the budget too.
 
-Static objects are mapped into the user image region (`.bss` section), while local variables live on the user stack. There is no user heap (until Stage 16); programs use fixed-size objects only.
+Static objects are mapped into the user image region (`.bss` section), while local variables live on the user stack. There is no user heap (until Stage 16); programs use fixed-size objects only, or a small fixed heap of their own (`date`'s 128 KiB). The gap between the last segment and the guard is where Stage 16's heap will grow.
+
+One more limit sits in front of all this: the file is read whole into the kernel heap before it is parsed, so an
+executable *file* larger than half the 16 MiB kernel heap (8 MiB, `MAX_PROGRAM_SIZE` in `shell/launch.rs`) is refused
+as `Exec format error` however valid it is. That is a limit on the file, not the image: `.bss` is not in the file, so
+an image of tens of MiB is still fine if most of it is `.bss` (`bigimage`, in the tests, is about 11 MiB of memory in a
+3 MiB file).
 
 Nothing is mapped between the last segment and the stack, so a stack that overflows &mdash; or a
 wild pointer into the gap &mdash; faults instead of silently running into the program's own data.
 The guard itself isn't checked by any code: it is simply the unmapped gap the image limit keeps
 segments out of.
 The rest of RAM outside the kernel image and this window is deliberately left unmapped, not mapped
-and unused. Each load begins by unmapping whatever the previous program left in the window, and
+and unused. Each load begins by unmapping exactly what the previous program was given (`elf.rs` records each
+range as it maps it, so even a load that failed half way is undone by the next), so a small program is never
+left holding a large one's memory, and its `.bss` is zero every time; and
 `usermem.rs` records exactly what is mapped so a syscall can check a user pointer before the kernel
 touches it (see [`syscalls.md`](syscalls.md)).
 

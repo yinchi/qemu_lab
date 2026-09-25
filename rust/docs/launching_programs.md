@@ -47,7 +47,7 @@ executable, `ArgsTooBig`) if nothing could be started.
 
 1. Plans the argument layout as a dry run against `ARG_MAX` (128 KiB of stack) first, so an argument
    list that can't fit is refused before it costs a load.
-2. `elf::load(elf_bytes)` maps the ELF's `PT_LOAD` segments into the fixed user window and
+2. `elf::load(elf_bytes)` maps the ELF's `PT_LOAD` segments into the user window (only the pages they and the stack need) and
    returns its entry point.
 3. `fd::reset_for_launch()` gives the new program a fresh file descriptor table (its standard
    streams bound to whatever the shell's current frame says).

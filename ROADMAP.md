@@ -730,11 +730,11 @@ value actually advances -- proving it's live, not a build-time constant.
 **As built.** `r13_rtc` is `r12_shell` plus: `platform/rtc.rs` (one volatile read of `RTCDR`; the page at
 `0x0901_0000` is mapped as device memory in `arch/mmu.rs`), the `clock_gettime` syscall (`syscall/time.rs`,
 `abi::time`, `userlib::time`), and a new program tier `user/progs_r13` holding `date`. Calendar arithmetic and
-formatting are the `chrono` crate's (`default-features = false`, so no clock and no time zones -- those are
-Stage 17's `chrono-tz`), not code of our own: UTC-only `date` prints GNU's default layout
+formatting are the `chrono` crate's (`default-features = false`, so no clock and no time zones -- the zone rules
+come in Stage 15, with `chrono-tz`), not code of our own: UTC-only `date` prints GNU's default layout
 (`Sun Sep  9 01:46:40 UTC 2001`), `+FORMAT` with `chrono`'s `strftime`, `-I[date|hours|minutes|seconds]`, `-R`,
 `-d @SECONDS` (which makes the output testable exactly) and `-u` as a no-op. It cannot set the clock or read
-free-form dates, and `%Z`/`%z` are always `UTC`/`+0000`. One consequence to know about: `chrono` formats through
+free-form dates, and it prints UTC only (`%Z`/`%z` are `UTC`/`+0000`) until Stage 15 adds a hard-coded zone and Stage 17 reads `$TZ`. One consequence to know about: `chrono` formats through
 `alloc`, and EL0 has no heap until Stage 16, so `date` carries a small fixed 128 KiB one from
 `linked_list_allocator` (the crate the kernel's heap uses), which Stage 16's `userlib` heap replaces. Tests:
 `test/cases/clock.py` compares `date +%s` with the host's time and across a busy-wait, and checks exact output
@@ -768,7 +768,7 @@ Unix-seconds-to-FAT-fields conversion (on `chrono`, no zones; host-tested, inclu
 2107, such as an unset RTC reading 1970). No program changed: `cp`, `mkdir`, `tee`, redirects and `mv` stamp through
 `hadris-fat` as before. **Timestamps are stored in UTC** -- FAT has no zone field and Windows reads its fields as local time,
 but the kernel never interprets a stamp (`stat` hands the raw fields back), so reading and writing agree, as with Linux's
-`mount -o tz=UTC`; converting to a user's zone is a display matter for Stage 17's `$TZ`. This stage's `just disk` builds the image
+`mount -o tz=UTC`; converting to a user's zone is a display matter for the program that prints it (`stat` and `date`, from Stage 15; the zone itself from Stage 17's `$TZ`). This stage's `just disk` builds the image
 with `TZ=UTC` (set in its justfile, not in the shared `folder_to_img.sh`, so earlier stages' images and tests are untouched),
 since mtools writes `SOURCE_DATE_EPOCH` as local time and the bundled fixtures' fixed stamp should not depend on the host. Tests: `stat` checks a new directory and a copied file are created and modified within seconds of the host's clock,
 that an append moves the modified time on (by the wait) and leaves the creation time, that a rewrite and a redirect-created
@@ -782,9 +782,9 @@ check (name plus creation time) stronger, to one-second resolution.
 **Goal:** let a program's footprint use as much RAM as it actually needs, up to what's genuinely
 free -- not the small, uniform ceiling every program has been held to since Stage 9. Motivated by
 Stage 16's heap and Stage 18's editor (a buffer and a file of unknown size need room to grow), and by
-Stage 17's `chrono-tz` aside: a program linking a full timezone database needs meaningfully more than
+the time-zone database: `date` with `chrono-tz` (Stage 15's own first user) is a 1.3 MB binary, more than
 `hello`/`crash` ever did, and paying that same cost for every program regardless of need is the wrong
-trade. Placed early because the heap (Stage 16) is built on it, and the editor on both.
+trade. (It is the demo below.) Placed early because the heap (Stage 16) is built on it, and the editor on both.
 
 **Features:**
 - `elf.rs`'s `load()` computes the ELF's actual footprint (the highest `p_vaddr + p_memsz` across
@@ -806,16 +806,37 @@ trade. Placed early because the heap (Stage 16) is built on it, and the editor o
   a precise per-page flush).
 
 **Demo:** load and run a deliberately oversized test binary (a static array well beyond the
-previous 2 MiB ceiling, or Stage 17's `chrono-tz`-linked `date` itself, once it exists) immediately followed by
+previous 2 MiB ceiling, and `date` with the full time-zone database) immediately followed by
 `hello` -- confirming the large binary runs correctly, and that `hello`'s own (much smaller)
 window is genuinely clean afterward, e.g. by having `hello` (or a dedicated test) attempt to read
 memory beyond its own footprint and confirm it faults, proving the leftover extent was actually
 revoked, not just left mapped and merely unused.
 
-Reference points from Stage 12: the window is `USER_SIZE` = 2 MiB at `USER_BASE`, with the stack at the top
-(`USER_STACK_TOP = USER_BASE + USER_SIZE`, 1 MiB, a 64 KiB unmapped guard below it) and the image capped at
-`USER_IMAGE_END`, so a larger ceiling keeps the stack where it is and grows the image and, later, the heap upward
-from the base. `docs/mmu.md` and `docs/launching_programs.md` describe the fixed window and are rewritten here.
+**As built.** `r15_large_binaries` is `r14_file_times` plus:
+- `USER_SIZE` (`platform/base_addresses.rs`) is now a **32 MiB ceiling** (`0x4400_0000` to `0x4600_0000`; QEMU's default 128 MiB
+  of RAM ends at `0x4800_0000`), with the 1 MiB stack still at the top and the 64 KiB guard below it, so an image may run to
+  about 31 MiB (`USER_IMAGE_END`); it was 960 KiB in a 2 MiB window. `elfparse::parse` already validated every segment's
+  `p_vaddr + p_memsz` against that limit (so a `.bss` counts), and needed no change.
+- `exec/elf.rs` maps only what a program needs and unmaps exactly what the previous one was given: every mapped range is
+  recorded in `MAPPED` as it is mapped and popped as it is unmapped, at the start of the next load. That is the shrink-on-load
+  requirement, with no whole-window sweep (which at 32 MiB would have built page tables for memory nothing owns), and a load that
+  failed half way is undone by the next one.
+- **The file is still read whole into the kernel heap**, so an executable *file* over half the 16 MiB heap (8 MiB) is refused as
+  `Exec format error` (a check that already existed, now with a test); the limit is on the file, not the image, and `.bss` is not
+  in the file. Streaming segments straight from the disk into the window would lift it, and is not needed yet.
+- `date` in a new tier `user/progs_r15` prints in **`America/Toronto`** (`LOCAL_ZONE`, hard-coded until Stage 17's `$TZ`), with
+  the real rules -- `EST`/`EDT`, `-0500`/`-0400`, both daylight-saving changes -- from the whole IANA database, which `chrono-tz`
+  (`default-features = false`) builds into the binary: 1.3 MB, the first program that does not fit the old window. `-u` now selects
+  UTC, and `-I`/`-R` carry the real offset. `stat` (same tier) shows the created and modified times in that zone with its
+  abbreviation (`2001-09-08 21:46:40 EDT`), and leaves out the accessed date: FAT keeps only a date, nothing updates it on a read (`noatime`), and it is set to the modified date on create and write, so it only repeated `Modify` (still stored, and still returned by the syscall). The zone
+  constant is one `LOCAL_ZONE` in the tier's `lib.rs`, so Stage 17 changes it in one place. Each program carries its own copy of
+  the database (1.3 MB apiece): there is no shared library in EL0, so any further program that shows times pays the same.
+
+Tests: `test/cases/large.py` runs `bigimage` (about 11 MiB of memory: a 2 MiB `.data`, 1 MiB of read-only data, 8 MiB of `.bss`,
+each checked) twice -- the second run's `.bss` must be zero again -- then shows the next program cannot reach any of it,
+and that a `.bss` too big for the ceiling and a file too big for the heap are refused; `clock.py` checks Toronto local time,
+UTC, and the daylight-saving changes of 2024 to the second; `stack.py` and the fixtures follow the new layout. `docs/mmu.md` and
+`launching_programs.md` describe the ceiling.
 
 ---
 
@@ -910,20 +931,15 @@ something new (like Stage 13's own deliberately-deferred `$TZ`) needs configurin
 3. **`source`:** `source run_script_with_own_scope.sh` (the same script, run the other way);
    after it returns, confirm `BAZ` *is* now visible in the shell -- no frame was pushed, so the
    export applied directly to the caller's own environment, exactly as if typed at the prompt.
-4. **The door this reopens:** a `date` reading `$TZ` (even just a fixed UTC offset, no
-   DST/zoneinfo database needed) and adjusting its printed output accordingly.
+4. **The door this reopens:** `date` reading `$TZ` -- replacing the `America/Toronto` that Stage 15 hard-codes
+   (`LOCAL_ZONE` in `progs_r15`'s `date`), and UTC when it is unset -- and adjusting its printed output accordingly.
 
-**A verified, real upgrade path beyond the fixed-offset default, if ever wanted:** the
-[`chrono-tz`](https://github.com/chronotope/chrono-tz) crate supports `no_std`
-(`chrono`/`chrono-tz` both with `default-features = false`) and embeds the full IANA database,
-historical DST transitions included -- genuine `$TZ`-aware local time, not just a fixed offset.
-Its own README warns that "the additional binary size added by this library may overflow
-available program space" on a real microcontroller; that specific risk doesn't apply to us (a
-QEMU-emulated host with generous RAM, not a flash-constrained MCU), but it still has one concrete
-consequence, now already handled: `mmu.rs`'s fixed 2 MiB user window (`USER_SIZE`) was sized for tiny,
-few-KB demo binaries, and a program statically linking a full timezone database is exactly what Stage 15
-(arbitrarily large binaries) was built for -- it comes first, so the database is a straightforward
-use of it, not a budget to re-check.
+**The time-zone database is already in.** [`chrono-tz`](https://github.com/chronotope/chrono-tz) supports `no_std`
+(`chrono`/`chrono-tz` both with `default-features = false`) and embeds the full IANA database, historical DST
+transitions included; Stage 15 builds it into `date` (a 1.3 MB binary, which is why that stage widened the user window).
+Its own README warns that "the additional binary size added by this library may overflow available program space" on a
+real microcontroller; that risk does not apply to a QEMU guest with generous RAM. What this stage adds is only the
+*choice* of zone: `chrono_tz` parses any IANA name (`"America/Toronto".parse::<Tz>()`), so `$TZ` is one lookup.
 
 Two things Stage 12 leaves for this stage, beyond `$VAR` and `$?` themselves: the automatic `exit N` line is
 retired (its 50-odd expectations across the `r12_shell` tests become explicit `echo $?` checks, or simply

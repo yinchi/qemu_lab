@@ -98,7 +98,7 @@ This gives us 32 VirtIO device slots, each occupying `0x200` (512) bytes of memo
 - `0x004`: Version of the VirtIO specification implemented by the device.
 - `0x008`: Device ID to identify the type of VirtIO device.
 
-The `virtio_drivers` crate provides abstractions for interacting with VirtIO devices. See `drivers/virtio/gpu.rs` or `drivers/virtio/blk.rs` in `r14_file_times/src/` (first written in `r06_virtio/`) for examples of how to instantiate drivers for specific VirtIO devices. The drivers themselves, and the HAL they share, are described in [`virtio.md`](virtio.md).
+The `virtio_drivers` crate provides abstractions for interacting with VirtIO devices. See `drivers/virtio/gpu.rs` or `drivers/virtio/blk.rs` in `r15_large_binaries/src/` (first written in `r06_virtio/`) for examples of how to instantiate drivers for specific VirtIO devices. The drivers themselves, and the HAL they share, are described in [`virtio.md`](virtio.md).
 
 The VirtIO device memory regions typically contain control and status registers for device interaction, but do not generally store persistent data; a register in the 512-byte VirtIO slot points to the actual location of the device's data in RAM (MMIO = memory-mapped I/O).  This might include the framebuffer for a GPU, or a data buffer for a block device (itself pointing to the actual data blocks loaded from the device to RAM).
 
@@ -136,7 +136,7 @@ page-aligned.
 | kernel stack | read + write (`kernel_rw`) | The one kernel stack (1 MiB), ending at `stack_top` = `__kernel_end` |
 
 The whole image is about 23 MiB, most of it the heap. Everything from `__kernel_end` up to the user
-window at `0x4400_0000` (roughly 41 MiB) is left unmapped.
+window at `0x4400_0000` (roughly 41 MiB) is left unmapped. The user window itself is 32 MiB from there (`0x4400_0000` to `0x4600_0000`); QEMU's default 128 MiB of RAM ends at `0x4800_0000`, so the top 32 MiB is left free.
 
 ### The kernel stack
 

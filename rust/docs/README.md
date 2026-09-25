@@ -1,6 +1,6 @@
 # Documentation
 
-How the pieces of `r14_file_times` (the latest stage) fit together. Each file stands alone; the links between them
+How the pieces of `r15_large_binaries` (the latest stage) fit together. Each file stands alone; the links between them
 are where one leans on another.
 
 | Document | Covers |

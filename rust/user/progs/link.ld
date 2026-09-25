@@ -11,7 +11,8 @@ SECTIONS
 	address. The kernel sets the initial SP_EL0 to the top of this window
 	independently of this binary's own layout, so no stack space needs to
 	be reserved here. (From r12 the window is laid out as image, unmapped guard, then a 1 MiB
-	stack -- see the kernel's platform/base_addresses.rs; the image must stay under 960 KiB.) */
+	stack -- see the kernel's platform/base_addresses.rs; the image must stay under 960 KiB. From r15 the window is a
+	32 MiB ceiling and only the pages the image needs are mapped, so an image may be up to about 31 MiB.) */
 	. = 0x44000000;
 
 	/* Each of the three loadable segments (code, read-only data, writable data) is mapped with its own

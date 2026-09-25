@@ -2,8 +2,8 @@
 
 See also: [`shell.md`](shell.md) and [`console.md`](console.md) for the behavior most of the QEMU tests exercise, and [`progs.md`](progs.md) for the programs they run.
 
-The kernel is bare-metal AArch64 `no_std` code, so it cannot run `cargo test` on itself. `r14_file_times` is
-tested in two layers, both run by `just test` (in `rust/r14_file_times/`), which first runs a third, cheaper check that the
+The kernel is bare-metal AArch64 `no_std` code, so it cannot run `cargo test` on itself. `r15_large_binaries` is
+tested in two layers, both run by `just test` (in `rust/r15_large_binaries/`), which first runs a third, cheaper check that the
 docs are complete (below):
 
 | Layer | Recipe | Runs | Good for |
@@ -27,7 +27,7 @@ lexer's grammar is host-tested, and `pipes.py` checks that a pipeline actually r
 
 ## Host tests
 
-`rust/r14_file_times/hosttests/` is a separate small Cargo crate (its own workspace, so it does not inherit
+`rust/r15_large_binaries/hosttests/` is a separate small Cargo crate (its own workspace, so it does not inherit
 the kernel's dependencies). Its `src/lib.rs` contains no logic of its own: it pulls chosen kernel source
 files in *by path*,
 
@@ -126,7 +126,7 @@ at once, at the point it happened, not at the next timeout.
 
 ### What is where
 
-Everything test-only lives under `rust/r14_file_times/test/` or `disk/tests/`, never in `user/`, which holds only
+Everything test-only lives under `rust/r15_large_binaries/test/` or `disk/tests/`, never in `user/`, which holds only
 the core utilities every stage shares.
 
 | Path | What it is |
@@ -153,7 +153,8 @@ The kernel marks only `/bin` executable at boot, so tests `chmod +x` the program
 | `console`, `unicode` | The console write path: UTF-8 split across writes, flush counts, the segfault message, wide glyphs |
 | `stack`, `stack_guard` | `stack`: the MMU and user memory at boot (translation on, WXN, PAN), page permissions, the user stack and its guard, a user stack overflow being a fault. `stack_guard`: the kernel stack's guard |
 | `power` | `poweroff` and `reboot` (PSCI) |
-| `clock` | The real-time clock: `clock_gettime` (through `probe clock`), and `date` -- the live clock against the host's, and exact output for chosen instants (`date -d @N`) |
+| `clock` | The real-time clock: `clock_gettime` (through `probe clock`), and `date` -- the live clock against the host's, and exact output for chosen instants (`date -d @N`) in `America/Toronto` local time and UTC, including both daylight-saving changes of 2024 |
+| `large` | Arbitrarily large binaries: `bigimage` (about 11 MiB of memory) runs and checks every byte range, a second run sees a fresh `.bss`, none of it stays mapped for the next program, and an image that cannot fit the ceiling, or a file bigger than half the kernel heap, is refused |
 
 Two modules cannot use the normal `Session.run`/`wait_prompt` for part of what they do, since those treat a panic or
 QEMU exiting as failure: `power` (for its `reboot` and `poweroff` steps, where the machine really resets or powers
@@ -170,13 +171,13 @@ to prove a refactor changed nothing; it was retired afterwards for that reason).
 There is no command-line filter; to run a single module, call `run_group` on it from `test/`:
 
 ```console
-> cd rust/r14_file_times && just build-test disk
+> cd rust/r15_large_binaries && just build-test disk
 > python3 -c "
 import sys, os
 sys.path.insert(0, 'test'); os.chdir('test')
 from run_tests import run_group
 from cases import line_editing
-for name, got, want in run_group(os.path.abspath('../r14_file_times-test.elf'),
+for name, got, want in run_group(os.path.abspath('../r15_large_binaries-test.elf'),
         os.path.abspath('../disk.img'), os.path.abspath('../disk'), [line_editing]):
     print('PASS' if got == want else 'FAIL', name)
 "

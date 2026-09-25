@@ -1,7 +1,7 @@
 # The filesystem
 
 Programs see a single FAT16 volume mounted at `/`. The kernel does not implement FAT itself: the
-[`hadris-fat`](https://crates.io/crates/hadris-fat) crate does, and `rust/r14_file_times/src/fs/` is the glue
+[`hadris-fat`](https://crates.io/crates/hadris-fat) crate does, and `rust/r15_large_binaries/src/fs/` is the glue
 between it, the block device below and the syscalls above.
 
 ```mermaid
@@ -172,13 +172,20 @@ by the containing directory alone, as for a privileged process on Unix.
 | `stat` | Every field a FAT entry stores: size, attributes, created/modified date-time, accessed date. Dates are FAT's packed encoding, not calendar values; the root has no entry of its own and reports size 0, directory, and the FAT epoch. |
 | `chmod` | As above. |
 
+**Reading never updates a timestamp, the accessed date included.** The accessed date is set when an entry is created and
+when a writer finishes (`hadris-fat` sets it to the modified date), and no read, `cat` and `open` for reading included,
+rewrites the directory entry. So the accessed date is never newer than the last write, and always the date of the modified time, which is why Stage 15's `stat` does not show it (Stages 12-14's did). It is still stored, and `newfstatat` still returns it. This is
+Linux's `noatime` behaviour, and Windows has defaulted to it since Vista: FAT's accessed field is only a date, and updating
+it would cost a directory write for every read. (A `relatime`-style update on the first read of each day would be one write per
+file per day, through `FatVolumeWriteExt::set_times`; it is not done.)
+
 Timestamps are what is stored. Anything the kernel creates or writes is stamped from the real-time clock
 (`fs/rtc_time.rs`, handed to `hadris-fat` when the volume is mounted): creating a file or directory sets its
 created and modified times, writing moves the modified time, and the accessed date is today's. **They are UTC.**
 FAT has no time-zone field and Windows reads the fields as local time, but the kernel never interprets a stamp:
 it writes what the clock says and `stat` hands the fields back raw, so reading and writing agree, as on Linux with
 `mount -o tz=UTC`. Turning a stamp into a user's local time is a display matter for the program that prints it
-(Stage 17's `$TZ`), and the stored bytes do not change with the zone. FAT holds 1980 to 2107 in 2-second steps
+(`stat`, as of Stage 15, converts to `America/Toronto` like `date` does, and Stage 17's `$TZ` supplies the zone), and the stored bytes do not change with the zone. FAT holds 1980 to 2107 in 2-second steps
 (the created time also has a 10 ms field, which carries the odd second), so a clock outside that range, or an
 unset RTC reading 1970, is clamped whole to the nearest end (`fs/fattime.rs`, host-tested). Files bundled into the
 image keep the fixed stamp `folder_to_img.sh` gave them; this stage's `just disk` builds the image with `TZ=UTC` (mtools writes the stamp as local time), so it is identical on every host.
