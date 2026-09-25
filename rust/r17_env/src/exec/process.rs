@@ -80,7 +80,7 @@ impl From<ElfError> for LaunchError {
 
 /// A program that's loaded and ready to enter: everything `run` needs. Splitting load-and-set-up
 /// (`prepare`) from entering (`run`) means a later stage that starts a program from inside another
-/// (Stage 19's second resident slot) can reuse the first half unchanged.
+/// (Stage 20's second resident slot) can reuse the first half unchanged.
 pub struct PreparedProgram {
     /// The entry point of the program.
     entry: usize,

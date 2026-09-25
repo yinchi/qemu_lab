@@ -23,7 +23,7 @@
 //! - It is never called from interrupt context. The IRQ handler only enqueues tokens; this module runs
 //!   only in the shell's loop or inside a syscall, one at a time, which is why it needs no lock.
 //! - It never sees signal keys (Ctrl+Z, Ctrl+C): the queue's producer recognizes those before a token is
-//!   queued (Stages 20-22). Ctrl+D is different -- end-of-file is canonical-mode policy, so it is handled
+//!   queued (Stages 21-23). Ctrl+D is different -- end-of-file is canonical-mode policy, so it is handled
 //!   here.
 //! - There is one instance, for the one console; what varies between uses is the prefix and the `Mode`
 //!   passed to `begin`. Who is *reading* (the shell, a program, later a raw-mode editor that bypasses

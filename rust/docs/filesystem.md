@@ -120,7 +120,7 @@ runs at a time, and the shell never reads and writes one path at once. What it d
 - A running program does not hold its `.exe` open (the launcher reads the whole file into memory), so
   overwriting a running program's file is harmless.
 
-**The fix, for Stage 19** (when two programs can be resident, so the interference becomes reachable):
+**The fix, for Stage 20** (when two programs can be resident, so the interference becomes reachable):
 track which directory entries (parent cluster plus offset, which is how `hadris-fat` keys its own writer
 check) have open readers or a writer, and refuse the conflicting `open`, `unlink` or `rename` with `EBUSY` --
 readers-XOR-one-writer, a sharing-violation model. That needs `EBUSY` (-16) added to `abi`'s errno table

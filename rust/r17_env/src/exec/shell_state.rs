@@ -6,7 +6,7 @@
 //! program's relative paths against the working directory and starts each program with the top frame's
 //! stream bindings, while `shell/` is what changes them (`cd`, and later scopes and redirects). There is
 //! one stack, not one per program: at most one program is ever resident, so the shell's state *is* the
-//! running program's state (Stage 19+ revisits this).
+//! running program's state (Stage 20+ revisits this).
 //!
 //! There is deliberately no `chdir` *syscall* yet: with one global stack a program's `chdir` would change
 //! the shell's directory too, and real Unix's per-process isolation doesn't exist until state is

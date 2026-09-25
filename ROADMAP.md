@@ -492,7 +492,7 @@ throwaway test binaries just to prove the plumbing works.
 - **The utilities:** `cat`, `ls`, `cp`, `head`, `tail`, `wc`, `hexdump`,
   `true`, `false`, `chmod` -- alongside `echo`, already working since Stage
   10. `tail` and `chmod` are additions to this stage's original list of three:
-  `tail` was pulled forward from Stage 22 (it's a small variation on `cat`'s
+  `tail` was pulled forward from Stage 23 (it's a small variation on `cat`'s
   read loop), and `chmod` is the first program to write the `0x40`
   executable-bit convention (Stage 8) from userspace -- restricted to
   `+x`/`-x`/`+w`/`-w`, since FAT has no other permission bits. `cd`, `pwd`,
@@ -545,7 +545,7 @@ throwaway test binaries just to prove the plumbing works.
   shell prompt, and each finished input line also go to the serial port (with
   `\r\n` line endings), so a serial log is a readable transcript of a session.
   This is what makes the automated test below possible. It applies to plain
-  line-oriented console writes; a raw-mode full-screen program (Stage 18's
+  line-oriented console writes; a raw-mode full-screen program (Stage 19's
   editor) would bypass it.
 - **More kernel memory.** The kernel stack grows from 16 KiB to 1 MiB and the
   heap from 128 KiB to 1 MiB (the kernel image has a 16 MiB budget and comes
@@ -601,7 +601,7 @@ things the shell shouldn't be built on:
   `SCTLR_EL1` `M | C | I` plus WXN, stack-alignment checks and PAN, page-aligns every linker section, gives
   the user stack an explicit mapping with an unmapped guard, and makes the kernel check every user pointer
   against what is really mapped. Stages 9-11 are deliberately left as they were built. Kernel and user
-  addresses stay identity mapped; only per-process address spaces (Stages 15, 16 and 19) would change that. The
+  addresses stay identity mapped; only per-process address spaces (Stages 15, 16 and 20) would change that. The
   kernel's own stack gets the same treatment after the phase's last Step: a 64 KiB unmapped guard below it, and
   fatal EL1 exceptions run on a separate exception stack, so an overflow is reported ("Kernel stack overflow")
   rather than faulting again on the stack it just overflowed.
@@ -621,7 +621,7 @@ things the shell shouldn't be built on:
   operations: `with_scope` pushes a whole frame (a script's own scope) and `with_stdio` saves and
   restores only the stdio triple (every redirect, so a redirected builtin's `cd` still sticks).
   There is still one fd table, not one per program -- at most one program is ever resident, so the
-  kernel-owned table is rebuilt from the top frame's stdio triple at each launch (Stage 19 revisits
+  kernel-owned table is rebuilt from the top frame's stdio triple at each launch (Stage 20 revisits
   this).
 - **Working directory:** `cd` (a builtin), `pwd` (a program over a new `getcwd` syscall), one path
   resolver with `.`/`..`. `mkdir`, `rm` (with `-r`) and `mv` as utilities over new directory-mutating
@@ -647,7 +647,7 @@ things the shell shouldn't be built on:
   in a temp file under `/tmp`, then `cmd2` with stdin from it, then the file is deleted -- every stage
   runs, the pipeline's status is the last stage's, and the pipe is bound before a stage's own redirects,
   as in POSIX. **Named limitation, not a bug to fix later:** finite output that fits on disk only --
-  no infinite/streaming pipelines under this design, ever (Stage 23 replaces the design, not this
+  no infinite/streaming pipelines under this design, ever (Stage 24 replaces the design, not this
   limitation).
 - The disk image grows to 64 MiB FAT16 (its root directory stays a fixed 512 slots, so everything lives
   in subdirectories) and is gitignored from this stage on. Tests live in this stage's own `disk/tests/`
@@ -659,12 +659,12 @@ things the shell shouldn't be built on:
 | A userspace `sh` needs | Provided by | Stage 12's preparation |
 |---|---|---|
 | The shell not running in IRQ context; one input queue independent of its reader | Stage 12, Step 5 | Done here: the token queue and the eval loop outside the interrupt handler |
-| Per-process `cwd`, stdio bindings and `env`, inherited by a child | Stage 17 adds `env`; Stage 19's slots hold a process struct | `ShellFrame` is plain data with no reference to any static, so it can become that struct |
-| Two programs resident at once (the shell stays loaded while a child runs) | Stage 19, with Stages 15/16 for window sizing and heap | None; noted only |
-| `spawn`/`wait` syscalls (the fork/exec equivalent) | Stages 19 and 22 | `process::run_program` is split into `prepare` (load and set up) and `run` (enter EL0), so the first half can be reused |
+| Per-process `cwd`, stdio bindings and `env`, inherited by a child | Stage 17 adds `env`; Stage 20's slots hold a process struct | `ShellFrame` is plain data with no reference to any static, so it can become that struct |
+| Two programs resident at once (the shell stays loaded while a child runs) | Stage 20, with Stages 15/16 for window sizing and heap | None; noted only |
+| `spawn`/`wait` syscalls (the fork/exec equivalent) | Stages 20 and 23 | `process::run_program` is split into `prepare` (load and set up) and `run` (enter EL0), so the first half can be reused |
 | `chdir` (number reserved) and `dup2`-style fd control | New syscalls once state is per-process | `getcwd` exists; `SYS_CHDIR`'s number is reserved in `abi`; the frame stack keeps redirection and cwd in one place |
-| Real pipes between resident programs; job control | Stages 23 and 20-22 | Pipelines are isolated in `run_pipeline`, so the temp-file design is replaceable |
-| `./script` and `sh script` as a real child process | Stage 19+ spawn | `with_scope` is the same operation a child process would perform |
+| Real pipes between resident programs; job control | Stages 24 and 21-23 | Pipelines are isolated in `run_pipeline`, so the temp-file design is replaceable |
+| `./script` and `sh script` as a real child process | Stage 20+ spawn | `with_scope` is the same operation a child process would perform |
 
 **Demo:** a `> ` prompt on Stage 6's display; edit a long command mid-line and recall it with Up;
 `cd bin`, `pwd`, `ls`; `echo hello | cat`; `ls > listing.txt`, `cat listing.txt`, `echo more >>
@@ -681,8 +681,9 @@ find the files still there. `just test` runs the automated version of all of thi
 
 Stage 12 leaves the shell finished, and Capstone 1 -- the editor -- is the largest single step still ahead.
 The small, self-contained stages that used to come after it therefore come first: each is easy to finish and
-test in isolation, and two of them are things the editor needs (a real heap, and real timestamps for `save`).
-They were originally numbered after the editor; the numbers below are the new ones, and Stages 19 onward are
+test in isolation, and three of them are things the editor needs (a real heap, real timestamps for `save`, and
+a disk whose contents survive a rebuild of the system, so that a saved file is still there next boot).
+They were originally numbered after the editor; the numbers below are the new ones, and Stages 20 onward are
 unchanged.
 
 | Now | Stage | Was |
@@ -692,7 +693,13 @@ unchanged.
 | 15 | Arbitrarily large binaries | 17 |
 | 16 | Growable memory (`brk`) and a user heap | 18 |
 | 17 | Environment variables, `$VAR`, `$?` | 16 |
-| 18 | The vi-like editor (**Capstone 1**) | 13 |
+| 18 | Persistent storage: a second disk, mounts, `/etc/fstab` | (new) |
+| 19 | The vi-like editor (**Capstone 1**) | 13 |
+
+Stage 18 was inserted after this table was written, which moved every stage from the editor onward up by one (so the
+editor is 19 and the job-control block is 20-25). The sources of completed stages (`r10_repl` through `r16_brk`) and
+`Stage12.md` still say "Stage 18", "Stage 19", ... in their comments and prose, in the numbering of their day: add one
+to any stage number of 18 or more found there.
 
 ## Stage 13: a real-time clock -- `r13_rtc`
 
@@ -711,7 +718,7 @@ before anything else depends on it.
   here borrows Linux's number: it fills a 16-byte `timespec` (`tv_sec`, `tv_nsec`) at `out`. Only
   `CLOCK_REALTIME` exists (any other clock is `EINVAL`, a bad pointer `EFAULT`), and `tv_nsec` is 0 since
   the PL031 counts whole seconds. (This replaces the earlier plan of a no-argument call returning the
-  seconds in `x0`: the Linux shape costs nothing and leaves room for `CLOCK_MONOTONIC` in Stage 21.)
+  seconds in `x0`: the Linux shape costs nothing and leaves room for `CLOCK_MONOTONIC` in Stage 22.)
 - `date`, a new read-only EL0 utility -- prints the current time via the new syscall. **No
   timezone support, by deliberate decision, not an oversight:** the raw RTC value is already
   timezone-independent (Unix epoch seconds are UTC by definition -- that's exactly what matched
@@ -756,7 +763,7 @@ reflects something other than a fixed value.
   writing and `mkdir` stamp the entry from the RTC in one place; `FileWriter` also has explicit
   `set_created`/`set_modified` setters if a caller ever needs to override one.
 - No new consumer needed: `cp` (Stage 11), `mkdir`, `tee` and shell redirects, and later the editor's
-  `save` (Stage 18), already write through `hadris-fat`; this stage only changes what timestamp those existing writes
+  `save` (Stage 19), already write through `hadris-fat`; this stage only changes what timestamp those existing writes
   carry, not what writes files in the first place.
 
 **Demo:** `cp` a file (or redirect into one), `stat` it, and inspect its directory entry, and confirm the
@@ -781,7 +788,7 @@ check (name plus creation time) stronger, to one-second resolution.
 
 **Goal:** let a program's footprint use as much RAM as it actually needs, up to what's genuinely
 free -- not the small, uniform ceiling every program has been held to since Stage 9. Motivated by
-Stage 16's heap and Stage 18's editor (a buffer and a file of unknown size need room to grow), and by
+Stage 16's heap and Stage 19's editor (a buffer and a file of unknown size need room to grow), and by
 the time-zone database: `date` with `chrono-tz` (Stage 15's own first user) is a 1.3 MB binary, more than
 `hello`/`crash` ever did, and paying that same cost for every program regardless of need is the wrong
 trade. (It is the demo below.) Placed early because the heap (Stage 16) is built on it, and the editor on both.
@@ -844,7 +851,7 @@ UTC, and the daylight-saving changes of 2024 to the second; `stack.py` and the f
 
 **Goal:** let an already-running program ask for more memory as it goes, rather than only ever
 getting a fixed allocation decided once at load time -- needed for anything whose memory needs
-depend on runtime input, like Stage 18's editor opening a file of unknown size.
+depend on runtime input, like Stage 19's editor opening a file of unknown size.
 
 **Features:**
 - A new syscall, `brk`-shaped: request the heap be extended to a new end address (or by some
@@ -855,7 +862,7 @@ depend on runtime input, like Stage 18's editor opening a file of unknown size.
 - `userlib` gains its own `#[global_allocator]` -- reusing `linked_list_allocator`, the same crate
   the kernel's own heap already uses -- starting with a small initial heap and calling `brk` to
   grow it on demand, rather than syscalling on every individual allocation. `hello`/`crash` need
-  none of this; the editor (Stage 18) is the first EL0 program with genuine dynamic-allocation needs.
+  none of this; the editor (Stage 19) is the first EL0 program with genuine dynamic-allocation needs.
 - The heap sits in the natural gap between the loaded segments (bottom of the window) and the
   stack (top, growing down) -- the classic Unix layout, already implied by this project's
   existing choice of where the stack lives. Worth a deliberate guard gap between wherever the
@@ -875,7 +882,7 @@ depend on runtime input, like Stage 18's editor opening a file of unknown size.
 byte, then a small program right after it -- confirming each size loads and runs without a fixed ceiling, that
 the heap's growth is genuinely on demand (a program that allocates little maps little, checked against the
 kernel's own view of what is mapped), that the pages are revoked for the next load, and that a request past the
-ceiling fails cleanly instead of corrupting the stack. The editor (Stage 18) is the first real consumer, and
+ceiling fails cleanly instead of corrupting the stack. The editor (Stage 19) is the first real consumer, and
 opens progressively larger files for its own demo.
 
 **As built (the heap).** `r16_brk` is `r15_large_binaries` plus:
@@ -944,7 +951,7 @@ something new (like Stage 13's own deliberately-deferred `$TZ`) needs configurin
   pushes nothing, so its `export`s persist in the caller -- the scoping split Stage 12 already
   demonstrates with `cd`, now covering environment variables too. `cd` with no operand switches from `/`
   to `$HOME`. Because the frame is plain data it is also what becomes a per-process struct once
-  Stage 19 lets a child exist (see Stage 12's path to a userspace `sh`).
+  Stage 20 lets a child exist (see Stage 12's path to a userspace `sh`).
 - `env`/`printenv`, a small utility printing the current environment -- cheap once the mechanism
   exists, matching Stage 11's other utilities' spirit.
 - **`$VAR`/`${VAR}` expansion, and `$?` -- the special parameter Stage 12's `exit N` line stood in
@@ -989,7 +996,70 @@ disappear), and `cd` with no operand goes to `$HOME`.
 
 ---
 
-## Stage 18 (Capstone 1): a vi-like full-screen editor -- `r18_editor`
+## Stage 18: persistent storage -- a second disk, mounts, `/etc/fstab` -- `r18_mounts`
+
+**Goal:** let the system be rebuilt freely without losing what the user made. Today there is one FAT volume, and
+`just run` rebuilds it (`mkfs.fat`) from `disk/` on every launch, so anything written from the guest -- a file, a
+`.profile`, the editor's output -- is gone at the next run. (The guest's writes do reach `disk.img`, and would
+survive a boot that did not rebuild it; the rebuild is what loses them.) The clean fix is the one real systems use:
+user data on a **separate disk**, mounted into the tree, that the build never touches -- while the system image stays
+disposable. It also lands before Capstone 1 on purpose: the editor's demo ("restart QEMU and confirm the edit is still
+there") is only honest with somewhere for the edit to live.
+
+**Features:**
+- **More than one block device.** `Blk::find` finds the first virtio-blk device; the driver learns to find them all
+  (each with its own interrupt line and queue), and `BlkIo` becomes one per device, so each volume is its own
+  `hadris-fat` `FatVolume`. Devices are told apart by **FAT volume label**, not by their order: QEMU hands out
+  virtio-mmio slots in an order that is a property of the machine, not of the command line.
+- **A mount table, and path resolution through it.** A kernel-owned list of `(mount point, volume)`. Paths are
+  already normalized to absolute strings before anything touches a disk; resolution then picks the mount with the
+  longest matching prefix and hands the rest of the path to that volume, so `..` from a mount's root lands in the
+  parent volume's directory with no special case. Everything that opens, lists, stats, creates, removes or renames goes
+  through it (`fs/files.rs` today assumes the one volume); an open file remembers its volume. The root is the volume
+  labelled `ROOT` (or, with none so labelled -- every earlier image -- the first device, so old images keep booting).
+  A mount point must be an existing directory on the volume it is mounted over, and what was in it is hidden while
+  mounted, as on Linux.
+- **`/etc/fstab`, read by the init shell.** The kernel mounts only the root; the shell's own start-up (Stage 17's
+  `start_up`) reads `/etc/fstab` and mounts the rest -- Linux's split between `root=` and `mount -a`. A pure, host-tested
+  parser (the same shape as Stage 17's `/etc/environment` one): `LABEL=DATA  /root  fat` per line, `#` comments, extra
+  fields ignored for now. A missing file, a bad line, a label no device carries, or a mount point that is not a directory
+  is one note on the serial log and never fatal. Start-up order becomes `/etc/fstab`, `/etc/environment`, `$HOME`,
+  `~/.profile`, the first prompt: the mounts must exist before `enter_home` looks for `$HOME`. With no data disk attached
+  `/root` is an empty directory on the system volume, so the shell still starts there (writes to it are then as
+  throwaway as the rest of that image, which the serial note says).
+- **A cross-volume `rename` is `EXDEV`** ("Invalid cross-device link"), as in Linux. `mv` (a new tier, `progs_r18`)
+  falls back to copy-then-remove for a file, as GNU `mv` does; a directory across volumes is reported, not yet moved.
+- **`mount` and `umount` builtins**, small: `mount` alone lists the table (`DATA on /root type fat`), `mount LABEL=X
+  /dir` and `umount /dir` do what an `fstab` line would (`umount` refuses with `EBUSY` while a file on the volume is
+  open or the working directory is inside it). Builtins, not programs, because the table lives in the kernel and a
+  program has no syscall to read it -- adding one is not worth it for a listing.
+- **The host side.** `just run` attaches two drives: the system image, rebuilt every time as now, and `data.img`, which
+  `just disk` never touches. A `just data-disk` recipe creates it **once, if missing**, formatted with the label `DATA`
+  and seeded from a `disk-data/` folder (`root/.profile` and `root/utf8-demo.txt`, which move there from the system
+  image's `disk/root`, now an empty mount point); `just data-reset` recreates it. The system image's `etc/fstab` is
+  what says to mount it. The host may copy files in and out of `data.img` with `mtools` **only while QEMU is not
+  running**: a host write to a FAT volume the guest has mounted can corrupt it.
+- **Tests.** A second image per test group (the harness copies both, as it copies `disk.img` today), and an `FSTAB`
+  module attribute writing `/etc/fstab` the way Stage 17's `ENVIRONMENT` writes the environment file; `verify_disk`
+  and `fsck.fat` on both after QEMU exits. Cases: a file written under the mount is on the data image and not the
+  system one, and the reverse; `..` out of a mount and `cd` into it; the same path from two working directories; `ls
+  /` shows the mount point and `ls /root` the data volume's contents; `mv` and `cp` across the mount; an unlabelled or
+  missing data disk (the note, and `/root` on the system volume); a bad `fstab`; a mount point that is a file; `umount`
+  with an open file (`EBUSY`) and with the working directory inside; the file cap and open handles counted across
+  volumes; and that a rebuilt system image with the same `data.img` still has the earlier files (the property the
+  stage exists for).
+
+**Not in this stage:** more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but
+its label, mount options beyond the label and mount point (`ro`, `noatime`, ...), bind mounts, a mount of one volume
+inside another that is itself a mount (allowed, but untested beyond one level), and moving a directory across volumes.
+
+**Demo:** write a file under `/root`, power off, rebuild the system image (`just disk`), boot again with the same
+`data.img`, and the file is there -- and the same sequence without the data disk attached boots into an empty `/root`
+with a serial note instead of failing.
+
+---
+
+## Stage 19 (Capstone 1): a vi-like full-screen editor -- `r19_editor`
 
 **Goal:** genuinely harder than the shell's line editing, not just a bigger
 version of it -- a full-screen editor needs a multi-line buffer and modal
@@ -1055,7 +1125,8 @@ either direction).
 **Demo:** launch the editor from Stage 12's shell against a file already
 present on the disk image, edit its text on Stage 6's display using
 Stage 7's keyboard, save it, then -- to prove persistence, not just an
-in-memory illusion -- restart QEMU against the same `disk.img` and confirm
+in-memory illusion -- restart QEMU against the same `data.img` (Stage 18's persistent
+disk, mounted at `/root`, where the file lives) with a *rebuilt* system image, and confirm
 the edit is still there.
 
 ---
@@ -1067,11 +1138,11 @@ needs *something* to background in the first place -- which means finally revisi
 incrementally patching around, the "at most one program is ever resident" assumption threaded
 through Stage 9's single page table and Stage 12's single fd table. Deliberately scoped narrow
 throughout: this block adds *at most two* simultaneously resident programs, never a general
-N-process scheduler -- Capstone 2 itself (Stage 23) never needs more than that. The one exception is
-Stage 24, added after the capstone specifically to prove something the capstone's own demos don't
+N-process scheduler -- Capstone 2 itself (Stage 24) never needs more than that. The one exception is
+Stage 25, added after the capstone specifically to prove something the capstone's own demos don't
 need: genuine forced preemption between the two slots, not just cooperative handoff.
 
-## Stage 19: two resident programs -- `r19_suspend`
+## Stage 20: two resident programs -- `r20_suspend`
 
 **Goal:** the foundational primitive everything else in this block builds on -- letting a second
 program stay alive, dormant, while the first one keeps running, instead of Stage 9's "exactly one,
@@ -1083,7 +1154,7 @@ time-slice between two actively-running ones.
 - A second, independent user memory window, alongside the existing one -- Stage 15's per-load
   footprint computation applies to each window independently, so neither program pays for the
   other's size.
-- **The memory half of this is a real change, not just a second window.** Through Stage 18 the user window is a
+- **The memory half of this is a real change, not just a second window.** Through Stage 19 the user window is a
   fixed partition of physical RAM (`0x4400_0000` to `0x4600_0000`), identity-mapped and used by one program at a time,
   so nothing tracks physical pages and nothing is freed at exit: the next `load` unmaps what the last program was
   given (`docs/mmu.md`, "The window is a fixed partition"). Two resident programs cannot both live there: every
@@ -1113,7 +1184,7 @@ time-slice between two actively-running ones.
 - **This stage is also the gate for moving the shell to userspace** (Stage 12 keeps it
   kernel-resident): a shell that launches a child has to stay loaded while the child runs, which needs
   exactly this second window and saved context. What remains after it is small and named in Stage 12's
-  path-to-a-userspace-`sh` table: `spawn`/`wait` syscalls (Stage 22), turning Stage 12's shell-state frame
+  path-to-a-userspace-`sh` table: `spawn`/`wait` syscalls (Stage 23), turning Stage 12's shell-state frame
   into a per-process struct a child inherits (with the `chdir` syscall whose number Stage 12 reserves),
   and `dup2`-style fd control.
 - **File sharing rules.** With two resident programs, one can hold a file open while the other rewrites
@@ -1122,7 +1193,7 @@ time-slice between two actively-running ones.
   refuse a conflicting `open`, `unlink` or `rename` with a new `EBUSY` (`rust/docs/filesystem.md`, "Concurrent
   access to one file", has the analysis). Stage 12's `Rc` open files already give the shared-handle half.
 - Explicitly not a scheduler: switching between the two slots only ever happens at an explicit
-  call from kernel code reacting to something specific (Stage 20's signal, Capstone 2's blocked
+  call from kernel code reacting to something specific (Stage 21's signal, Capstone 2's blocked
   pipe read/write) -- never a timer interrupt forcing a switch mid-instruction. No ready queue, no
   priority, no notion of "runnable."
 
@@ -1136,7 +1207,7 @@ output, then the first program's second marker.
 
 ---
 
-## Stage 20: signals -- `r20_signals`
+## Stage 21: signals -- `r21_signals`
 
 **Goal:** a kernel-to-program asynchronous notification mechanism, needed specifically for
 `SIGTSTP` (`Ctrl+Z`) -- the first event in this project that's imposed on a still-running program
@@ -1148,47 +1219,47 @@ from outside, rather than something it calls voluntarily (`exit`) or synchronous
   producer, before the `Token` is ever queued), intercepted before it ever reaches
   whichever program currently owns keyboard input -- matching real termios' `ISIG` line-discipline
   behavior, where the terminal driver, not the foreground program, is what normally recognizes it.
-- When recognized while a program occupies the foreground slot, the kernel calls Stage 19's
+- When recognized while a program occupies the foreground slot, the kernel calls Stage 20's
   `suspend_current()` on it directly. `SIGTSTP`'s default action (get suspended, nothing more)
   needs no program-side handler at all, so this first cut deliberately doesn't build general
   signal-handler registration (a `sigaction`-equivalent) -- narrow by design, the same spirit as
   Stage 9's segfault handling covering exactly the EC values it needs and nothing more.
-- **A concrete, verified design precedent for how Stage 18's editor should behave once this
+- **A concrete, verified design precedent for how Stage 19's editor should behave once this
   exists**: real vim does *not* intercept `Ctrl+Z` -- it lets the terminal driver suspend it
   normally, the simpler and more common default. Real nano *does* intercept it (its own `SIGTSTP`
   handling), and has to provide `^T^Z` as an explicit escape hatch to actually suspend despite
-  that. Stage 18's editor, vi-like by its own stated design reference, follows vim's precedent: it
+  that. Stage 19's editor, vi-like by its own stated design reference, follows vim's precedent: it
   never reads `Ctrl+Z` as an editing keystroke, so this stage's kernel-level interception is the
   only thing that ever sees it, and no editor-side change is needed at all.
 - **A second, closely-related signal, needed for correctness rather than authenticity: the
   `SIGTTIN` equivalent for background stdin.** Stage 7's keyboard driver only ever has one
-  legitimate destination for "the current keystroke," so once Stage 19 lets a second program be
+  legitimate destination for "the current keystroke," so once Stage 20 lets a second program be
   resident in the background slot, that program's `Keyboard::read()` must not be allowed to
   silently consume input meant for whatever's actually in the foreground. If a background slot
   blocks on a keyboard read, the kernel suspends that slot on the spot (the same mechanism
-  `Ctrl+Z` uses) instead of ever delivering it a keystroke -- resumed only once Stage 22's `fg`
+  `Ctrl+Z` uses) instead of ever delivering it a keystroke -- resumed only once Stage 23's `fg`
   brings it back to the foreground. Unlike `SIGTSTP`, this isn't optional or deferrable: without
   it, a background job that happens to read stdin would race the shell for keystrokes.
 - `SIGINT` (`Ctrl+C`, killing rather than suspending the foreground job) and `SIGCHLD` (notifying
   of a background job's exit) are the obvious next-most-needed signals, named here deliberately as
-  *not* in scope -- this stage wires up exactly what Stage 22's job control needs to function, not
+  *not* in scope -- this stage wires up exactly what Stage 23's job control needs to function, not
   a general signal subsystem.
 
-**Demo:** none of its own -- `Ctrl+Z` has nothing useful to return control *to* until Stage 22's
-shell vocabulary exists, so this stage is verified together with Stage 22's demo, below.
+**Demo:** none of its own -- `Ctrl+Z` has nothing useful to return control *to* until Stage 23's
+shell vocabulary exists, so this stage is verified together with Stage 23's demo, below.
 
 ---
 
-## Stage 21: sleep -- `r21_sleep`
+## Stage 22: sleep -- `r22_sleep`
 
 **Goal:** a way for a program to voluntarily give up the CPU for a bounded duration, distinct from
 every other way control has changed hands so far in this block (`Ctrl+Z`, an outside event; a
 blocked pipe read/write, a consequence of what another program is doing). Introduced now
-specifically so Stage 22's job-control demo has a genuinely useful long-running background program,
+specifically so Stage 23's job-control demo has a genuinely useful long-running background program,
 rather than an arbitrary busy-loop.
 
 **Features:**
-- A new syscall, `sleep`-shaped: takes a duration, returns once it's elapsed. Reuses Stage 19's
+- A new syscall, `sleep`-shaped: takes a duration, returns once it's elapsed. Reuses Stage 20's
   `suspend_current()` directly -- sleeping *is* suspension, just with a deadline attached instead of
   an external trigger.
 - A deadline field alongside each slot's saved context, checked from Stage 3's existing periodic
@@ -1201,8 +1272,8 @@ rather than an arbitrary busy-loop.
   scheduling primitive (a relative duration), not a calendar-time one; Stage 13's RTC stays reserved
   for `date`'s absolute wall-clock display.
 - A `sleep` utility (a thin wrapper parsing a duration argument) and a small test program that loops
-  `print; sleep(1s)` forever -- the concrete vehicle for Stage 22's background-job demo.
-- **Worth naming for `jobs`'s sake (Stage 22)**: a sleeping background job and a `Ctrl+Z`-stopped
+  `print; sleep(1s)` forever -- the concrete vehicle for Stage 23's background-job demo.
+- **Worth naming for `jobs`'s sake (Stage 23)**: a sleeping background job and a `Ctrl+Z`-stopped
   one look identical at the slot level -- both "not running, has a saved context" -- distinguished
   only by *why* (a pending deadline vs. a delivered signal). `jobs` should report "Sleeping" rather
   than "Stopped" when that's the actual reason, even though the underlying suspend/resume mechanism
@@ -1212,13 +1283,13 @@ rather than an arbitrary busy-loop.
 while it's dormant waiting on its first deadline, load and run a second, short test program to
 completion in slot 1; confirm the sleep-loop then resumes on its own on the next tick after its
 deadline passes, without anything explicitly telling it to -- proving the wake is genuinely
-deadline-driven, not something requiring an outside resume call the way Stage 19's own demo needed.
+deadline-driven, not something requiring an outside resume call the way Stage 20's own demo needed.
 
 ---
 
-## Stage 22: job control in the shell -- `r22_jobs`
+## Stage 23: job control in the shell -- `r23_jobs`
 
-**Goal:** give Stage 12's shell the vocabulary for managing Stage 19/20/21's underlying mechanism --
+**Goal:** give Stage 12's shell the vocabulary for managing Stage 20/21/22's underlying mechanism --
 `&`, `jobs`, `fg`, `bg` -- the same relationship Stage 17's `export` has to its environment stack:
 the mechanism already exists, this stage is purely the shell-level interface to it.
 
@@ -1227,15 +1298,15 @@ the mechanism already exists, this stage is purely the shell-level interface to 
   immediately, instead of blocking until it exits.
 - `jobs`: lists the background slot's occupant -- its command line and whether it's currently
   running or stopped.
-- `fg`: swaps the background slot into the foreground slot (Stage 19's resume, now targeting
+- `fg`: swaps the background slot into the foreground slot (Stage 20's resume, now targeting
   slot 0) and hands it the keyboard again.
 - `bg`: resumes a stopped or sleeping background job in place, without taking over the terminal --
   it keeps running (as long as it doesn't block on keyboard input) while the shell keeps its own
   prompt.
-- `jobs` reports each job's actual state (running, stopped, or -- thanks to Stage 21 --
+- `jobs` reports each job's actual state (running, stopped, or -- thanks to Stage 22 --
   sleeping), not just a generic "backgrounded."
 - **Named limitation, not a bug**: at most one background job can exist at a time, a direct
-  consequence of Stage 19's deliberate two-slot cap -- matching Stage 12's own precedent of naming
+  consequence of Stage 20's deliberate two-slot cap -- matching Stage 12's own precedent of naming
   a scope boundary explicitly (its "no infinite/streaming pipelines... ever") rather than leaving
   it implicit.
 - **A deliberate decision on background stdout, matching real POSIX rather than adding new
@@ -1245,7 +1316,7 @@ the mechanism already exists, this stage is purely the shell-level interface to 
   job's output is simply allowed to interleave with whatever else is on screen. On a real Linux
   terminal running vim, this is exactly what happens when an unredirected background job writes
   output: it splices visually into vim's own display, purely cosmetically, and disappears the next
-  time vim redraws from its own internal buffer. The same property holds here for free: Stage 18's
+  time vim redraws from its own internal buffer. The same property holds here for free: Stage 19's
   editor already does a full-page rewrite from its in-memory buffer on every single edit, so any
   background-job corruption on screen is erased by the user's very next keystroke. A cosmetic wart,
   not a correctness issue -- no new machinery needed, and authentic to how real job control
@@ -1258,16 +1329,16 @@ the mechanism already exists, this stage is purely the shell-level interface to 
   check a background job's progress by re-running `tail log` every so often without ever touching
   the framebuffer it's writing to.
 
-**Demo:** launch Stage 21's `print; sleep(1s)` loop in the background with `&`; `jobs` shows it
+**Demo:** launch Stage 22's `print; sleep(1s)` loop in the background with `&`; `jobs` shows it
 sleeping/running; `fg` brings it to the foreground; `Ctrl+Z` stops it (now genuinely stopped,
 distinct from merely sleeping); `bg` resumes it in the background; `jobs` reflects each state
 change accurately throughout.
 
 ---
 
-## Stage 23 (Capstone 2): job control and streaming pipes -- `r23_capstone2`
+## Stage 24 (Capstone 2): job control and streaming pipes -- `r24_capstone2`
 
-**Goal:** the second capstone, playing the same role for this block that Stage 18 played for
+**Goal:** the second capstone, playing the same role for this block that Stage 19 played for
 Stages 9-13 -- a demo that only works if every preceding stage in the block is genuinely correct,
 combining job-controlling a real program (not a throwaway test binary) with the one limitation
 Stage 12 itself named as permanent.
@@ -1276,23 +1347,23 @@ Stage 12 itself named as permanent.
 - **Real bounded-buffer, blocking pipes, replacing Stage 12's temp-file mechanism** (the pipeline
   code is isolated in one function there so it's replaceable; a kernel-heap buffer was considered for
   Stage 12 and not built -- still finite, so it wouldn't have lifted the limitation either). `cmd1 | cmd2`
-  now loads both ends into the two resident slots at once (Stage 19), connected by a small
+  now loads both ends into the two resident slots at once (Stage 20), connected by a small
   fixed-size kernel buffer. Writing to a full buffer suspends the writer's slot and switches to the
   reader; reading an empty buffer symmetrically suspends the reader and switches to the writer --
-  a targeted application of Stage 19's suspend/resume, triggered by blocked I/O rather than
-  Stage 20's `Ctrl+Z` path. Still no timer-driven preemption anywhere in this: control changes
-  hands only at these explicit blocking points, the same cooperative model Stage 19 established.
+  a targeted application of Stage 20's suspend/resume, triggered by blocked I/O rather than
+  Stage 21's `Ctrl+Z` path. Still no timer-driven preemption anywhere in this: control changes
+  hands only at these explicit blocking points, the same cooperative model Stage 20 established.
 - This directly overturns Stage 12's own named-permanent limitation ("no infinite/streaming
   pipelines under this design, ever") -- `yes | head` becomes possible for the first time, since
   `yes` never has to finish producing (infinite) output before `head` starts consuming it.
-- Stage 18's editor gets real job control with zero editor-side changes: since it never reads
-  `Ctrl+Z` (Stage 20's vim precedent), suspending it, doing something else at the prompt, and
+- Stage 19's editor gets real job control with zero editor-side changes: since it never reads
+  `Ctrl+Z` (Stage 21's vim precedent), suspending it, doing something else at the prompt, and
   `fg`-ing it back exercises the exact same mechanism already proven on throwaway test programs in
-  Stages 19-22 -- now against a program with real state (an open file, cursor position, unsaved
+  Stages 20-23 -- now against a program with real state (an open file, cursor position, unsaved
   edits) that must survive the round trip correctly.
 
-**Demo, two parts, mirroring Stage 18's own single end-to-end demo:**
-1. **Job control:** open Stage 18's editor on a file, make an edit, `Ctrl+Z`, run a few other
+**Demo, two parts, mirroring Stage 19's own single end-to-end demo:**
+1. **Job control:** open Stage 19's editor on a file, make an edit, `Ctrl+Z`, run a few other
    commands at the prompt (confirming the shell stayed fully responsive throughout), `fg` back in,
    confirm the edit and cursor position are exactly as left, save, and exit.
 2. **Streaming pipes:** a `yes | head -n 5`-style pipeline produces exactly 5 lines and returns
@@ -1302,7 +1373,7 @@ Stage 12 itself named as permanent.
 
 ---
 
-## Stage 24: true preemptive multitasking -- `r24_preempt`
+## Stage 25: true preemptive multitasking -- `r25_preempt`
 
 **Goal:** the one kind of context switch this whole block has deliberately avoided until now --
 forced, not voluntary. Every switch built so far (`Ctrl+Z`, a blocked pipe, `sleep`) is either the
@@ -1319,8 +1390,8 @@ single-core preemptive multitasking has never required more than one CPU, only a
 regular enough interrupt to make switching invisible.
 
 **Features:**
-- Stage 3's timer IRQ handler gains a new responsibility alongside Stage 21's deadline check: on
-  every tick (or every Nth tick, a fixed quantum), it forcibly calls Stage 19's `suspend_current()`
+- Stage 3's timer IRQ handler gains a new responsibility alongside Stage 22's deadline check: on
+  every tick (or every Nth tick, a fixed quantum), it forcibly calls Stage 20's `suspend_current()`
   on whichever slot is presently running -- even if that program never called anything, never
   blocked, never slept -- and resumes the other slot. This is the second, and last, thing that
   needs the timer's IRQ to actually reach a running program -- and unlike what Stages 10-11 assumed,
@@ -1349,7 +1420,7 @@ established capture technique -- background QEMU, redirect to a file, `kill`, th
 sidestepping the framebuffer/`Console` corruption question entirely, not because it was fixed, but
 because this demo never needs to look at the screen at all. Success is two-part, checked against
 the captured byte stream: **finely interleaved** (short alternating runs of `a`s and `b`s, not one
-long run of each in sequence -- which is exactly what Stage 19's own cooperative demo would produce
+long run of each in sequence -- which is exactly what Stage 20's own cooperative demo would produce
 instead, its second program's *entire* output landing as one uninterrupted block), and **roughly
 balanced** (close to a 50/50 split, confirming the fixed quantum is being applied evenly to both
 slots, not starving one in favor of the other).

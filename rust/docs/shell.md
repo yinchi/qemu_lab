@@ -129,7 +129,7 @@ a temporary file** under `/tmp/`, not a real pipe.
   stage's status.
 - Because the data goes through a file, a stage's whole output is written before the next stage starts
   reading it &mdash; no streaming, and it needs free disk space. This is a permanent limitation until
-  Stage 23 replaces it with real pipes between resident programs.
+  Stage 24 replaces it with real pipes between resident programs.
 
 ## Variables and assignments
 
