@@ -1,4 +1,4 @@
-//! A program's own life: its entry stub (`start.s`) and `entry!`/`entry_with_args!` macros, decoding
+//! A program's own life: its entry stub (`start.s`) and `entry!`/`entry_with_args!`/`entry_with_env!` macros, decoding
 //! `argc`/`argv` (`Args`), and ending -- `exit`, exit statuses (`Termination`, `ExitCode`), and the
 //! panic handler, which ends the program the same way.
 
@@ -162,6 +162,23 @@ macro_rules! entry_with_args {
         pub extern "C" fn main(argc: usize, argv: *const *const u8) -> ! {
             // SAFETY: `_start` (start.s) forwards these straight from the kernel's `eret`,
             // upholding `args`'s contract by construction.
+            $crate::terminate($run(unsafe { $crate::args(argc, argv) }))
+        }
+    };
+}
+
+/// Like `entry_with_args!`, and also makes the environment available: records `envp` (`x2`) for
+/// `env::var` and `env::vars`. `$run` still takes just the `Args`.
+#[macro_export]
+macro_rules! entry_with_env {
+    ($run:path) => {
+        #[unsafe(no_mangle)]
+        // Only `_start` (start.s) calls this, with the registers the kernel set up.
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
+        pub extern "C" fn main(argc: usize, argv: *const *const u8, envp: *const *const u8) -> ! {
+            // SAFETY: `_start` (start.s) forwards these straight from the kernel's `eret`,
+            // upholding `args`'s and `env::set_envp`'s contracts by construction.
+            unsafe { $crate::env::set_envp(envp) };
             $crate::terminate($run(unsafe { $crate::args(argc, argv) }))
         }
     };

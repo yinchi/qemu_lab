@@ -43,15 +43,15 @@ that starts a program from inside another can reuse the first half unchanged. It
 program's exit status, or a `LaunchError` (`Elf(ElfError)` for a file that isn't a loadable
 executable, `ArgsTooBig`) if nothing could be started.
 
-`prepare(elf_bytes, args) -> Result<PreparedProgram, LaunchError>`:
+`prepare(elf_bytes, args, env) -> Result<PreparedProgram, LaunchError>`, where `env` is the program's environment as `NAME=VALUE` strings (`launch` builds it from the shell's exported variables):
 
-1. Plans the argument layout as a dry run against `ARG_MAX` (128 KiB of stack) first, so an argument
+1. Plans the argument and environment layout as a dry run against `ARG_MAX` (128 KiB of stack) first, so a
    list that can't fit is refused before it costs a load.
 2. `elf::load(elf_bytes)` maps the ELF's `PT_LOAD` segments into the user window (only the pages they and the stack need) and
    returns its entry point.
 3. `fd::reset_for_launch()` gives the new program a fresh file descriptor table (its standard
    streams bound to whatever the shell's current frame says).
-4. Writes `args` onto the program's stack as a C-style `argc`/`argv` (see "Passing arguments to
+4. Writes `args` and `env` onto the program's stack as a C-style `argc`/`argv` and `envp` (see "Passing arguments to
    userspace programs" below for the full mechanism), producing the address that becomes the
    program's initial `SP_EL0`. This holds a `mmu::user_access()` guard, since PAN would otherwise
    forbid the kernel writing the user stack (see "Turning translation on" in [`mmu.md`](mmu.md)).
@@ -62,8 +62,8 @@ executable, `ArgsTooBig`) if nothing could be started.
    overwrite `ELR_EL1`/`SPSR_EL1` and the `eret` would go somewhere else.
 2. Sets `SPSR_EL1` to 0: EL0t with every DAIF bit *clear*, so the program runs **with interrupts
    enabled**. The `eret` itself is what unmasks them.
-3. Sets `ELR_EL1` (entry point) and `SP_EL0` (the address from `prepare`), then loads `argc`/`argv`
-   into `x0`/`x1` in the *same* inline-asm block that calls `enter_el0` -- specifically so
+3. Sets `ELR_EL1` (entry point) and `SP_EL0` (the address from `prepare`), then loads `argc`/`argv`/`envp`
+   into `x0`/`x1`/`x2` in the *same* inline-asm block that calls `enter_el0` -- specifically so
    nothing of Rust's own codegen can reuse those registers first.
 4. Once `enter_el0` "returns" (see below for what that actually means), `x0` holds the program's exit
    status, `fd::end_launch()` closes every file the program left open (finishing any writes still in
@@ -129,7 +129,7 @@ escapes handled, not just whitespace splitting -- and its redirections. A stage'
 
 `process::prepare` is where that `&[&str]` actually becomes memory a userspace program can read.
 The layout itself is worked out by a separate pure module, `exec/argplan.rs` (`argplan::plan`, host
-tested), which never touches memory; `process::push_cstr_array` then writes what it planned. Starting
+tested), which never touches memory; `process::push_strings` then writes what it planned. Starting
 from `USER_STACK_TOP` and working *downward* (the direction a stack grows), each argument's raw UTF-8
 bytes are laid out followed by a NUL terminator -- a NUL is needed here specifically because nothing
 else carries a length across the `eret` boundary that's coming up. Each string's resulting address is
@@ -138,18 +138,22 @@ array itself: one `usize` slot per recorded address plus a final `NULL` terminat
 is `NULL`, as in C), 16-byte-aligned. That array's own base address becomes the program's initial
 stack pointer (`SP_EL0`).
 
-The whole layout must fit within `ARG_MAX` (128 KiB, an eighth of the 1 MiB stack) above
-`USER_STACK_TOP - ARG_MAX`; a longer argument list is refused up front as `LaunchError::ArgsTooBig`
+The environment (Stage 17) goes the same way: its `NAME=VALUE` strings are placed below the arguments'
+strings, and the one block of pointers holds `argv[]` and its `NULL`, then `envp[]` and its `NULL`, so `envp`
+is `argv + argc + 1` slots, as on Linux. Only the block's base is aligned, and it is `argv`.
+
+The whole layout, arguments and environment together (as with Linux's `ARG_MAX`), must fit within `ARG_MAX`
+(128 KiB, an eighth of the 1 MiB stack) above `USER_STACK_TOP - ARG_MAX`; a longer list is refused up front as `LaunchError::ArgsTooBig`
 (reported as "Argument list too long"), so an absurd one can't leave the program almost no stack of
 its own. The plan is checked as a dry run *before* the ELF is loaded, so a refusal costs nothing.
 
-`argc` and the pointer array's address are then loaded into `x0`/`x1` in the same inline-asm
+`argc`, `argv` and `envp` are then loaded into `x0`/`x1`/`x2` in the same inline-asm
 block that calls `enter_el0` (`arch/context.s`), specifically so nothing in between can reuse those
-registers first. Neither `enter_el0` nor the `eret` inside it touch `x0`/`x1`, and neither does
+registers first. Neither `enter_el0` nor the `eret` inside it touch them, and neither does
 `userlib`'s `_start` before its own `bl main` -- so the exact register values `run` set
 survive, untouched, all the way to the new program's entry point.
 
-### Decoding argv (userspace side)
+### Decoding argv and envp (userspace side)
 
 On the far side of `eret`, `main` receives those same two register values as `argc: usize` and
 `argv: *const *const u8` -- a type reinterpretation, not a conversion: the kernel wrote plain
@@ -176,3 +180,10 @@ Because `Args` is a plain `Copy` iterator, a consumer can use ordinary `Iterator
 it without any special handling -- `echo` (`user/progs/src/bin/echo.rs`), the first program built
 against `entry_with_args!`, drops its own name with a plain `args.skip(1)` before printing the
 rest back.
+
+`envp` is read the same way, one step removed: a program started with `userlib::entry_with_env!` (whose
+generated `main` takes `x2` as a third argument) has the pointer stored in a static by `userlib::env`, and
+`env::var(name)` and `env::vars()` scan it on demand, splitting each `NAME=VALUE` string at its first `=`. A program
+started with `entry!` or `entry_with_args!` never records it and sees an empty environment; a binary built for a
+kernel older than Stage 17 (which leaves `x2` as whatever it was) is never affected, since nothing there calls `env`.
+The programs that use it are `env` and `printenv` (`user/progs_r17/`).

@@ -1,0 +1,19 @@
+# The programs Stage 17 adds: `env` and `printenv`, which read the environment `userlib::env` decodes. A tier of
+# its own, as the scheme in `../progs_r12/Cargo.toml` describes (a stage `rNN` builds the base tier and every
+# `progs_rMM` with MM <= NN, highest tier wins a name): earlier kernels pass no `envp`.
+[package]
+name = "progs_r17"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+abi = { path = "../abi" }
+userlib = { path = "../userlib" }
+progs = { path = "../progs" }
+progs_r12 = { path = "../progs_r12" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

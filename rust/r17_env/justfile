@@ -27,7 +27,7 @@ elf:
     bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
 
 # Builds disk.img (64 MiB FAT16): every core utility of every program tier up to this stage --
-# ../user/progs (the base tier, Stages 9-11) and ../user/progs_r12 (Stage 12) and ../user/progs_r13 (Stage 13) and ../user/progs_r15 (Stage 15) and ../user/progs_r16 (Stage 16); see
+# ../user/progs (the base tier, Stages 9-11) and ../user/progs_r12 (Stage 12) and ../user/progs_r13 (Stage 13) and ../user/progs_r15 (Stage 15) and ../user/progs_r16 (Stage 16) and ../user/progs_r17 (Stage 17); see
 # docs/progs.md -- staged into disk/bin/ as <name>.exe, tiers copied lowest first so that a later tier's
 # program replaces an earlier tier's of the same name -- the launcher tries the typed name first
 # and then name.exe, same as Cygwin's shell, so `cat` finds bin/cat.exe -- plus this stage's test
@@ -46,7 +46,7 @@ disk:
     mkdir -p disk/bin
     # Program tiers, lowest first: a later tier's binary overwrites an earlier one's of the same name.
     # A later stage lists every tier up to its own.
-    for tier in progs progs_r12 progs_r13 progs_r15 progs_r16; do
+    for tier in progs progs_r12 progs_r13 progs_r15 progs_r16 progs_r17; do
         (cd ../user/${tier} && cargo build --target ${TARGET} --release)
         for src in ../user/${tier}/src/bin/*.rs; do
             name=$(basename "$src" .rs)
@@ -115,7 +115,7 @@ lint:
     cd {{justfile_directory()}}
     cargo clippy --target ${TARGET} --release -- -D warnings
     cargo clippy --target ${TARGET} --release --features testhooks -- -D warnings
-    for crate in ../user/userlib ../user/progs ../user/progs_r12 ../user/progs_r13 ../user/progs_r15 ../user/progs_r16 test/progs; do
+    for crate in ../user/userlib ../user/progs ../user/progs_r12 ../user/progs_r13 ../user/progs_r15 ../user/progs_r16 ../user/progs_r17 test/progs; do
         (cd ${crate} && cargo clippy --target ${TARGET} --release -- -D warnings)
     done
     for crate in hosttests ../user/abi; do

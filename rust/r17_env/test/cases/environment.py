@@ -1,12 +1,12 @@
-"""Last updated: Stage 17, Step 1.
+"""Last updated: Stage 17, Step 2.
 
 The shell's variables and the initial environment. The kernel reads `/etc/environment` (plain `NAME=VALUE` lines,
 the format Linux's `pam_env` reads) once at boot, before the first prompt, into the shell's bottom frame, every variable
 exported; a missing file or a bad line is a note on the serial log, never fatal. This group boots with the harness's
 default file (`HOME=/`); `env_bad` and `env_missing` boot with a file that has bad lines and with none.
 
-Step 1 has the model but nothing that reads a variable yet (`$VAR` is Step 3, `envp` Step 2), so what is observable
-here is the boot note and what `export` and `unset` accept and refuse. The frame's own rules (which variables a child
+What is observable here is the boot note, what the environment holds at the first prompt (through `env`, Step 2's), and
+what `export` and `unset` accept and refuse; `env.py` covers what programs then see. The frame's own rules (which variables a child
 scope inherits, what a redirect leaves alone) are host tests in `frame_stack.rs`.
 """
 
@@ -17,6 +17,7 @@ def run(ctx):
     boot = s.log()
     check("boot: the environment file was read", "Environment: 1 variable(s) from /etc/environment." in boot, True)
     check("boot: nothing was skipped", "ignored" not in boot, True)
+    check("the variable is in the environment the first program gets", s.run("env"), "env\nHOME=/\n")
 
     # --- export ---
     check("export sets a variable", s.run("export FOO=bar"), "export FOO=bar\n")

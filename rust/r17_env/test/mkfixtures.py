@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Generates the test fixtures that are derived from built programs, so no binary blobs are checked in:
-malformed and oversized ELF files (including segments in the stack guard and sharing a page), made by corrupting `echo.exe`/`hello.exe`. Run by `just disk`, after
-`disk/bin/` is staged.
+malformed and oversized ELF files (including segments in the stack guard and sharing a page), made by corrupting `echo.exe`/`hello.exe`, and `bigenv.sh`, a script whose exports overflow a program's
+argument-and-environment limit. Run by `just disk`, after `disk/bin/` is staged.
 
 Usage: mkfixtures.py <bin-dir> <tests-dir>
 
-Every output is a `.exe` under `disk/tests/` (gitignored, like the test programs), except `biglines.txt`, a text file the `tail` tests read (gitignored too). The kernel must refuse
+Every output is a `.exe` under `disk/tests/` (gitignored, like the test programs), except `biglines.txt`, a text file the `tail` tests read, and `bigenv.sh` (both gitignored too). The kernel must refuse
 each malformed one with `cannot execute: Exec format error` rather than panic -- see
 `cases/launch.py` -- and run `bigpad.exe` (a valid program followed by 3 MiB of zeros, which the
 loader ignores) as it would `hello`.
@@ -54,6 +54,9 @@ def main():
     # A text file of 100000 short lines (about 1 MB): `tail` reading it from stdin must keep working past the old
     # 512 KiB buffer, and trim what it can no longer print.
     write("biglines.txt", "".join(f"line {i}\n" for i in range(1, 100_001)).encode())
+    # Five 30000-byte variables: 150000 bytes of environment, past the 128 KiB `ARG_MAX` that arguments and environment
+    # share, so nothing can be launched until they are unset (`cases/env.py`).
+    write("bigenv.sh", "".join(f"export BIG{i}={'x' * 30000}\n" for i in range(1, 6)).encode())
     # The whole file is read into the kernel heap before it is looked at, so a file past half the 16 MiB heap is
     # refused outright (`MAX_PROGRAM_SIZE`), however valid the program at its start.
     write("elf-toolargefile.exe", hello + bytes(9 * 1024 * 1024))

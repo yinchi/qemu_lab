@@ -1,5 +1,5 @@
 //! Loading and starting programs: validating and mapping an ELF (`elfparse`, `elf`), laying out
-//! `argv` on the new stack (`argplan`), and entering and leaving EL0 (`process`); and the shell state a
+//! `argv` and `envp` on the new stack (`argplan`), and entering and leaving EL0 (`process`); and the shell state a
 //! program starts with -- working directory and standard streams (`frame_stack`, `shell_state`).
 
 pub mod argplan;

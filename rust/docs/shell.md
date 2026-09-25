@@ -188,7 +188,7 @@ operations use it, deliberately not one:
 A frame is plain data with no reference to any static, so it can become a per-process structure unchanged
 when there are processes. The one stack is a static in `exec/shell_state.rs`, which also resolves paths
 against the top frame's working directory and gives each newly launched program the top frame's stream
-bindings. There is one stack, not one per program: at most one program is ever resident, so the shell's state
+bindings (and `launch` gives it the top frame's exported variables as its `envp`). There is one stack, not one per program: at most one program is ever resident, so the shell's state
 *is* the running program's state. There is deliberately no `chdir`
 *syscall* yet, since with one global stack a program's `chdir` would change the shell's directory too.
 

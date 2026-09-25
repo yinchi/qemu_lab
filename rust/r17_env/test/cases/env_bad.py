@@ -1,4 +1,4 @@
-"""Last updated: Stage 17, Step 1.
+"""Last updated: Stage 17, Step 2.
 
 A `/etc/environment` with bad lines: each is skipped and reported on the serial log with its line number, the good
 ones are kept, a repeated name takes its last value, and the shell starts normally.
@@ -18,4 +18,5 @@ def run(ctx):
     ]:
         check(note.split(": ", 2)[2], note in boot, True)
     check("the good lines were kept (HOME twice counts once)", "Environment: 2 variable(s) from /etc/environment." in boot, True)
+    check("what was kept is what programs see", s.run("env"), "env\nHOME=/x\nTZ=UTC\n")
     check("the shell started anyway", s.run("echo ok"), "echo ok\nok\n")

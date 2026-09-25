@@ -1,12 +1,13 @@
 //! Shared `no_std` runtime for every EL0 binary this roadmap builds from Stage 9 onward (the
-//! programs in `../progs`, and later the editor). Five modules, all re-exported flat so programs
-//! write `userlib::write`, `userlib::exit`, `userlib::entry!`, ...:
+//! programs in `../progs`, and later the editor). Six modules, re-exported flat (all but `env`, kept
+//! as `userlib::env::var`) so programs write `userlib::write`, `userlib::exit`, `userlib::entry!`, ...:
 //!
 //! - `syscall`: the raw `svc` and the `syscall!` macro -- the mechanism, crate-private.
 //! - `io`: everything a program does with an fd or a path (`read`, `write`, `open`, `close`,
 //!   `getdents`, `chmod`).
 //! - `time`: the clock (`clock_gettime`, `time`).
 //! - `memory`: the program break (`brk`); with the `heap` feature, `heap` is a global allocator on it.
+//! - `env`: the program's environment (`env::var`, `env::vars`), from `envp`.
 //! - `process`: the program's own life -- entry stub and macros, `argc`/`argv`, `exit` and exit
 //!   statuses, the panic handler.
 
@@ -16,6 +17,7 @@
 // modules that follow it.
 #[macro_use]
 mod syscall;
+pub mod env;
 mod io;
 mod memory;
 mod process;

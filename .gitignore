@@ -5,6 +5,7 @@ rust/**/target/
 **/disk/bin/*.exe
 **/disk/tests/*.exe
 **/disk/tests/biglines.txt
+**/disk/tests/bigenv.sh
 **/disk/tmp/
 # Generated disk images are build products from r12_shell onward (`just disk` rebuilds them,
 # byte-for-byte reproducibly). r06-r11's were committed before that decision and stay tracked.

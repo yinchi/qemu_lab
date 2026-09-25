@@ -2,6 +2,9 @@
 //! may run, running it, and reporting what went wrong (or its nonzero exit status) -- via
 //! `shell_err` (`shell/mod.rs`), same as any other shell-reported error, so it is redirectable.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use abi::errno::{E2BIG, EACCES, EISDIR, ENOENT, ENOEXEC, ENOTDIR, errmsg};
 use abi::fs::ATTR_EXEC;
 use hadris_fat::sync::{FatVolume, FileEntry};
@@ -45,7 +48,7 @@ const ELF_MAGIC: &[u8] = b"\x7fELF";
 const SCRIPT_PROBE_LEN: usize = 128;
 
 /// Runs the program `argv[0]` names -- see `find_program` -- with `argv` as its whole argument
-/// list. `depth` is `run_line`'s script-nesting count, passed to `run_script_content` if `argv[0]`
+/// list and the shell's exported variables as its environment. `depth` is `run_line`'s script-nesting count, passed to `run_script_content` if `argv[0]`
 /// turns out to be a script rather than a program (see below). Reports (in bash's wording) if:
 ///
 /// - The program is not found (`command not found`).
@@ -59,7 +62,7 @@ const SCRIPT_PROBE_LEN: usize = 128;
 /// real child shell process (`./script` -- unlike `sh script`/`source script`, in `builtins.rs`, this
 /// path already has the exec bit checked, so nothing further is needed there); genuine binary garbage
 /// still reports `cannot execute binary file: Exec format error`. A script has no positional
-/// parameters (there are no variables yet), so extra arguments are rejected the same way `sh` rejects
+/// parameters, so extra arguments are rejected the same way `sh` rejects
 /// them, not silently ignored.
 ///
 /// Returns `None` if no program actually ran (not found, not a file, not executable, too large,
@@ -105,7 +108,14 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> Option<i32
         run_as_script_fallback(name, &file_bytes, argv, depth);
         return None;
     }
-    match process::run_program(&file_bytes, argv) {
+    // The program's environment: what the shell has exported, as `NAME=VALUE` strings.
+    let env: Vec<String> = shell_state::frames()
+        .top()
+        .exported()
+        .map(|(name, value)| alloc::format!("{name}={value}"))
+        .collect();
+    let env: Vec<&str> = env.iter().map(String::as_str).collect();
+    match process::run_program(&file_bytes, argv, &env) {
         Ok(code) => Some(code),
         Err(e) if e.errno() == E2BIG => {
             shell_err(&alloc::format!("{name}: {}", errmsg(E2BIG)));

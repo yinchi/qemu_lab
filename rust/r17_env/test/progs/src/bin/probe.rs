@@ -19,6 +19,8 @@
 //!   probe getdents-small  `getdents` with buffers under one record (`EINVAL`), on a file (`ENOTDIR`), and
 //!                      with exactly one record (which must still work after the refused calls)
 //!   probe args ...      prints argc/argv exactly as received, plus what the stack layout guarantees
+//!   probe env           the `envp` layout: how many variables, that the array ends in NULL and starts right after
+//!                      `argv`'s NULL, and the stack pointer's alignment; the variables themselves are `env`'s job
 //!   probe exit N        exits with status N, passed to the kernel unmasked (so N > 255 tests the mask)
 //!   probe frag          one line of 200 one-digit `write!` fragments (stdout buffer: one console flush)
 //!   probe frag-raw      the same line as 200 raw `write` syscalls (one console flush each)
@@ -66,13 +68,14 @@ fn raw(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> isize {
 #[unsafe(no_mangle)]
 // Only `_start` calls this, with the registers the kernel set up.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn main(argc: usize, argv: *const *const u8) -> ! {
-    // SAFETY: `_start` forwards the kernel's argc/argv untouched (see userlib's `args`).
-    let code = run(unsafe { userlib::args(argc, argv) }, argc, argv);
+pub extern "C" fn main(argc: usize, argv: *const *const u8, envp: *const *const u8) -> ! {
+    // SAFETY: `_start` forwards the kernel's argc/argv/envp untouched (see userlib's `args`, `env`).
+    unsafe { userlib::env::set_envp(envp) };
+    let code = run(unsafe { userlib::args(argc, argv) }, argc, argv, envp);
     userlib::exit(code)
 }
 
-fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
+fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *const *const u8) -> i32 {
     let _ = args.next(); // argv[0]
     let mut out = Fd(1);
     match args.next() {
@@ -125,6 +128,10 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8) -> i32 {
         }
         Some("args") => {
             print_args(&mut out, argc, argv);
+            0
+        }
+        Some("env") => {
+            print_env(&mut out, argc, argv, envp);
             0
         }
         Some("frag") => {
@@ -368,6 +375,20 @@ fn print_args(out: &mut Fd, argc: usize, argv: *const *const u8) {
     let _ = writeln!(out, "argv[argc] is NULL: {}", yes(terminator.is_null()));
     let _ = writeln!(out, "argv is 16-byte aligned: {}", yes((argv as usize).is_multiple_of(16)));
     let _ = writeln!(out, "sp is 16-byte aligned: {}", yes(sp.is_multiple_of(16)));
+}
+
+/// What the stack layout guarantees about `envp` (see `print_args` for `argv`).
+fn print_env(out: &mut Fd, argc: usize, argv: *const *const u8, envp: *const *const u8) {
+    let mut count = 0;
+    // SAFETY: the kernel guarantees a NULL-terminated array, so this stops at the terminator.
+    while !unsafe { *envp.add(count) }.is_null() {
+        count += 1;
+    }
+    let yes = |b: bool| if b { "yes" } else { "no" };
+    let _ = writeln!(out, "envc={count}");
+    let _ = writeln!(out, "envp[envc] is NULL: {}", yes(unsafe { *envp.add(count) }.is_null()));
+    let _ = writeln!(out, "envp directly follows argv's NULL: {}", yes(envp == unsafe { argv.add(argc + 1) }));
+    let _ = writeln!(out, "vars() agrees: {}", yes(userlib::env::vars().count() == count));
 }
 
 /// User-window addresses (see the kernel's `platform/base_addresses.rs`) that are not backed by memory
