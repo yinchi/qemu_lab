@@ -14,9 +14,10 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 6 | Pipeline stages run in a subshell (a discarded copy of the shell's frame) | done |
 | 7 | `$HOME` for `cd` and for where the init shell starts, `$TZ` for `date` and `stat` | done |
 | 8 | `$PATH`: the directories a bare command name is looked up in | done |
-| 9 | `$PS1`: a limited prompt string (working directory) | planned |
-| 10 | `~/.profile`: a per-user start-up script, run by the init shell | planned |
-| 11 | Docs, roadmap, regression sweep | planned |
+| 9 | Drop the `.exe` naming: programs are `bin/cat`, not `bin/cat.exe` | done |
+| 10 | `$PS1`: a limited prompt string (working directory) | planned |
+| 11 | `~/.profile`: a per-user start-up script, run by the init shell | planned |
+| 12 | Docs, roadmap, regression sweep | planned |
 
 ## Context
 Stage 17 (renumbered from old 16; see `ROADMAP.md`, "Before Capstone 1") gives the shell POSIX-shaped variables and gives programs a real
@@ -26,7 +27,7 @@ reading `$TZ` instead of the hard-coded `America/Toronto` (`LOCAL_ZONE` in `user
 
 The work does not split cleanly into "copy / OS / user programs": the kernel's `envp` can only be observed through a user program,
 expansion is pure shell logic independent of `envp`, assignments need both the lexer and the expander, and retiring `exit N` is ~54
-mechanical test edits best reviewed on their own. So it is a copy plus ten working steps, one commit each (the user commits; I stage after each step).
+mechanical test edits best reviewed on their own. So it is a copy plus eleven working steps, one commit each (the user commits; I stage after each step).
 
 ## Decisions (settled)
 - **Variables are POSIX-shaped**: a frame holds shell variables, each with an `exported` flag. `NAME=value` on its own sets a shell variable (keeping its
@@ -181,7 +182,7 @@ inherits everything.
   `run_pipeline` wraps each stage's `run_segment_with` in it; the temp-file opens stay outside, in the shell's frame.
 - Tests: a subshell section in `pipes.py` (`echo $FOO | unset FOO` leaves `FOO` and the stage still read the unexported `FOO`; unset first/last stage; `cd`, `export`, `A=1`, `source` confined; the lone forms,
   a lone command with a redirect included, still change the shell; an earlier stage's assignment does not reach a later stage). 911 checks in all.
-- Docs: `shell.md` (Pipelines, Variables and assignments' scope note, the frame-stack section now lists three operations). No roadmap change yet; Step 11's Stage 17 "As built" records it, and Stage 24 is
+- Docs: `shell.md` (Pipelines, Variables and assignments' scope note, the frame-stack section now lists three operations). No roadmap change yet; Step 12's Stage 17 "As built" records it, and Stage 24 is
   unchanged (it replaces the temp-file pipes, not the isolation).
 
 ## Step 7 -- `$HOME` and `$TZ`
@@ -228,7 +229,29 @@ Today `launch.rs::find_program` looks a bare name up in `/bin` only (as `name`, 
 - The tests' `run_status` (`echo $?`) needs `echo` on `PATH`, so a check made with the shell's own `PATH` empty cannot read a status back; `path.py` uses the message there (`not_found_here`).
 - `disk/etc/environment` gains `PATH=/bin`. New `path` group; 1007 checks in all.
 
-## Step 9 -- `$PS1` (limited)
+## Step 9 -- drop the `.exe` naming
+Stage 11 installed programs as `bin/<name>.exe` and had the launcher try `name` then `name.exe` (Cygwin's order), calling the extension "a naming convention that makes the files recognizable as programs to a host inspecting
+`disk.img`, not something the loader consults" -- what makes a file executable is the exec attribute bit. With `$PATH` (Step 8) the convention became a cost: a bare name gets the fallback and a path does not (`hello` works,
+`/bin/hello` does not), every `PATH` directory is probed twice, and `ls /bin` shows `cat.exe`. Decision: **drop it**, for this stage and after; completed stages `r09`-`r16` keep theirs (each has its own `justfile`), and the Stage 11
+roadmap text stays as history.
+- `src/shell/path_search.rs` and `launch.rs::find_program`: one candidate per directory, `dir/name`; the module doc and tests lose the `.exe` half (a name is looked up exactly as typed, so `cat.exe` no longer finds `cat`).
+- `justfile` `disk`: tier binaries staged as `disk/bin/<name>` and test programs as `disk/tests/<name>`; `rm -f disk/tests/*.exe` becomes an explicit clear of the generated names (and any stale `*.exe` from earlier builds).
+  `test/mkfixtures.py`: reads `bin/echo` and `bin/hello`, writes `bigpad` and `elf-*` without the extension. A new `rust/r17_env/.gitignore` lists the generated files explicitly (the root `.gitignore`'s `*.exe`
+  patterns are what the older stages rely on, so it is left as is).
+- Tests: strip `.exe` from every program name (about 160 mentions; `tests/probe.exe` -> `tests/probe`, `bin/hello.exe` -> `bin/hello`, the `elf-*.exe` fixtures); `path.py`'s cases about the extension become cases about
+  an *exact* name (`cat.exe` is not found, a file named `tool.exe` is run only as `tool.exe`); `core_utils`' `ls /bin` expectation is derived from the host's listing, so it follows.
+- Docs: `progs.md` (the intro sentence), `shell.md` (Program lookup), `launching_programs.md`, `tests.md`, `test/README.md`; a note in the Stage 17 "As built".
+
+**As built (Step 9).** As planned, with these specifics:
+- `path_search::candidates` yields `dir/name` per directory; `find_program` is otherwise unchanged. A name is exact: `hello.exe` and `cat.exe` are `command not found` now, and a file called `dotted.exe` is run as `dotted.exe`.
+- `justfile` `disk` stages `disk/bin/<name>` and `disk/tests/<name>` (clearing the generated names, plus any stale `*.exe`, first); `mkfixtures.py` reads `bin/echo` and `bin/hello` and writes `bigpad` and `elf-*`.
+  A new `rust/r17_env/.gitignore` lists the generated files (`/disk/bin/`, `bigpad`, `elf-*`, and the five test programs).
+- About 200 `.exe` mentions were stripped from `test/cases/*.py`, `test/README.md`, the harness comment and `probe.rs`'s usage text by script; the by-hand parts were `core_utils`' `ls -F bin` expectation and its `HELLO   EXE`
+  directory-entry lookup (now the 11-byte short name `HELLO` plus six blanks), `user_progs`' `ls` of `/bin`, and `path.py`, whose extension cases became exact-name cases. 1009 checks in all.
+- Two test QEMU processes (`env_bad` and `home_bad` groups of an earlier, failed run) had outlived it by almost three hours; killed. A failed run can leave its sessions behind, which costs CPU and can make the next run flaky:
+  look for them (`ps -eo pid,etime,args | grep qemu-system`) after a run that raised.
+
+## Step 10 -- `$PS1` (limited)
 The shell starts in `$HOME` and the prompt is a fixed `> `, so `pwd` is the only way to see where you are. A prompt variable fixes that, in a small form.
 - `src/shell/prompt.rs` (pure, host-tested): `render(ps1: Option<&str>, cwd: &str) -> String`. Literal text with four backslash escapes: `\w` the working directory, `\W` its last component (`/` for the root), `\$` a `#` (there is
   only root), `\\` a backslash. Any other backslash sequence stays as typed. **No `$` expansion and no `\n`** (bash goes further; a newline would break the line editor's one-prompt-row assumption). Control
@@ -241,7 +264,7 @@ The shell starts in `$HOME` and the prompt is a fixed `> `, so `pwd` is the only
   wide characters, a prompt long enough to wrap the row with editing (Home/End/backspace) still redrawing correctly, history recall unaffected, and `PS1` set in `/etc/environment` in effect at the first prompt.
 - Docs: `shell.md` (Starting up, the prompt paragraph in the line-editing text), `console.md` if it states the prompt is constant.
 
-## Step 10 -- `~/.profile`
+## Step 11 -- `~/.profile`
 `/etc/environment` is data: `NAME=VALUE`, no expansion, so it cannot say `PATH=$PATH:/root/bin`. A per-user start-up script can, because the shell now has assignments, `$VAR` and `source`. Decision: a script (a plain
 second environment file adds nothing over `export A=b` lines in one), following Linux, where `/etc/environment` stays a system-wide data file and the shell's profile is a script layered on top.
 - `src/shell/mod.rs` `start_up`: after `enter_home` (so the shell is in `$HOME`, as after a login) and before the first prompt, run `$HOME/.profile` if it exists -- `run_script_content(content, false, 0)`, **unscoped**, so its
@@ -249,14 +272,14 @@ second environment file adds nothing over `export A=b` lines in one), following 
   A file that is not text, is too large (64 KiB, as `/etc/environment`) or is a directory: one serial note and it is skipped. A failing line reports and the script goes on, as any script does; that output, and any a command in it
   prints, reaches the console before the first prompt.
 - Straight-line only: the shell has no control flow. `$?` after start-up is the profile's last command's, which is reset to 0 before the first prompt so a broken profile does not show in `echo $?` (decide when implementing).
-- `disk/root/.profile` ships a default: a comment header and, if Step 8/9 want them there, `PATH`/`PS1` lines (kept commented so the general image's behaviour is the environment file's). Test groups have no profile unless a
+- `disk/root/.profile` ships a default: a comment header and, if Steps 8 and 10 want them there, `PATH`/`PS1` lines (kept commented so the general image's behaviour is the environment file's). Test groups have no profile unless a
   module supplies one: `PROFILE = "..."` (like `ENVIRONMENT`), written to `$HOME/.profile` in the group's image copy by the harness (`set_profile`), `None` removes it.
 - Tests (`profile.py`, its own group, `HOME=/tests`): assignments and `export`s in it are in effect at the first prompt (`echo $X`, `printenv`); `PATH=$PATH:...` (expansion works); a `cd` in it sticks; a bad line is
   reported and the rest still run; no file / a directory named `.profile` / an empty file are all silent or noted as above and the shell starts; output from a command in it appears before the first prompt (harness reads the
   boot log); `./script`-style isolation is *not* applied (it is not a scope); `PS1` set there shows at the first prompt.
 - Docs: `shell.md` "Starting up" (the order is now environment, `$HOME`, profile, prompt), `filesystem.md` (`/root/.profile`), `tests.md` (`PROFILE`).
 
-## Step 11 -- docs, roadmap, sweep
+## Step 12 -- docs, roadmap, sweep
 `docs/shell.md` (variables, assignment, `export`, expansion, `$?`, the retired line, `PATH`, `PS1`), `docs/progs.md` (`env`, `printenv`, `date`/`stat` and `$TZ`), `docs/launching_programs.md` (`envp` layout
 and `x2`), `docs/filesystem.md` (`/etc/environment`, `/root`), `docs/tests.md` (environment-file injection, `ENVIRONMENT`), repoint `docs/*` from `r16_brk` to `r17_env`, `ROADMAP.md` Stage 17
 "As built" (and the `/etc/environment` + `/root` + `.profile` decisions; a persistent `/root` mount is *not* part of this stage and is raised separately), `just check-docs`, `just lint`. Regression: `r16_brk`, `r15_large_binaries`, ... `r11_busybox` (userlib and `progs` are shared:

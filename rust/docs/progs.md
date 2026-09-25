@@ -5,8 +5,10 @@ package, `user/progs/` (built by every stage from Stage 9 on, sharing one `Cargo
 helpers in `src/lib.rs`); from Stage 12, `user/progs_r12/` holds this stage's own additions and overrides (a
 program that needs the working directory `progs/` predates, or a newer syscall an earlier stage's kernel doesn't
 have). `just disk` in a stage's directory builds every tier it uses and stages them into that stage's `disk/bin/`
-as `<name>.exe`, lowest tier first, so a later tier's binary of the same name replaces an earlier one's -- the
-launcher tries the typed name first and then `name.exe`, so `cat` finds `bin/cat.exe`. This table documents
+as `<name>`, lowest tier first, so a later tier's binary of the same name replaces an earlier one's -- and the
+launcher looks a name up exactly as typed (`cat` is `bin/cat`). Stages 9-16 installed them as `<name>.exe` and
+tried `name.exe` after the bare name, Cygwin's way; the extension was only a convention for a host looking at the
+image, and Stage 17 dropped it. This table documents
 observable behavior per stage, not which package a program's source happens to live in. (`userlib`,
 `user/userlib/`, is the runtime underneath them: entry point, syscall wrappers, `Args`, and from Stage 17 `env::var`/`env::vars` for a program started with `entry_with_env!`.) From Stage 17, `user/progs_r17/` holds `env` and `printenv`. Programs are started by the
 shell: [`shell.md`](shell.md) describes how a command line (redirections, pipes, scripts) reaches them, and
@@ -93,7 +95,7 @@ option is refused with a message and exit 1 (worded as under "Errors").
 | `env` | 17 | `env` (POSIX and GNU also run a command in a changed environment: `env NAME=VALUE cmd`, `-i`, `-u`) | prints the environment the shell gave it, one `NAME=VALUE` line per exported variable, in the order they were first set | every option and operand (`env: extra operand 'x'`): the shell's own `NAME=VALUE cmd` (Stage 17) is how a command runs in a changed environment |
 | `printenv` | 17 | `printenv [NAME]...` (GNU coreutils; not POSIX) | with no operand, the whole environment like `env`; otherwise each named variable's value on a line of its own, and exit status 1 if any name is not set (which prints nothing for it) | options; a `NAME` containing `=` is simply never set |
 
-One footgun, same as on Linux: `chmod -x bin/chmod.exe` locks `chmod` out of running until the bit is restored from the
+One footgun, same as on Linux: `chmod -x bin/chmod` locks `chmod` out of running until the bit is restored from the
 host (`disk.img` can be rebuilt with `just disk`).
 
 ## Testing

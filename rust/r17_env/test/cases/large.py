@@ -23,32 +23,32 @@ def faults(out):
 
 def run(ctx):
     s, check = ctx.s, ctx.check
-    for name in ["bigimage.exe", "probe.exe", "elf-hugebss.exe", "elf-toolargefile.exe"]:
+    for name in ["bigimage", "probe", "elf-hugebss", "elf-toolargefile"]:
         s.run(f"chmod +x tests/{name}")
 
     # --- an image bigger than the old window runs, and every part of it is right ---
     check("an ~11 MiB image runs: .data copied in, .rodata readable, .bss zero and writable",
-          s.run("tests/bigimage.exe"), "tests/bigimage.exe\n" + BIGIMAGE)
+          s.run("tests/bigimage"), "tests/bigimage\n" + BIGIMAGE)
     check("...and a second run sees a fresh .bss (the first run wrote every page of it)",
-          s.run("tests/bigimage.exe"), "tests/bigimage.exe\n" + BIGIMAGE)
+          s.run("tests/bigimage"), "tests/bigimage\n" + BIGIMAGE)
 
     # --- none of it outlives the program: the next program runs with only what it needs ---
-    s.run("tests/bigimage.exe")
+    s.run("tests/bigimage")
     def poke(addr):
-        return s.run(f"tests/probe.exe poke {addr}")
-    s.run("tests/bigimage.exe")
+        return s.run(f"tests/probe poke {addr}")
+    s.run("tests/bigimage")
     check("the big program's .data is unmapped for the next program", faults(poke(BASE + 0x20_0000)), True)
-    s.run("tests/bigimage.exe")
+    s.run("tests/bigimage")
     check("...and its .bss, deep in what it was given", faults(poke(BASE + 0x80_0000)), True)
-    s.run("tests/bigimage.exe")
+    s.run("tests/bigimage")
     check("...and the last page it was given", faults(poke(BASE + 0xAF_F000)), True)
     check("a small program still works, and reads its own code", "read" in poke(BASE), True)
 
     # --- what is still refused ---
     check("hello after all that", s.run("hello"), "hello\nhello from userspace\n")
     check("a segment whose memory cannot fit under the ceiling is refused",
-          s.run("tests/elf-hugebss.exe"), "tests/elf-hugebss.exe\ntests/elf-hugebss.exe: cannot execute: Exec format error\n")
+          s.run("tests/elf-hugebss"), "tests/elf-hugebss\ntests/elf-hugebss: cannot execute: Exec format error\n")
     check("a file too big for the kernel's heap is refused, not a kernel panic",
-          s.run("tests/elf-toolargefile.exe"),
-          "tests/elf-toolargefile.exe\ntests/elf-toolargefile.exe: cannot execute: Exec format error\n")
+          s.run("tests/elf-toolargefile"),
+          "tests/elf-toolargefile\ntests/elf-toolargefile: cannot execute: Exec format error\n")
     check("shell alive", s.run("echo ok"), "echo ok\nok\n")

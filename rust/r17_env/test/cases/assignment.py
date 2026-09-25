@@ -14,7 +14,7 @@ ENVIRONMENT = "HOME=/\nSP=x  y\n"
 
 def run(ctx):
     s, check = ctx.s, ctx.check
-    s.run("chmod +x tests/probe.exe")
+    s.run("chmod +x tests/probe")
 
     def echo(line, printed):
         check(line, s.run(line), f"{line}\n{printed}\n")
@@ -71,7 +71,7 @@ def run(ctx):
     check("...is set", s.run("printenv A"), "printenv A\n\n")
     body = lambda out: out.split("\n", 1)[1]  # what the program printed, without the echoed command line
     check("other commands still split: the arguments are `A=x` and `y`",
-          body(s.run("tests/probe.exe args A=$SP")), body(s.run("tests/probe.exe args A=x y")))
+          body(s.run("tests/probe args A=$SP")), body(s.run("tests/probe args A=x y")))
     s.run("unset FOO A B")
 
     # --- several, each seeing the ones before it ---

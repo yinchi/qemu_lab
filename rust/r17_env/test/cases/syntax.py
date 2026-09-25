@@ -12,7 +12,7 @@ while the prompt survives.
 
 def run(ctx):
     s, check = ctx.s, ctx.check
-    s.run("chmod +x tests/probe.exe")  # self-sufficient, same reason as cwd.py's own copy of this line
+    s.run("chmod +x tests/probe")  # self-sufficient, same reason as cwd.py's own copy of this line
 
     def echo(line, output):
         check(f"echo: {line}", s.run(line), f"{line}\n{output}\n")
@@ -34,7 +34,7 @@ def run(ctx):
     echo("echo a'b c'd", "ab cd")
 
     # --- an empty argument is still an argument, and arrives as one ---
-    out = s.run('tests/probe.exe args "" x')
+    out = s.run('tests/probe args "" x')
     check("an empty quoted word is an argument", ("argc=4" in out, 'argv[2]=""' in out, 'argv[3]="x"' in out),
           (True, True, True))
 

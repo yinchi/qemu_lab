@@ -9,7 +9,7 @@ described in [`docs/tests.md`](../../docs/tests.md); `just check-docs` (`check_d
 ## Test programs
 
 The test-only EL0 programs in `progs/`, a separate Cargo package built by `just disk` and staged on the image as
-`/tests/<name>.exe`:
+`/tests/<name>`:
 
 | Program | Purpose |
 |---|---|

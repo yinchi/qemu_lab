@@ -17,14 +17,14 @@ ENVIRONMENT = (
 
 def run(ctx):
     s, check = ctx.s, ctx.check
-    s.run("chmod +x tests/probe.exe")
+    s.run("chmod +x tests/probe")
 
     def echo(line, printed):
         check(line, s.run(line), f"{line}\n{printed}\n")
 
     def args(line):
-        """The arguments after `args` that `tests/probe.exe args ...` got."""
-        out = s.run("tests/probe.exe args " + line)
+        """The arguments after `args` that `tests/probe args ...` got."""
+        out = s.run("tests/probe args " + line)
         return [l.split("=", 1)[1] for l in out.split("\n") if l.startswith("argv[") and "]=" in l and not l.startswith(("argv[0]", "argv[1]"))]
 
     # --- a variable is replaced by its value ---
@@ -92,13 +92,13 @@ def run(ctx):
     check("after a failing program", s.run("false"), "false\n")
     echo("echo $?", "1")
     echo("echo $?", "0")  # ...and the `echo` itself succeeded
-    out = s.run("tests/probe.exe poke 0")
+    out = s.run("tests/probe poke 0")
     check("after a fault", "Segmentation fault" in out, True)
     echo("echo $?", "139")
     check("after a command that is not found", s.run("nosuchcommand"), "nosuchcommand\nnosuchcommand: command not found\n")
     echo("echo $?", "127")
-    check("...also given as a path", s.run("tests/nosuch.exe"),
-          "tests/nosuch.exe\ntests/nosuch.exe: No such file or directory\n")
+    check("...also given as a path", s.run("tests/nosuch"),
+          "tests/nosuch\ntests/nosuch: No such file or directory\n")
     echo("echo $?", "127")
     check("after a file with no exec bit", s.run("tests/hello.txt"), "tests/hello.txt\ntests/hello.txt: Permission denied\n")
     echo("echo $?", "126")

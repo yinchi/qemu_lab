@@ -23,7 +23,7 @@ flowchart TD
 ## The volume
 
 - **The image.** `just disk` builds a 64 MiB FAT16 image from the stage's `disk/` directory
-  (`folder_to_img.sh`: `mkfs.fat` plus `mtools`), so `disk/bin/cat.exe` lands at `/bin/cat.exe`. The volume
+  (`folder_to_img.sh`: `mkfs.fat` plus `mtools`), so `disk/bin/cat` lands at `/bin/cat` (`cat.exe` before Stage 17). The volume
   serial and file timestamps are pinned, so the same inputs give a byte-identical image. The layout the shell
   relies on is `/bin` (programs) and `/tmp` (pipeline temp files; the shell needs it to exist); the image also
   carries `/tests` (test programs and fixtures) and whatever else is in `disk/`.
@@ -117,7 +117,7 @@ runs at a time, and the shell never reads and writes one path at once. What it d
 - `unlink` and `rename` do not look at open fds either.
 - FAT has no inodes, so there is no Unix behaviour to imitate, where an open file keeps its old contents after
   it is truncated or unlinked. The options are refusal or stale data.
-- A running program does not hold its `.exe` open (the launcher reads the whole file into memory), so
+- A running program does not hold its file open (the launcher reads the whole file into memory), so
   overwriting a running program's file is harmless.
 
 **The fix, for Stage 20** (when two programs can be resident, so the interference becomes reachable):

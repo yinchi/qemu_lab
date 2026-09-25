@@ -13,10 +13,10 @@ STACK_BOTTOM = BASE + WINDOW - 0x10_0000
 GUARD_BOTTOM = STACK_BOTTOM - 0x1_0000
 
 MALFORMED = {
-    "elf-inguard.exe": "a segment in the guard",
-    "elf-instack.exe": "a segment in the stack",
-    "elf-hugebss.exe": "a segment whose memory does not fit under the ceiling",
-    "elf-sharepage.exe": "two segments sharing a page",
+    "elf-inguard": "a segment in the guard",
+    "elf-instack": "a segment in the stack",
+    "elf-hugebss": "a segment whose memory does not fit under the ceiling",
+    "elf-sharepage": "two segments sharing a page",
 }
 
 
@@ -31,11 +31,11 @@ def run(ctx):
     check("boot: MMU on, with WXN and stack alignment checks", "MMU enabled." in boot and "MMU hardening: WXN, stack alignment checks" in boot, True)
     check("boot: PAN on (QEMU's -cpu max has it)", "checks, PAN." in boot, True)
 
-    for name in ["probe.exe", "overflow.exe"] + list(MALFORMED):
+    for name in ["probe", "overflow"] + list(MALFORMED):
         s.run(f"chmod +x tests/{name}")
 
     def probe(cmd, addr=None):
-        return s.run(f"tests/probe.exe {cmd}" + (f" {addr}" if addr is not None else ""))
+        return s.run(f"tests/probe {cmd}" + (f" {addr}" if addr is not None else ""))
 
     # --- what a program may touch ---
     check("stack: the top is usable", "wrote" in probe("poke-w", BASE + WINDOW - 8), True)
@@ -59,7 +59,7 @@ def run(ctx):
     check("1100 KiB runs off the stack and faults", faults(probe("stack", 1100)), True)
 
     # --- T3.1: unbounded recursion stops at the guard; nothing else is disturbed ---
-    out = s.run("tests/overflow.exe")
+    out = s.run("tests/overflow")
     check("overflow: faults at the guard", faults(out) and "overflowing" in out, True)
     check("overflow: fault address is just below the stack",
           f"address {STACK_BOTTOM - 0x1000 + 0x10:#x}" in out or "address 0x45eff" in out, True)
@@ -73,7 +73,7 @@ def run(ctx):
 
     # --- a kernel that touches user memory checks first: bad pointers are EFAULT, never a kernel fault ---
     check("syscalls refuse pointers into unmapped or read-only memory", probe("user-ptrs"),
-          "tests/probe.exe user-ptrs\n"
+          "tests/probe user-ptrs\n"
           "write from the gap: -14\nwrite from the guard: -14\n"
           "write running off the top of the stack: -14\n"
           "read into read-only code: -14\nread into the guard: -14\n"

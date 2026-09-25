@@ -7,14 +7,14 @@ sticks under a redirect, redirections apply strictly left to right (order matter
 error -- a failed redirect open, or the command itself -- is reported through whichever redirects on
 the same line already succeeded, exactly like a program's own stderr.
 
-Runs from `/tests`, where the fixtures and `probe.exe` live; returns to `/` at the end. Leaves several
+Runs from `/tests`, where the fixtures and `probe` live; returns to `/` at the end. Leaves several
 small files behind (`f`, `g`, `e`, `o`, `both.txt`, `only_out.txt`, `shared.txt`, `lone.txt`, `newappend.txt`) -- `verify_disk`
 checks a couple of them straight off the image, once QEMU has exited.
 """
 
 def run(ctx):
     s, check = ctx.s, ctx.check
-    s.run("chmod +x tests/probe.exe")  # self-sufficient, same reason as cwd.py's own copy of this line
+    s.run("chmod +x tests/probe")  # self-sufficient, same reason as cwd.py's own copy of this line
 
     check("start from /tests", s.run("cd /tests"), "cd /tests\n")
 
@@ -76,32 +76,32 @@ def run(ctx):
 
     # --- T8.5b: stderr redirection, `>&`, and that redirect order matters ---
     # A bare name is only ever found in /bin (see cwd.py's "a bare name is not looked up in the
-    # working directory"), so `probe.exe` here -- run from /tests -- has to be `./probe.exe`.
+    # working directory"), so `probe` here -- run from /tests -- has to be `./probe`.
     # `probe interleave` writes "OUT" (fd 1, no newline), then "ERR" (fd 2, no newline), then a
     # newline (fd 1) -- so whichever stream(s) reach the console show up concatenated on one line.
     check("plain: both streams reach the console, interleaved in write order",
-          s.run("./probe.exe interleave"), "./probe.exe interleave\nOUTERR\n")
+          s.run("./probe interleave"), "./probe interleave\nOUTERR\n")
     check("> f alone: only stdout moves, ERR still on the console",
-          s.run("./probe.exe interleave > only_out.txt"), "./probe.exe interleave > only_out.txt\nERR\n")
+          s.run("./probe interleave > only_out.txt"), "./probe interleave > only_out.txt\nERR\n")
     check("only_out.txt holds just OUT", s.run("cat only_out.txt"), "cat only_out.txt\nOUT\n")
     check("> f 2>&1: both move to f, sharing its position",
-          s.run("./probe.exe interleave > both.txt 2>&1"), "./probe.exe interleave > both.txt 2>&1\n")
+          s.run("./probe interleave > both.txt 2>&1"), "./probe interleave > both.txt 2>&1\n")
     check("both.txt holds OUT then ERR then the newline, in write order",
           s.run("cat both.txt"), "cat both.txt\nOUTERR\n")
     check("2>&1 > f: order reversed -- stderr dups the *old* stdout (the console), only stdout moves",
-          s.run("./probe.exe interleave 2>&1 > only_out.txt"),
-          "./probe.exe interleave 2>&1 > only_out.txt\nERR\n")
+          s.run("./probe interleave 2>&1 > only_out.txt"),
+          "./probe interleave 2>&1 > only_out.txt\nERR\n")
     check("only_out.txt again holds just OUT (truncated fresh)",
           s.run("cat only_out.txt"), "cat only_out.txt\nOUT\n")
 
     # A file shared by two fds (`2>&1`) stays open until the last reference goes: closing fd 1 must
     # not destroy what fd 2 (and the shell's own binding) still hold.
     check("program closes stdout under > f 2>&1: stderr still reaches f",
-          s.run("./probe.exe close-out > shared.txt 2>&1"), "./probe.exe close-out > shared.txt 2>&1\n")
+          s.run("./probe close-out > shared.txt 2>&1"), "./probe close-out > shared.txt 2>&1\n")
     check("shared.txt holds what was written to fd 2 after fd 1 closed (and was committed)",
           s.run("cat shared.txt"), "cat shared.txt\nclose(1)=0 write(1)=-9\n")
     check("program closes stdout under > f alone: the file survives, empty, and the shell is fine",
-          s.run("./probe.exe close-out > lone.txt"), "./probe.exe close-out > lone.txt\nclose(1)=0 write(1)=-9\n")
+          s.run("./probe close-out > lone.txt"), "./probe close-out > lone.txt\nclose(1)=0 write(1)=-9\n")
     check("lone.txt exists and is empty", s.run("wc -c lone.txt"), "wc -c lone.txt\n0 lone.txt\n")
 
     check("back to /", s.run("cd .."), "cd ..\n")

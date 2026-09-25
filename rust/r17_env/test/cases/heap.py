@@ -52,23 +52,23 @@ def faults(out):
 
 def run(ctx):
     s, check = ctx.s, ctx.check
-    for name in ["probe.exe", "heapuse.exe"]:
+    for name in ["probe", "heapuse"]:
         s.run(f"chmod +x tests/{name}")
 
     check("brk: grow, shrink, zeroing, the kernel's pointer check, and what is refused",
-          s.run("tests/probe.exe brk"), "tests/probe.exe brk\n" + BRK)
-    check("...and the same again: a program starts with its own fresh break", s.run("tests/probe.exe brk"),
-          "tests/probe.exe brk\n" + BRK)
+          s.run("tests/probe brk"), "tests/probe brk\n" + BRK)
+    check("...and the same again: a program starts with its own fresh break", s.run("tests/probe brk"),
+          "tests/probe brk\n" + BRK)
 
     check("a program that allocates: Vec, Box, String, growth, an allocation that cannot fit, reuse",
-          s.run("tests/heapuse.exe"),
-          "tests/heapuse.exe\n" + HEAPUSE.format(big=1048570078, small=299980000, string=58890, grow=124999750000))
-    check("...and again (its heap was given back and starts fresh)", s.run("tests/heapuse.exe"),
-          "tests/heapuse.exe\n" + HEAPUSE.format(big=1048570078, small=299980000, string=58890, grow=124999750000))
+          s.run("tests/heapuse"),
+          "tests/heapuse\n" + HEAPUSE.format(big=1048570078, small=299980000, string=58890, grow=124999750000))
+    check("...and again (its heap was given back and starts fresh)", s.run("tests/heapuse"),
+          "tests/heapuse\n" + HEAPUSE.format(big=1048570078, small=299980000, string=58890, grow=124999750000))
 
     # --- the heap does not outlive the program ---
-    s.run("tests/heapuse.exe")
-    out = s.run(f"tests/probe.exe poke {BASE + 0x40_0000}")
+    s.run("tests/heapuse")
+    out = s.run(f"tests/probe poke {BASE + 0x40_0000}")
     check("what a program's heap was is unmapped for the next program", faults(out), True)
 
     check("date and stat (built on the user heap) still work",

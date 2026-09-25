@@ -45,8 +45,8 @@ def run(ctx):
     # fixtures under `tests/`), so the expected list is derived from what `just disk` actually
     # staged rather than a hand-maintained one -- alphabetical, matching `folder_to_img.sh`'s own
     # sort-then-copy order, which is what ends up as the FAT on-disk order `ls` reports.
-    bin_names = sorted(n[:-4] for n in os.listdir(ctx.bin_dir) if n.endswith(".exe"))
-    check("ls -F bin", s.run("ls -F bin"), "ls -F bin\n" + "".join(f"{n}.exe*\n" for n in bin_names))
+    bin_names = sorted(os.listdir(ctx.bin_dir))
+    check("ls -F bin", s.run("ls -F bin"), "ls -F bin\n" + "".join(f"{n}*\n" for n in bin_names))
     check("ls file", s.run_status("ls tests/hello.txt"), ("ls tests/hello.txt\nls: cannot open directory 'tests/hello.txt': Not a directory\n", 1))
     check("ls bad option", s.run_status("ls -x"), ("ls -x\nls: invalid option -- 'x'\nTry 'ls --help' for more information.\n", 1))
 
@@ -84,9 +84,9 @@ def run(ctx):
     check("false", s.run_status("false"), ("false\n", 1))
 
     # --- chmod ---
-    check("chmod -x", s.run("chmod -x bin/hello.exe"), "chmod -x bin/hello.exe\n")
+    check("chmod -x", s.run("chmod -x bin/hello"), "chmod -x bin/hello\n")
     check("run without exec bit", s.run("hello"), "hello\nhello: Permission denied\n")
-    check("chmod +x", s.run("chmod +x bin/hello.exe"), "chmod +x bin/hello.exe\n")
+    check("chmod +x", s.run("chmod +x bin/hello"), "chmod +x bin/hello\n")
     check("run with exec bit", s.run("hello"), "hello\nhello from userspace\n")
     check("chmod -w", s.run("chmod -w tests/copy.txt"), "chmod -w tests/copy.txt\n")
     check("cp onto read-only", s.run_status("cp tests/hello.txt tests/copy.txt"), ("cp tests/hello.txt tests/copy.txt\ncp: cannot create regular file 'tests/copy.txt': Permission denied\n", 1))
@@ -155,4 +155,4 @@ def verify_disk(ctx):
     check("disk: data2.bin matches data.bin byte for byte",
           open(os.path.join(out, "data2.bin"), "rb").read(), open(ctx.fixture_path("data.bin"), "rb").read())
     check("disk: copy.txt is read-only", dir_attr(img, b"COPY    TXT") & 0x01, 0x01)
-    check("disk: hello.exe has the exec bit again", dir_attr(img, b"HELLO   EXE") & 0x40, 0x40)
+    check("disk: hello has the exec bit again", dir_attr(img, b"HELLO      ") & 0x40, 0x40)

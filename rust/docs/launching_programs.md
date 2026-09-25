@@ -31,8 +31,8 @@ error: if its first 128 bytes contain no NUL it "looks like" a script and is run
 
 > [!NOTE]
 > The volume is mounted as `/` (root). A command word containing a `/` is a path (relative to the
-> shell's working directory unless it starts with `/`); a bare name is looked up in `/bin` only &mdash;
-> as `name`, then `name.exe` &mdash; independent of the working directory, with no `PATH`-style search.
+> shell's working directory unless it starts with `/`); a bare name is looked up in the directories of `$PATH`
+> (`/bin` if it is unset), as typed, from Stage 17 (Stages 11-16: `/bin` only, as `name` then `name.exe`, with no `PATH`).
 
 ### `process::run_program`
 

@@ -34,9 +34,9 @@ def run(ctx):
     s, check = ctx.s, ctx.check
 
     # --- the syscall, through the test program ---
-    s.run("chmod +x tests/probe.exe")
-    check("clock_gettime: the clock, the other clock ids, bad pointers", s.run("tests/probe.exe clock"),
-          "tests/probe.exe clock\n"
+    s.run("chmod +x tests/probe")
+    check("clock_gettime: the clock, the other clock ids, bad pointers", s.run("tests/probe clock"),
+          "tests/probe clock\n"
           "realtime: plausible=true nsec=0\n"
           "clock 1: -22\nclock 7: -22\nclock max: -22\n"
           "null pointer: -14\nwrapping pointer: -14\nread-only pointer: -14\n")
@@ -51,9 +51,9 @@ def run(ctx):
     after = time.time()
     check("date +%s is the host's time (to 5 s)", before - 5 <= now <= after + 5, True)
 
-    s.run("chmod +x tests/spin.exe")
+    s.run("chmod +x tests/spin")
     first = date_s()
-    s.run("tests/spin.exe 2")
+    s.run("tests/spin 2")
     second = date_s()
     check("date +%s advances across a 2 s busy-wait", 2 <= second - first <= 8, True)
 

@@ -1,13 +1,14 @@
 """Last updated: Stage 17, Step 8.
 
-`$PATH`: the directories a bare command name is searched in, in order, `name` then `name.exe` in each. Unset means
+`$PATH`: the directories a bare command name is searched in, in order. Unset means
 `/bin`; set but empty means nowhere; empty entries are skipped (not the working directory); relative entries are
 relative to the working directory; a name with a `/` in it is a path and ignores `PATH`. The candidate list is a host
 test (`path_search.rs`); here it is the shell end to end.
 
-Two directories of programs are made under `/tmp`: `pbin` holds `tool.exe` (a copy of `hello`, so it prints a fixed
-line) and `pbin2` holds `tool.exe` (a copy of `echo`, so it prints its arguments) and `plain`, an `echo` with no
-extension -- so what ran says which directory it came from.
+Two directories of programs are made under `/tmp`: `pbin` holds `tool` (a copy of `hello`, so it prints a fixed
+line) and `pbin2` holds `tool` (a copy of `echo`, so it prints its arguments) and `dotted.exe`, another `echo` -- so
+what ran says which directory it came from, and the last shows that a name means exactly the file of that name (there is
+no `.exe` fallback since Stage 17).
 """
 
 ENVIRONMENT = "HOME=/\nPATH=/bin\n"  # like the general image's file
@@ -31,8 +32,8 @@ def run(ctx):
         check(name, s.run(name), f"{name}\n{name}: command not found\n")
 
     for cmd in ["mkdir /tmp/pbin", "mkdir /tmp/pbin2",
-                "cp /bin/hello.exe /tmp/pbin/tool.exe", "cp /bin/echo.exe /tmp/pbin2/tool.exe",
-                "cp /bin/echo.exe /tmp/pbin2/plain", "chmod +x /tmp/pbin/tool.exe /tmp/pbin2/tool.exe /tmp/pbin2/plain"]:
+                "cp /bin/hello /tmp/pbin/tool", "cp /bin/echo /tmp/pbin2/tool",
+                "cp /bin/echo /tmp/pbin2/dotted.exe", "chmod +x /tmp/pbin/tool /tmp/pbin2/tool /tmp/pbin2/dotted.exe"]:
         s.run(cmd)
 
     # --- the starting point: PATH=/bin ---
@@ -59,15 +60,18 @@ def run(ctx):
     # --- precedence between two directories that both have `tool` ---
     prints("PATH=/tmp/pbin:/tmp/pbin2 tool x", HELLO)
     prints("PATH=/tmp/pbin2:/tmp/pbin tool x", "x\n")
-    prints("PATH=/tmp/pbin2 plain z", "z\n")  # a bare name with no `.exe` at all
-    not_found("PATH=/tmp/pbin2 plain.exe")  # `plain.exe` is not `plain`, and there is no `plain.exe.exe`
+    # A name is exact: no `.exe` is added, and none is taken away.
+    prints("PATH=/tmp/pbin2 dotted.exe z", "z\n")
+    not_found("PATH=/tmp/pbin2 dotted")
+    not_found("PATH=/bin hello.exe")
+    not_found("PATH=/bin cat.exe")
     s.run("PATH=/bin")
 
     # --- a directory of that name is skipped, and a file without the exec bit is refused ---
     s.run("mkdir /tmp/pbin/hello")
     prints("PATH=/tmp/pbin:/bin hello", HELLO)
-    s.run("cp /bin/hello.exe /tmp/pbin/noexec.exe")
-    s.run("chmod -x /tmp/pbin/noexec.exe")
+    s.run("cp /bin/hello /tmp/pbin/noexec")
+    s.run("chmod -x /tmp/pbin/noexec")
     check("a file found without the exec bit", s.run_status("PATH=/tmp/pbin noexec"),
           ("PATH=/tmp/pbin noexec\nnoexec: Permission denied\n", 126))
 
@@ -75,8 +79,8 @@ def run(ctx):
     not_found("PATH= hello")
     s.run("export PATH=")
     not_found_here("hello")
-    check("...but a path still works (the file is `hello.exe`: no fallback for a path)", s.run("/bin/hello.exe"), "/bin/hello.exe\n" + HELLO)
-    check("...and a relative path", s.run("bin/hello.exe"), "bin/hello.exe\n" + HELLO)
+    check("...but a path still works", s.run("/bin/hello"), "/bin/hello\n" + HELLO)
+    check("...and a relative path", s.run("bin/hello"), "bin/hello\n" + HELLO)
     s.run("unset PATH")
     prints("hello", HELLO)  # unset is /bin
     s.run("export PATH=:")
@@ -100,9 +104,9 @@ def run(ctx):
     s.run("cd /")
 
     # --- a name with a slash ignores PATH ---
-    prints("PATH=/nonexistent /bin/hello.exe", HELLO)
-    prints("PATH=/nonexistent bin/hello.exe", HELLO)
-    prints("PATH=/nonexistent /tmp/pbin/tool.exe", HELLO)
+    prints("PATH=/nonexistent /bin/hello", HELLO)
+    prints("PATH=/nonexistent bin/hello", HELLO)
+    prints("PATH=/nonexistent /tmp/pbin/tool", HELLO)
     not_found("PATH=/bin nosuch", status=127)
     check("a missing path is 127 too", s.run_status("PATH=/bin tmp/nosuch"),
           ("PATH=/bin tmp/nosuch\ntmp/nosuch: No such file or directory\n", 127))

@@ -64,19 +64,19 @@ def run(ctx):
     check("printenv -x", s.run_status("printenv -x"), ("printenv -x\nprintenv: invalid option -- 'x'\nTry 'printenv --help' for more information.\n", 1))
 
     # --- the layout of envp on the stack ---
-    s.run("chmod +x tests/probe.exe")
+    s.run("chmod +x tests/probe")
     check("probe env: NULL-terminated, right after argv's NULL, and in step with vars()",
-          s.run("tests/probe.exe env"),
-          "tests/probe.exe env\nenvc=5\nenvp[envc] is NULL: yes\nenvp directly follows argv's NULL: yes\nvars() agrees: yes\n")
+          s.run("tests/probe env"),
+          "tests/probe env\nenvc=5\nenvp[envc] is NULL: yes\nenvp directly follows argv's NULL: yes\nvars() agrees: yes\n")
     s.run("export A=1 B=2")
-    check("...with more", s.run("tests/probe.exe env").split("\n")[1], "envc=7")
+    check("...with more", s.run("tests/probe env").split("\n")[1], "envc=7")
     s.run("unset A B")
 
     # --- arguments and environment share one limit (ARG_MAX, 128 KiB) ---
     check("exports that overflow it", s.run("source tests/bigenv.sh"), "source tests/bigenv.sh\n")
     check("no program can start", s.run("env"), "env\nenv: Argument list too long\n")
-    check("nor a program given no arguments beyond its name", s.run("tests/probe.exe env"),
-          "tests/probe.exe env\ntests/probe.exe: Argument list too long\n")
+    check("nor a program given no arguments beyond its name", s.run("tests/probe env"),
+          "tests/probe env\ntests/probe: Argument list too long\n")
     check("a builtin still runs", s.run("unset " + " ".join(BIG)), "unset " + " ".join(BIG) + "\n")
     check("and then programs do", s.run("printenv HOME"), "printenv HOME\n/\n")
     check("the shell is alive", s.run("echo ok"), "echo ok\nok\n")

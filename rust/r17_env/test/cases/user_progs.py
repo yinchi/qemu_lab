@@ -156,8 +156,8 @@ def run(ctx):
     check("...is stamped from the RTC too", (recent(modify, before, after), recent(create, before, after)), (True, True))
 
     # Writing moves the modify time on and leaves the creation time alone.
-    s.run("chmod +x tests/spin.exe")
-    s.run("tests/spin.exe 3")
+    s.run("chmod +x tests/spin")
+    s.run("tests/spin 3")
     before = time.time()
     s.run("echo more >> tests/statfresh.txt")
     after = time.time()
@@ -229,9 +229,9 @@ def run(ctx):
           f"{n_lines} {n_words} {n_bytes} tests/notes.txt\n"
           f"{h_lines + n_lines} {h_words + n_words} {h_bytes + n_bytes} total\n")
 
-    bin_names = sorted(n[:-4] for n in os.listdir(ctx.bin_dir) if n.endswith(".exe"))
+    bin_names = sorted(os.listdir(ctx.bin_dir))
     check("ls with several directory operands", s.run("ls tests/docs bin"),
-          "ls tests/docs bin\ntests/docs:\nexample.txt\n\nbin:\n" + "".join(f"{n}.exe\n" for n in bin_names))
+          "ls tests/docs bin\ntests/docs:\nexample.txt\n\nbin:\n" + "".join(f"{n}\n" for n in bin_names))
 
     ex_size = len(example_txt)
     grouped = s.run("ls -lF tests/docs").split("\n", 1)[1]

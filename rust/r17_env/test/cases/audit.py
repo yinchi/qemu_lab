@@ -36,11 +36,11 @@ def run(ctx):
           "tail -n 100000 < tests/biglines.txt | wc -l\n100000\n")
     check("tail -n 200000 (more than the input) too", s.run("tail -n 200000 < tests/biglines.txt | wc -l"),
           "tail -n 200000 < tests/biglines.txt | wc -l\n100000\n")
-    check("tail -c 4 of a 3 MiB binary on stdin", s.run("tail -c 4 < tests/bigpad.exe | wc -c"),
-          "tail -c 4 < tests/bigpad.exe | wc -c\n4\n")
-    whole = int(s.run("wc -c < tests/bigpad.exe").split("\n")[1])
-    check("tail -c 10000000 of it returns all of it", s.run("tail -c 10000000 < tests/bigpad.exe | wc -c"),
-          f"tail -c 10000000 < tests/bigpad.exe | wc -c\n{whole}\n")
+    check("tail -c 4 of a 3 MiB binary on stdin", s.run("tail -c 4 < tests/bigpad | wc -c"),
+          "tail -c 4 < tests/bigpad | wc -c\n4\n")
+    whole = int(s.run("wc -c < tests/bigpad").split("\n")[1])
+    check("tail -c 10000000 of it returns all of it", s.run("tail -c 10000000 < tests/bigpad | wc -c"),
+          f"tail -c 10000000 < tests/bigpad | wc -c\n{whole}\n")
     check("...which is past the old 512 KiB limit", whole > 512 * 1024 and whole >= BIGPAD_MIN, True)
 
     # --- tee: not capped at 8 files, only by the kernel's open-file limit (13 files at a time) ---

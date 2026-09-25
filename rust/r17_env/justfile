@@ -28,9 +28,9 @@ elf:
 
 # Builds disk.img (64 MiB FAT16): every core utility of every program tier up to this stage --
 # ../user/progs (the base tier, Stages 9-11) and ../user/progs_r12 (Stage 12) and ../user/progs_r13 (Stage 13) and ../user/progs_r15 (Stage 15) and ../user/progs_r16 (Stage 16) and ../user/progs_r17 (Stage 17); see
-# docs/progs.md -- staged into disk/bin/ as <name>.exe, tiers copied lowest first so that a later tier's
-# program replaces an earlier tier's of the same name -- the launcher tries the typed name first
-# and then name.exe, same as Cygwin's shell, so `cat` finds bin/cat.exe -- plus this stage's test
+# docs/progs.md -- staged into disk/bin/ as <name> (Stages 9-16 named them <name>.exe), tiers copied lowest first so that a later tier's
+# program replaces an earlier tier's of the same name -- the launcher looks a name up
+# exactly as typed -- plus this stage's test
 # programs (test/progs, see test/README.md), staged into disk/tests/ next to the static test
 # fixtures already checked in there, plus the empty disk/tmp/ the shell's pipes will use. All of
 # disk/ is handed to folder_to_img.sh along with the static files already staged in it (fonts/,
@@ -50,15 +50,16 @@ disk:
         (cd ../user/${tier} && cargo build --target ${TARGET} --release)
         for src in ../user/${tier}/src/bin/*.rs; do
             name=$(basename "$src" .rs)
-            cp ../user/${tier}/target/${TARGET}/release/${name} disk/bin/${name}.exe
+            cp ../user/${tier}/target/${TARGET}/release/${name} disk/bin/${name}
         done
     done
     (cd test/progs && cargo build --target ${TARGET} --release)
-    rm -f disk/tests/*.exe
+    # Generated files only: the fixtures checked in beside them stay. (`*.exe` are leftovers of the old naming.)
     mkdir -p disk/tests
+    rm -f disk/tests/*.exe disk/tests/bigpad disk/tests/elf-*
     for src in test/progs/src/bin/*.rs; do
         name=$(basename "$src" .rs)
-        cp test/progs/target/${TARGET}/release/${name} disk/tests/${name}.exe
+        cp test/progs/target/${TARGET}/release/${name} disk/tests/${name}
     done
     # Malformed and oversized ELF files derived from the programs just staged.
     python3 test/mkfixtures.py disk/bin disk/tests

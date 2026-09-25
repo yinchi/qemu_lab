@@ -79,9 +79,9 @@ In summary, the rules are POSIX's, as far as this shell goes:
 ### Program lookup
 
 A command word is a builtin (below) if it names one, otherwise a program. A word containing `/` is a path,
-relative to the working directory unless it starts with `/`, and is used exactly as written (no `.exe` is added
-to a path). A bare name is searched for in the directories of **`$PATH`**, in order, as `name` and then `name.exe`
-in each -- so `cat` finds `bin/cat.exe` without the `.exe` being typed -- and the first regular file found wins; a
+relative to the working directory unless it starts with `/`. A bare name is searched for in the directories of
+**`$PATH`**, in order, as `dir/name` -- names are exact, so `cat` is `bin/cat` (Stages 11-16 installed programs as
+`cat.exe` and tried `name.exe` after the bare name, which Stage 17 dropped) -- and the first regular file found wins; a
 directory of that name, or a candidate that does not exist, is skipped. `PATH` **unset** means `/bin`, so a shell
 with no environment finds its programs; **set but empty** means nowhere (nothing is found, not even in the working
 directory). An **empty entry** (`a::b`, a leading or trailing `:`) is skipped: POSIX would search the working

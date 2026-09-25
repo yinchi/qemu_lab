@@ -20,7 +20,7 @@ def cell_blank(band, cell, width=1):
 
 def run(ctx):
     s, check = ctx.s, ctx.check
-    s.run("chmod +x tests/probe.exe")
+    s.run("chmod +x tests/probe")
     width, _height, _rows = s.screendump_settled()
     check("display is 80 columns wide (the fixtures assume it)", width // CELL_W, COLS)
 
@@ -48,7 +48,7 @@ def run(ctx):
     check("a zero-width joiner draws nothing", with_zwj, plain)
 
     # --- Backspace moves back a whole character: X lands on the wide glyph's left cell ---
-    check("probe bs-wide output", s.run("tests/probe.exe bs-wide"), "tests/probe.exe bs-wide\n日\bX\n")
+    check("probe bs-wide output", s.run("tests/probe bs-wide"), "tests/probe bs-wide\n日\bX\n")
     after_bs = text_bands(s.screendump_settled())[-2][1]
     s.run("echo X")
     plain_x = text_bands(s.screendump_settled())[-2][1]

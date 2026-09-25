@@ -298,7 +298,7 @@ class Context:
         self.tests_dir = os.path.join(disk_dir, "tests")
         """Host copy of the fixtures on the image's `/tests/` -- the ground truth to compare against."""
         self.bin_dir = os.path.join(disk_dir, "bin")
-        """Host copy of the image's `/bin/` -- every tier's staged `*.exe`, the ground truth for what
+        """Host copy of the image's `/bin/` -- every tier's staged `*`, the ground truth for what
         `ls bin` should list. Unlike `tests_dir`'s fixtures, this directory is *meant* to grow as
         programs are added, so a test checking its full contents should derive the expected list from
         here rather than hardcoding one."""

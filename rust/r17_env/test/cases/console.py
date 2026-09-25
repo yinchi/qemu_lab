@@ -15,7 +15,7 @@ DIGITS = "".join(str(i % 10) for i in range(200))
 
 def run(ctx):
     s, check = ctx.s, ctx.check
-    s.run("chmod +x tests/probe.exe")
+    s.run("chmod +x tests/probe")
 
     # --- T2.1: every byte value reaches the serial log untouched (only \n becomes \r\n, as always) ---
     # binary256's last byte (0xff) is not a newline, so the shell's own "start the next prompt on a
@@ -38,14 +38,14 @@ def run(ctx):
     check("...and is not the '<invalid utf8>' placeholder", split[-2][1] == split[-3][1], False)
 
     # --- T2.5: formatted output to stdout costs one display flush per line, not per fragment ---
-    check("probe frag output", s.run("tests/probe.exe frag"), "tests/probe.exe frag\n" + DIGITS + "\n")
+    check("probe frag output", s.run("tests/probe frag"), "tests/probe frag\n" + DIGITS + "\n")
     check("frag: one console flush for 200 fragments", s.flush_counts()[-1], 1)
-    check("probe frag-raw output", s.run("tests/probe.exe frag-raw"), "tests/probe.exe frag-raw\n" + DIGITS + "\n")
+    check("probe frag-raw output", s.run("tests/probe frag-raw"), "tests/probe frag-raw\n" + DIGITS + "\n")
     check("frag-raw: one flush per raw write (the counter works)", s.flush_counts()[-1], 201)
 
     # --- T2.6: stdout's pending text goes out before stderr's, so the order is the program's ---
-    check("interleave: OUT, ERR, newline stay in order", s.run("tests/probe.exe interleave"),
-          "tests/probe.exe interleave\nOUTERR\n")
+    check("interleave: OUT, ERR, newline stay in order", s.run("tests/probe interleave"),
+          "tests/probe interleave\nOUTERR\n")
 
     # --- the segmentation fault message is on the display as well as the serial log ---
     s.run("echo Segmentation")

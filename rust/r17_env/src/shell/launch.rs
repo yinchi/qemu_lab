@@ -21,8 +21,8 @@ const MAX_PROGRAM_SIZE: usize = HEAP_SIZE / 2;
 
 /// Finds the file a command word names. A word containing `/` is a path, relative to the working
 /// directory unless it starts with `/`. A bare name is looked up in the directories of `$PATH`
-/// (`path_search.rs`: `/bin` if it is unset), in order, trying the bare name first and then `name.exe` in
-/// each -- Cygwin's own lookup order, so `cat` finds `bin/cat.exe` without the `.exe` ever being typed. The
+/// (`path_search.rs`: `/bin` if it is unset), in order, as typed: `cat` is `bin/cat`. (Stages 11-16 installed
+/// programs as `cat.exe` and tried `name.exe` after the bare name; the name is exact now.) The
 /// first regular file found wins; a directory of that name is skipped, as is a candidate that does not
 /// exist. `Err` carries the text to report after `name: `.
 fn find_program(name: &str) -> Result<FileEntry, &'static str> {
