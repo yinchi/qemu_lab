@@ -47,6 +47,20 @@ const ELF_MAGIC: &[u8] = b"\x7fELF";
 /// script" -- bash's own `ENOEXEC` fallback heuristic (a NUL anywhere in that prefix means binary).
 const SCRIPT_PROBE_LEN: usize = 128;
 
+/// How a launch went: the status the command line's `$?` becomes, and whether a program actually ran.
+pub struct Launched {
+    pub status: i32,
+    /// A program ran (as opposed to nothing starting, or a script running instead): the only case where
+    /// Stage 12's stand-in for `$?`, an `exit N` line, is printed for a nonzero status. Goes with that line
+    /// in Step 5.
+    pub ran: bool,
+}
+
+/// Exit statuses for a command that did not run, as in POSIX shells: `126` found but could not be run (a
+/// directory, no exec bit, too big, not a valid program), `127` not found.
+const STATUS_CANNOT_EXECUTE: i32 = 126;
+const STATUS_NOT_FOUND: i32 = 127;
+
 /// Runs the program `argv[0]` names -- see `find_program` -- with `argv` as its whole argument
 /// list and the shell's exported variables as its environment. `depth` is `run_line`'s script-nesting count, passed to `run_script_content` if `argv[0]`
 /// turns out to be a script rather than a program (see below). Reports (in bash's wording) if:
@@ -65,48 +79,50 @@ const SCRIPT_PROBE_LEN: usize = 128;
 /// parameters, so extra arguments are rejected the same way `sh` rejects
 /// them, not silently ignored.
 ///
-/// Returns `None` if no program actually ran (not found, not a file, not executable, too large,
-/// failed to load, or ran as a script instead -- every one of these already reported via `shell_err`)
-/// or `Some(code)` if one did. Printing `exit {code}` (our stand-in for `$?`, `Stage12.md`'s Step 11)
-/// is the caller's decision, not this function's: a single command prints it unconditionally, a
-/// pipeline only for its last stage.
-pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> Option<i32> {
+/// Returns the exit status: the program's, or a script's last line's, or `127` / `126` for a command that
+/// could not run (every one of these already reported via `shell_err`). Printing `exit {code}` (our
+/// stand-in for `$?`, `Stage12.md`'s Step 11) is the caller's decision, not this function's: a single
+/// command prints it unconditionally, a pipeline only for its last stage, and only if `ran`.
+pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> Launched {
+    let cannot = |status| Launched { status, ran: false };
     let name = argv[0];
     let prog_entry = match find_program(name) {
         Ok(entry) => entry,
         Err(why) => {
             shell_err(&alloc::format!("{name}: {why}"));
-            return None;
+            // A name or path nothing answers to is "not found"; a lookup that failed for another reason (a path
+            // through a file, one over the length limit) is not.
+            let missing = why == "command not found" || why == errmsg(ENOENT);
+            return cannot(if missing { STATUS_NOT_FOUND } else { STATUS_CANNOT_EXECUTE });
         }
     };
 
     if prog_entry.is_directory() {
         shell_err(&alloc::format!("{name}: {}", errmsg(EISDIR)));
-        return None;
+        return cannot(STATUS_CANNOT_EXECUTE);
     }
     if prog_entry.attributes().bits() & ATTR_EXEC == 0 {
         shell_err(&alloc::format!("{name}: {}", errmsg(EACCES)));
-        return None;
+        return cannot(STATUS_CANNOT_EXECUTE);
     }
     if prog_entry.len() as usize > MAX_PROGRAM_SIZE {
         shell_err(&alloc::format!(
             "{name}: cannot execute: {}",
             errmsg(ENOEXEC)
         ));
-        return None;
+        return cannot(STATUS_CANNOT_EXECUTE);
     }
 
     let file_bytes = match read_file_checked(vol, &prog_entry) {
         Ok(bytes) => bytes,
         Err(e) => {
             shell_err(&alloc::format!("{name}: {}", errmsg(e)));
-            return None;
+            return cannot(STATUS_CANNOT_EXECUTE);
         }
     };
 
     if !file_bytes.starts_with(ELF_MAGIC) {
-        run_as_script_fallback(name, &file_bytes, argv, depth);
-        return None;
+        return cannot(run_as_script_fallback(name, &file_bytes, argv, depth));
     }
     // The program's environment: what the shell has exported, as `NAME=VALUE` strings.
     let env: Vec<String> = shell_state::frames()
@@ -116,43 +132,48 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> Option<i32
         .collect();
     let env: Vec<&str> = env.iter().map(String::as_str).collect();
     match process::run_program(&file_bytes, argv, &env) {
-        Ok(code) => Some(code),
+        Ok(status) => Launched { status, ran: true },
         Err(e) if e.errno() == E2BIG => {
             shell_err(&alloc::format!("{name}: {}", errmsg(E2BIG)));
-            None
+            cannot(STATUS_CANNOT_EXECUTE)
         }
         Err(e) => {
             shell_err(&alloc::format!(
                 "{name}: cannot execute: {}",
                 errmsg(e.errno())
             ));
-            None
+            cannot(STATUS_CANNOT_EXECUTE)
         }
     }
 }
 
-/// `launch`'s `ENOEXEC` fallback: `file_bytes` has already been read and found to lack ELF magic.
-fn run_as_script_fallback(name: &str, file_bytes: &[u8], argv: &[&str], depth: usize) {
+/// `launch`'s `ENOEXEC` fallback: `file_bytes` has already been read and found to lack ELF magic. Returns the
+/// status: the script's, or `126` if it could not be run as one.
+fn run_as_script_fallback(name: &str, file_bytes: &[u8], argv: &[&str], depth: usize) -> i32 {
     let probe_len = file_bytes.len().min(SCRIPT_PROBE_LEN);
     if file_bytes[..probe_len].contains(&0) {
         shell_err(&alloc::format!(
             "{name}: cannot execute binary file: {}",
             errmsg(ENOEXEC)
         ));
-        return;
+        return STATUS_CANNOT_EXECUTE;
     }
     if argv.len() > 1 {
         shell_err(&alloc::format!("{name}: too many arguments"));
-        return;
+        return STATUS_CANNOT_EXECUTE;
     }
     let content = match core::str::from_utf8(file_bytes) {
         Ok(content) => content,
         Err(_) => {
             shell_err(&alloc::format!("{name}: not valid UTF-8"));
-            return;
+            return STATUS_CANNOT_EXECUTE;
         }
     };
-    if let Err(e) = crate::shell::run_script_content(content, true, depth) {
-        shell_err(&alloc::format!("{name}: {e}"));
+    match crate::shell::run_script_content(content, true, depth) {
+        Ok(status) => status,
+        Err(e) => {
+            shell_err(&alloc::format!("{name}: {e}"));
+            STATUS_CANNOT_EXECUTE
+        }
     }
 }

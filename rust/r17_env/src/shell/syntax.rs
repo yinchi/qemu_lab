@@ -2,8 +2,9 @@
 //! and its arguments) and its redirections in the order typed -- the order matters, since redirections
 //! apply left to right, so `cmd > f 2>&1` and `cmd 2>&1 > f` differ.
 //!
-//! Only the shape is checked here: what a redirection's target names, and whether a program exists,
-//! is for whoever runs it. Syntax errors are reported, not guessed at (`>` with no file name, `2>&` with
+//! Only the shape is checked here: what a redirection's target names, whether a program exists, and what
+//! a `$` in a word stands for are for whoever runs it (`expand.rs` gives the words their values, just before
+//! the stage runs). Syntax errors are reported, not guessed at (`>` with no file name, `2>&` with
 //! anything but `1` or `2`, an empty stage).
 //!
 //! Built on `peg`, over `lexer::lex`'s token stream rather than the raw line -- this is
@@ -11,7 +12,7 @@
 //! `&str`; `peg`'s built-in slice support requires `Copy` elements (`peg-runtime`'s `ParseElem` trait
 //! bounds `Element: Copy`), and `Token::Word` holds an owned `String`, so the grammar runs over
 //! `SynTok` -- the same shape as `Token`, but a word carries its index into the original `&[Token]`
-//! instead of the text itself -- and rules that need the actual text take `src: &[Token]` as an
+//! instead of the `Word` itself -- and rules that need the actual text take `src: &[Token]` as an
 //! ordinary rule parameter (`peg` rule parameters aren't implicitly shared across a grammar; each rule
 //! on the path to one that needs `src` has to declare and pass it on). As in `lexer.rs`, every
 //! `{? Err("...") }` block sits at the exact alternative that detects one specific problem (a
@@ -22,12 +23,11 @@
 //! Pure `no_std` + `alloc`, with no dependency on the rest of the kernel, so it is tested on the host
 //! (`hosttests/`).
 
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use super::lexer::{LexError, RedirOp, Token, lex};
+use super::lexer::{LexError, RedirOp, Token, Word, lex};
 
 /// `Token`, but with a word's text replaced by its index into the `&[Token]` this was built from --
 /// `Copy`, so `peg`'s built-in `for [T]` support applies.
@@ -43,18 +43,18 @@ fn to_syn_toks(tokens: &[Token]) -> Vec<SynTok> {
         .iter()
         .enumerate()
         .map(|(i, t)| match t {
-            Token::Word { .. } => SynTok::Word(i),
+            Token::Word(_) => SynTok::Word(i),
             Token::Pipe => SynTok::Pipe,
             Token::Redir { fd, op } => SynTok::Redir { fd: *fd, op: *op },
         })
         .collect()
 }
 
-/// The text of the word `src[i]` names. `to_syn_toks` only ever builds a `SynTok::Word(i)` from an
+/// The word `src[i]` names. `to_syn_toks` only ever builds a `SynTok::Word(i)` from an
 /// actual `Token::Word` at that index, so the other arms can't happen.
-fn word_text(src: &[Token], i: usize) -> &str {
+fn word_at(src: &[Token], i: usize) -> &Word {
     match &src[i] {
-        Token::Word { text, .. } => text.as_str(),
+        Token::Word(word) => word,
         _ => unreachable!("SynTok::Word index always points at a Token::Word"),
     }
 }
@@ -62,11 +62,11 @@ fn word_text(src: &[Token], i: usize) -> &str {
 /// One redirection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Redirection {
-    /// `< path`: standard input from a file.
-    In(String),
+    /// `< path`: standard input from a file. The path is still unexpanded, like every word here.
+    In(Word),
     /// `> path` / `2> path` (`append: false`), `>> path` / `2>> path` (`append: true`): a file for
     /// descriptor `fd` (1 or 2).
-    Out { fd: u8, path: String, append: bool },
+    Out { fd: u8, path: Word, append: bool },
     /// `>&2`, `2>&1`: make `fd` (1 or 2) another name for what `target` (1 or 2) is.
     Dup { fd: u8, target: u8 },
 }
@@ -75,8 +75,9 @@ pub enum Redirection {
 /// (a builtin or a file) and its arguments, plus its own redirections, in the order typed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Segment {
-    /// Empty for a stage with only redirections (`> f` is valid: it creates the file, POSIX-style).
-    pub argv: Vec<String>,
+    /// The words as typed, `$` expansions not yet made. Empty for a stage with only redirections (`> f` is valid:
+    /// it creates the file, POSIX-style).
+    pub argv: Vec<Word>,
     pub redirs: Vec<Redirection>,
 }
 
@@ -103,6 +104,7 @@ impl fmt::Display for SyntaxError {
             }
             SyntaxError::Lex(LexError::Unterminated(what)) => write!(f, "unterminated {what}"),
             SyntaxError::Lex(LexError::Unsupported(what)) => write!(f, "`{what}` is not supported"),
+            SyntaxError::Lex(LexError::BadSubstitution) => write!(f, "bad substitution"),
             SyntaxError::MissingTarget(op) => write!(f, "no file name after `{op}`"),
             SyntaxError::BadDupTarget => write!(f, "`>&` must be followed by 1 or 2"),
             SyntaxError::EmptyCommand => write!(f, "missing command"),
@@ -113,14 +115,14 @@ impl fmt::Display for SyntaxError {
 /// A segment being built: either an argument word or a redirection, before being sorted into
 /// `Segment`'s two separate `Vec`s.
 enum Item {
-    Arg(String),
+    Arg(Word),
     Redir(Redirection),
 }
 
 peg::parser! {
     grammar shell_syntax() for [SynTok] {
-        rule word(src: &[Token]) -> String
-            = [SynTok::Word(i)] { word_text(src, i).to_string() }
+        rule word(src: &[Token]) -> Word
+            = [SynTok::Word(i)] { word_at(src, i).clone() }
 
         // Each redirection kind gets two alternatives: the real one (operator, then its operand word)
         // and a fallback that matches the same operator alone and hard-fails. The fallback is only
@@ -139,7 +141,8 @@ peg::parser! {
               }
             / [SynTok::Redir{op: RedirOp::Append, ..}] {? Err("missing-target-append") }
             / [SynTok::Redir{fd, op: RedirOp::DupOut}] path:word(src) {?
-                match path.as_str() {
+                // The target is a descriptor number, so it must be written as one: `>&$x` is refused.
+                match path.as_literal().unwrap_or("") {
                     "1" => Ok(Redirection::Dup { fd: fd.unwrap_or(1), target: 1 }),
                     "2" => Ok(Redirection::Dup { fd: fd.unwrap_or(1), target: 2 }),
                     _ => Err("bad-dup-target"),
@@ -217,7 +220,7 @@ mod tests {
 
     fn seg(words: &[&str], redirs: Vec<Redirection>) -> Segment {
         Segment {
-            argv: words.iter().map(|w| w.to_string()).collect(),
+            argv: words.iter().map(|w| Word::literal(w)).collect(),
             redirs,
         }
     }
@@ -421,6 +424,33 @@ mod tests {
     }
 
     #[test]
+    fn words_keep_their_expansions_for_later() {
+        use super::super::lexer::Part;
+        let c = one(r#"echo $x "a $?" > $out"#);
+        assert_eq!(
+            c.argv[1],
+            Word { parts: vec![Part::Var { name: "x".into(), quoted: false }] }
+        );
+        assert_eq!(
+            c.argv[2],
+            Word {
+                parts: vec![
+                    Part::Lit("a ".into()),
+                    Part::Status { quoted: true }
+                ]
+            }
+        );
+        let Out { path, .. } = &c.redirs[0] else { panic!("not a > redirection") };
+        assert_eq!(path.to_string(), "$out");
+    }
+
+    #[test]
+    fn a_duplication_target_must_be_written_as_a_digit() {
+        assert_eq!(parse("cmd 2>&$x"), Err(SyntaxError::BadDupTarget));
+        assert_eq!(parse(r#"cmd 2>&"1""#).unwrap().unwrap()[0].redirs, vec![Dup { fd: 2, target: 1 }]);
+    }
+
+    #[test]
     fn a_stage_of_only_redirections_parses() {
         // POSIX allows `> f` (it creates the file); running it is another matter.
         let c = one("> f");
@@ -470,5 +500,6 @@ mod tests {
             "`>&` must be followed by 1 or 2"
         );
         assert_eq!(parse("| a").unwrap_err().to_string(), "missing command");
+        assert_eq!(parse("echo ${").unwrap_err().to_string(), "bad substitution");
     }
 }

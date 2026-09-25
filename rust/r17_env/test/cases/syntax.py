@@ -46,8 +46,12 @@ def run(ctx):
     check("a comment-only line does nothing", s.run("# nothing to see"), "# nothing to see\n")
     check("a blank line does nothing", s.run(""), "\n")
 
-    # --- $ * ? ~ { } are ordinary text for now ---
-    echo("echo $x * ? ~ {a,b}", "$x * ? ~ {a,b}")
+    # --- * ? ~ { } are ordinary text (no globbing, tilde or brace expansion); `$` expands (expansion.py), except
+    # where it names nothing ---
+    echo("echo * ? ~ {a,b}", "* ? ~ {a,b}")
+    echo("echo $ a$ $1 $$ $@", "$ a$ $1 $$ $@")
+    check("${ that is not ${NAME} is refused", s.run("echo ${"), "echo ${\nsyntax error: bad substitution\n")
+    check("...whatever follows it", s.run("echo ${a-b}"), "echo ${a-b}\nsyntax error: bad substitution\n")
 
     # --- pipes and redirections both run for real (Step 11 pipe execution tested thoroughly in
     # pipes.py; this just checks a pipe reaches a program's argv/runs at all) ---

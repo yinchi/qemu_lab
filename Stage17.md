@@ -8,7 +8,7 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 0 | Plain copy of `r16_brk` as `r17_env` | done |
 | 1 | The variable model (exported flag, `export`, `unset`) and `/etc/environment`; `disk/home` -> `disk/root` | done |
 | 2 | `envp` to programs; `userlib::env`; `env` and `printenv` (new tier `progs_r17`) | done |
-| 3 | Expansion: `$VAR`, `${VAR}`, `$?`, with field splitting | planned |
+| 3 | Expansion: `$VAR`, `${VAR}`, `$?`, with field splitting | done |
 | 4 | Assignments: `NAME=value`, `NAME=value cmd` | planned |
 | 5 | Retire the automatic `exit N` line | planned |
 | 6 | `$HOME` for `cd`, `$TZ` for `date` and `stat` | planned |
@@ -109,6 +109,20 @@ Tier list unchanged. Verify `just test` = 643 checks, nothing else changed.
   last pipeline's status in `shell_state`. **The `exit N` line still prints in this step.**
 - QEMU tests: `echo $FOO` (via `export`), `"${FOO}bar"`, `'$FOO'` literal, `echo $?` after success/failure/fault/not-found/not-executable/syntax error, field splitting into two args
   (`probe args`), expansion in a redirect target.
+
+**As built (Step 3).** As planned, with these specifics:
+- Lexer: `Token::Word(Word)`, `Word { parts: Vec<Part> }`, `Part::{Lit, Var{name, quoted}, Status{quoted}}`. Text is a `Lit` whatever quoting it had (only an expansion's result cares about quotes),
+  so the old `quoted` flag is gone; `""` stays a `Lit("")`, which keeps an empty word from vanishing. A `$` that names nothing (`$1`, `$$`, `$ `, `$` at the end) is text. `${` not followed by `NAME}`
+  is `LexError::BadSubstitution` (`syntax error: bad substitution`, status 2). The sentinel needs `&braced()` ahead of `braced()` so peg's furthest-failure rule does not hide it.
+- `Segment.argv` is `Vec<Word>`, redirect paths are `Word`; `>&`'s target must be a literal digit (`>&$x` is `BadDupTarget`).
+- `shell/expand.rs`: `expand(words, &Values{lookup, status})`, `expand_word`, `expand_target` (exactly one field or `Ambiguous`, worded `<word>: ambiguous redirect`, status 1). The no-split
+  form for assignment values waits for Step 4, its only user.
+- Statuses: `shell_state::last_status()`/`set_last_status()` (one atomic for the whole shell). `run_line_inner` returns `Option<i32>` (`None` for a blank line or comment, which leaves `$?` alone) and
+  records it; a syntax error is 2. `launch` returns `Launched { status, ran }` -- `ran` only so the `exit N` line still prints exactly where it did (Step 5 removes the field): 127 not found
+  (including a path that does not exist), 126 for anything found but not runnable, a script's own last-line status for `./script`. `builtins::run` returns `Result<i32, String>` (`source`/`sh`: the
+  script's status; other builtins 0, or 1 on error); `run_script_content` returns `Result<i32, String>`. A redirect that fails is status 1.
+- Words are expanded in `run_segment_with`, before the redirects, so a stage sees `$?` as of the previous *line*.
+- Tests: new `expansion` group (plus the `syntax` group's `$` cases updated: `$x` is no longer text). 806 checks in all.
 
 ## Step 4 -- assignments: `NAME=value`, `NAME=value cmd`
 - Lexer/syntax: a leading word of the form `NAME=...` with an unquoted valid name (before the first command word) is an assignment; `Segment` gains `assignments: Vec<(String, Word)>`.

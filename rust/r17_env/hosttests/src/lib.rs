@@ -39,6 +39,8 @@ pub mod input_layout;
 pub mod keymap;
 #[path = "../../src/shell/environment.rs"]
 pub mod environment;
+#[path = "../../src/shell/expand.rs"]
+pub mod expand;
 #[path = "../../src/shell/lexer.rs"]
 pub mod lexer;
 #[path = "../../src/keyboard/line.rs"]

@@ -41,12 +41,13 @@ fn overflow(depth: usize) -> usize {
 
 /// Runs the builtin `name` (one `is_builtin` says yes to) with `args`, the words after it. `depth` is
 /// `run_line`'s script-nesting count, threaded through for `source`/`sh` to pass to
-/// `run_script_content`.
-pub fn run(name: &str, args: &[&str], depth: usize) -> Result<(), String> {
+/// `run_script_content`. `Ok` carries the exit status: `0`, except for a script, which is its last line's.
+/// `Err` is what to report; the status is then `1`.
+pub fn run(name: &str, args: &[&str], depth: usize) -> Result<i32, String> {
     match name {
-        "cd" => cd(args),
-        "export" => export(args),
-        "unset" => unset(args),
+        "cd" => cd(args).map(|()| 0),
+        "export" => export(args).map(|()| 0),
+        "unset" => unset(args).map(|()| 0),
         "source" | "." => match args {
             [path] => run_script_file(name, path, false, depth),
             [] => Err(format!("{name}: usage: {name} FILE")),
@@ -60,7 +61,7 @@ pub fn run(name: &str, args: &[&str], depth: usize) -> Result<(), String> {
         #[cfg(feature = "testhooks")]
         OVERFLOW_KERNEL_STACK => {
             core::hint::black_box(overflow(0));
-            Ok(())
+            Ok(0)
         }
         _ => unreachable!("`is_builtin` said {name} is not one"),
     }
@@ -69,7 +70,7 @@ pub fn run(name: &str, args: &[&str], depth: usize) -> Result<(), String> {
 /// Resolves `path` against the working directory (unlike launching a program: no `/bin` search, and
 /// no exec bit required -- POSIX's rule for both `source`/`.` and `sh FILE`) and runs it as a script.
 /// `cmd` (`"source"`, `"."` or `"sh"`) only names the caller, for the error prefix.
-fn run_script_file(cmd: &str, path: &str, scoped: bool, depth: usize) -> Result<(), String> {
+fn run_script_file(cmd: &str, path: &str, scoped: bool, depth: usize) -> Result<i32, String> {
     let abspath =
         shell_state::absolute(path).map_err(|e| format!("{cmd}: {path}: {}", errmsg(e)))?;
     let entry = files::lookup(&abspath).map_err(|e| format!("{cmd}: {path}: {}", errmsg(e)))?;

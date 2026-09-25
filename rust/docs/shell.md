@@ -29,12 +29,14 @@ flowchart LR
     line --> lex --> toks --> parse --> pipe --> run
 ```
 
-`shell::run_line(line)` does three things, in this order:
+`shell::run_line(line)` does four things, in this order:
 
 1. **Lex** (`shell/lexer.rs`): split the line into words, `|` and redirection operators.
 2. **Parse** (`shell/syntax.rs`): group the tokens into a `Pipeline`, a `Vec<Segment>`. A `Segment` is one
    command: its `argv` (the words) and its `redirs`, in the order typed.
-3. **Run**: one segment runs directly (`run_segment`); several run as a pipeline (`run_pipeline`).
+3. **Expand** (`shell/expand.rs`), one segment at a time, just before it runs: `$NAME`, `${NAME}` and `$?` are
+   replaced by their values and the result is split into fields (see "Expansion" below).
+4. **Run**: one segment runs directly (`run_segment`); several run as a pipeline (`run_pipeline`).
 
 A blank line or a comment does nothing, quietly. A problem at any stage is reported as one line of text on
 the current stderr (`shell_err`), so it is redirectable like any program's own error: a syntax error reads
@@ -48,8 +50,10 @@ code with no dependency on the rest of the kernel, so their unit tests run on th
 than in QEMU (`rust/r16_brk/hosttests/`, run by `just test-host`):
 
 - `shell/lexer.rs` implements the `token`/`redir_op` productions, over the characters of the line. Its
-  output is `Token::Word { text, quoted }`, `Token::Pipe` or `Token::Redir { fd, op }`.
-- `shell/syntax.rs` implements the `segment`/`pipeline` productions, over that token stream.
+  output is `Token::Word(Word)`, `Token::Pipe` or `Token::Redir { fd, op }`. A `Word` is a list of `Part`s:
+  literal text, or an expansion (`$NAME`, `${NAME}`, `$?`) that has not been given a value yet.
+- `shell/syntax.rs` implements the `segment`/`pipeline` productions, over that token stream. Its `Segment`s
+  hold the words still unexpanded.
 
 The EBNF describes what the shell *accepts*. Two things it deliberately leaves to the code (each is noted in
 the grammar file itself): `>&`'s operand must be exactly `1` or `2` (a syntax error otherwise, from
@@ -59,15 +63,14 @@ supported" message (from `lexer.rs`) rather than failing to parse generically.
 In summary, the rules are POSIX's, as far as this shell goes:
 
 - **Words** are separated by blanks. **Single quotes** are fully literal. Inside **double quotes**
-  everything is literal except that a backslash escapes `"`, `\`, `$` and a backtick; any other backslash
-  there is itself. An unquoted backslash makes the next character literal. Quoting or escaping any part of a
-  word makes the whole word `quoted`.
+  everything is literal except `$` expansions and that a backslash escapes `"`, `\`, `$` and a backtick; any
+  other backslash there is itself. An unquoted backslash makes the next character literal.
 - **`#` starts a comment only at the start of a word**: `echo a#b` prints `a#b`, `echo a #b` prints `a`.
 - **Operators** `|`, `<`, `>`, `>>` and `>&` end a word. A lone digit `0` (before `<`) or `1`/`2` (before
   `>`, `>>`, `>&`), *immediately* followed by the operator, is that operator's file descriptor number
   (`2>err`); anywhere else digits are ordinary text (`a2>x` is the word `a2`, the operator `>` and the word `x`).
-- **Nothing is expanded.** `$`, backtick, `*`, `?`, `~`, `{` and `}` are ordinary characters: no variables,
-  no globbing, no command substitution, no tilde expansion.
+- **Only variables are expanded** (next section). Backtick, `*`, `?`, `~`, `{` and `}` are ordinary characters:
+  no globbing, no command substitution, no tilde or brace expansion.
 - **Not supported**, and refused rather than taken for text: `;`, `&` (so no lists and no background jobs),
   `(` `)`, and here-documents (`<<`).
 
@@ -123,13 +126,55 @@ a temporary file** under `/tmp/`, not a real pipe.
   reading it &mdash; no streaming, and it needs free disk space. This is a permanent limitation until
   Stage 23 replaces it with real pipes between resident programs.
 
-### Exit status
+## Expansion
 
-There are no variables yet, so there is no `$?`. Instead, when a *program* exits with a nonzero status, the
-shell prints `exit N` on that command's stderr (inside its redirections, so `cmd 2> e` captures it too). A
-program stopped by a fault reports `exit 139` (`128 + SIGSEGV`). A builtin never prints one. For a pipeline
-only the **last** stage's status counts, so `false | true` prints nothing and `true | false` prints
-`exit 1`. Stage 17 replaces this convention with a real `$?`.
+Just before a segment runs, each word is given its value (`shell/expand.rs`, pure and host-tested). The
+variables are the current frame's (`export`, `unset` and the `/etc/environment` file, below).
+
+- **What expands.** `$NAME` (the longest `[A-Za-z_][A-Za-z0-9_]*`), `${NAME}` (to end the name where text
+  follows: `${X}txt`) and `$?` (the last pipeline's status), in an unquoted word or inside double quotes;
+  never inside single quotes or after a backslash (`\$X` is the text `$X`). A `$` followed by anything else
+  &mdash; a digit, `$`, a blank, the end of the line &mdash; is an ordinary character, since there are no
+  positional parameters or process ids to name. `${` that is not `${NAME}` is a syntax error (`bad
+  substitution`). A variable that is not set is empty.
+- **Field splitting.** An unquoted expansion's value is split at runs of blanks (space, tab, newline) into
+  separate arguments, with no empty field made by leading, trailing or repeated blanks: `X="a  b"` makes `echo
+  $X` pass two arguments. A quoted expansion is one piece of its word whatever it holds: `"$X"` is one
+  argument, which is empty if `X` is empty or unset. An unquoted empty expansion vanishes, so `echo $NOSUCH`
+  passes no argument at all. The text around an expansion joins the first and last field (`a$X` with `X="1 2"`
+  is `a1` and `2`). A value is not read again for `$` or quotes, and there is no globbing.
+- **Where.** In every word of a command: the command word itself (`$CMD args`; a command that expands to
+  nothing runs nothing, with status 0, and the next word becomes the command), arguments, and redirect
+  targets. A target must expand to exactly one word, or the redirect fails with `<word>: ambiguous redirect`
+  (status 1, nothing runs); `>&`'s operand must be written as a digit.
+- **When.** Each stage of a pipeline expands when its turn comes, so `$?` in it is the status of the *previous
+  line*, not of an earlier stage.
+
+### Exit status (`$?`)
+
+The status of a pipeline is its last stage's, and `$?` is the status of the last line that ran a command
+(a blank line or a comment leaves it alone; there is one value for the whole shell, so a script's last line
+carries on as the status of the `./script` that ran it):
+
+| Status | When |
+|---|---|
+| the program's | it exited (`exit N`), or `139` if it was stopped by a fault (`128 + SIGSEGV`) |
+| `0` / `1` | a builtin that worked / that reported an error; also `1` for a redirect that could not be made |
+| the script's | a script run with `./script`, `sh` or `source`: its last line's |
+| `126` | found but could not be run: a directory, no exec bit, too big, not a valid program, too many arguments |
+| `127` | not found (`command not found`, or a path that does not exist) |
+| `2` | a syntax error |
+
+Until Stage 17's Step 5, a program that exits nonzero also still has an `exit N` line printed for it (see
+below); after that only `$?` shows it.
+
+### Exit status: the `exit N` line
+
+When a *program* exits with a nonzero status, the shell prints `exit N` on that command's stderr (inside its
+redirections, so `cmd 2> e` captures it too). A program stopped by a fault reports `exit 139`. A builtin, a
+script and a command that never started never print one. For a pipeline only the **last** stage's status
+counts, so `false | true` prints nothing and `true | false` prints `exit 1`. Stage 17 (Step 5) retires this
+convention: `$?` is the way to see a status.
 
 ## Builtins
 
@@ -194,11 +239,11 @@ bindings (and `launch` gives it the top frame's exported variables as its `envp`
 
 ## Limits
 
-- No `;`, `&`, `(` `)`, here-documents, variables, expansion, globbing, or control flow; no job control and
-  a single foreground program at a time.
+- No `;`, `&`, `(` `)`, here-documents, `NAME=value` assignments (Stage 17, Step 4), globbing, or control flow; no job
+  control and a single foreground program at a time. The only expansions are `$NAME`, `${NAME}` and `$?`.
 - Pipes go through files under `/tmp/`, and the shell needs that directory to exist.
 - No tab completion, and no history across reboots.
-- `cd` with no operand goes to `/`, not `$HOME`, and `$?` doesn't exist (`exit N` instead).
+- `cd` with no operand goes to `/`, not `$HOME` (Stage 17, Step 6).
 
 ## Where the code lives
 
@@ -206,6 +251,7 @@ bindings (and `launch` gives it the top frame's exported variables as its `envp`
 |---|---|
 | `shell/mod.rs` | The read-eval loop, `run_line`, redirection, pipelines, script execution |
 | `shell/lexer.rs`, `shell/syntax.rs` | The grammar (see above) |
+| `shell/expand.rs` | `$` expansion and field splitting (pure, host-tested) |
 | `shell/builtins.rs` | `cd`, `export`, `unset`, `source`, `.`, `sh` |
 | `shell/environment.rs` | The parser for `/etc/environment` (pure, host-tested); `shell/mod.rs`'s `load_environment` reads it at boot |
 | `shell/launch.rs` | Finding and starting a program |

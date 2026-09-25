@@ -20,6 +20,15 @@ squote      ::= "'" ;
 dquote      ::= "\"" ;
 slash       ::= "\\" ;
 
+name        ::= ("A"-"Z" | "a"-"z" | "_") ("A"-"Z" | "a"-"z" | "0"-"9" | "_")* ;
+expansion   ::= "${" name "}" | "$?" | "$" name ;
+(* Variables and the last status, in an unquoted word and inside double quotes. lexer.rs records each as a
+   part of its word; expand.rs gives it a value just before the command runs. A "$" that does not start an
+   expansion (followed by a digit, another "$", a blank, the end of the line) is an ordinary character, except
+   that "${" not completed as "${" name "}" is refused (a "bad substitution" error, like the other refusals
+   below, is an error-reporting choice this grammar does not represent). Neither is recognized inside
+   single quotes, nor after a backslash. *)
+
 squote_char ::= char - "'" ;
 squoted     ::= squote squote_char* squote ;
 (* no escaping inside single quotes *)
@@ -28,7 +37,8 @@ dquote_escape    ::= slash (dquote | slash | "$" | "`") ;
 (* an escaped character inside double quotes *)
 dquote_backslash ::= slash (char - dquote - slash - "$" - "`") ;
 (* a bare slash followed by a literal character, excluding the four above *)
-dquote_char      ::= (char - dquote - slash) | dquote_escape | dquote_backslash ;
+dquote_char      ::= expansion | (char - dquote - slash) | dquote_escape | dquote_backslash ;
+(* an expansion is tried first, so "$x" is the variable and not the two characters `$` and `x` *)
 dquoted          ::= dquote dquote_char* dquote ;
 
 escape        ::= slash char ;
@@ -41,11 +51,12 @@ meaning in the shell, such as quotes, backslashes, pipes, redirection symbols, a
 markers. *)
 unquoted_tail  ::= unquoted_start | "#" ;
 (* "#" may continue a word already started but never starts one *)
-unquoted       ::= unquoted_start unquoted_tail* ;
+unquoted       ::= (expansion | unquoted_start) (expansion | unquoted_tail)* ;
+(* likewise, an expansion is tried before the plain character "$" *)
 
 piece       ::= dquoted | squoted | escape ;
 (* a quoted or escaped piece of text *)
-tail        ::= piece unquoted_tail* ;
+tail        ::= piece (expansion | unquoted_tail)* ;
 (* a tail is a piece followed by zero or more unquoted_tail characters *)
 token       ::= unquoted tail* | tail+ ;
 (* If the first part of a token is unquoted, it cannot start with # in addition to the other

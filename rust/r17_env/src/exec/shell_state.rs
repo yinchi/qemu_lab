@@ -13,6 +13,7 @@
 //! per-process. Its number is reserved in `abi::syscall`.
 
 use alloc::string::String;
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use super::frame_stack::{FrameStack, StdioBinding};
 use crate::fs::files::{self, FileRef};
@@ -29,6 +30,20 @@ pub type Frames = FrameStack<FileRef>;
 /// SAFETY (every access): single core; the shell's loop and the syscalls it runs never overlap, and the
 /// interrupt handler never touches it.
 pub static mut FRAMES: Option<Frames> = None;
+
+/// What `$?` is: the exit status of the last pipeline the shell ran. One for the whole shell, not per frame:
+/// a script's last line is what `./script` reports, so the value just carries on through the scopes.
+static LAST_STATUS: AtomicI32 = AtomicI32::new(0);
+
+/// The status of the last pipeline (`0` before the first).
+pub fn last_status() -> i32 {
+    LAST_STATUS.load(Ordering::Relaxed)
+}
+
+/// Records the status of the pipeline that just finished.
+pub fn set_last_status(status: i32) {
+    LAST_STATUS.store(status, Ordering::Relaxed);
+}
 
 /// The stack of shell frames.
 pub fn frames() -> &'static mut Frames {

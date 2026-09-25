@@ -12,6 +12,7 @@
 
 pub mod builtins;
 pub mod environment;
+pub mod expand;
 pub mod launch;
 pub mod lexer;
 pub mod syntax;
@@ -32,7 +33,9 @@ use crate::keyboard::queue;
 use crate::platform::globals::{CONSOLE, GPU};
 use crate::platform::uart::{uart_ensure_newline, uart_write};
 use crate::{static_mut_ref, static_ref};
-use launch::launch;
+use expand::Values;
+use launch::{Launched, launch};
+use lexer::Word;
 use syntax::{Redirection, Segment};
 
 /// The environment file: plain `NAME=VALUE` lines (see `environment.rs`), read once at boot.
@@ -95,36 +98,46 @@ pub fn run_line(line: &str) {
 /// `depth + 1` for every line a script (`run_script_content`) feeds back through here. Kept separate
 /// from `run_line` so the prompt -- the only caller that doesn't already have a `depth` -- has a
 /// plain, depth-free entry point.
-fn run_line_inner(line: &str, depth: usize) {
+///
+/// Returns the line's exit status -- also recorded for `$?` -- or `None` for a line with nothing on it,
+/// which leaves `$?` alone. A syntax error is status 2, as in POSIX shells.
+fn run_line_inner(line: &str, depth: usize) -> Option<i32> {
     let pipeline = match syntax::parse(line) {
         Ok(Some(pipeline)) => pipeline,
-        Ok(None) => return,
+        Ok(None) => return None,
         Err(error) => {
             shell_err(&format!("syntax error: {error}"));
-            return;
+            shell_state::set_last_status(2);
+            return Some(2);
         }
     };
-    // The returned status isn't used here -- `exit N` (our stand-in for `$?` until Stage 17, see
-    // `ROADMAP.md`'s Stage 17 section) is printed by `run_segment_with` itself, while its
-    // `with_stdio` scope is still active, so a redirected stderr captures it exactly like the rest
-    // of a failing command's own output. Once Stage 17 adds real `$?`, this is where the returned
-    // value would be saved instead (no redirect concern for a plain variable write, so it need not
-    // move back inside any scope) -- the return chain underneath doesn't change either way.
-    if let [segment] = pipeline.as_slice() {
-        run_segment(segment, depth);
+    // `exit N` (our stand-in for `$?`, until Step 5 retires it) is still printed by `run_segment_with` itself,
+    // while its `with_stdio` scope is active, so a redirected stderr captures it like the rest of a failing
+    // command's own output.
+    let status = if let [segment] = pipeline.as_slice() {
+        run_segment(segment, depth).status
     } else {
-        run_pipeline(&pipeline, depth);
-    }
+        run_pipeline(&pipeline, depth)
+    };
+    shell_state::set_last_status(status);
+    Some(status)
 }
 
 /// Runs one segment with no pipe bindings -- the plain, single-command case, always reporting its
 /// own exit status. A thin wrapper over `run_segment_with`; see it for what actually happens.
-fn run_segment(segment: &Segment, depth: usize) -> Option<i32> {
+fn run_segment(segment: &Segment, depth: usize) -> Launched {
     run_segment_with(segment, [None, None, None], true, depth)
 }
 
-/// Runs one segment: opens its redirections in order -- left to right, each already in effect for
-/// the ones after it, so `2>&1 > f` and `> f 2>&1` differ -- then the command itself, all under one
+/// The variables as a `$` expansion sees them: the current frame's, and the last status for `$?`.
+fn expand_words(words: &[Word]) -> Vec<String> {
+    let lookup = |name: &str| shell_state::frames().top().var(name).map(String::from);
+    expand::expand(words, &Values { lookup: &lookup, status: shell_state::last_status() })
+}
+
+/// Runs one segment: expands its words (`$NAME`, `$?`: see `expand.rs`), opens its redirections in order
+/// -- left to right, each already in effect for the ones after it, so `2>&1 > f` and `> f 2>&1` differ --
+/// then the command itself, all under one
 /// `with_stdio` scope seeded with `overrides`. That scope is why a builtin's own state change (`cd`)
 /// still sticks under a redirect, why a failed redirect leaves exactly the earlier ones of the same
 /// line in effect, and why the error message for that failure (and any launch error) is itself
@@ -133,39 +146,39 @@ fn run_segment(segment: &Segment, depth: usize) -> Option<i32> {
 /// are closed when the scope ends and restores the streams, committing anything written -- unless a
 /// program somehow still held one.
 ///
+/// Expansion happens here, when the segment is about to run, and not when the line is parsed: a stage of a
+/// pipeline sees the variables (and `$?`) as they are when its turn comes.
+///
 /// `overrides` is `[None, None, None]` for a plain command (`run_segment`); a pipeline stage
 /// (`run_pipeline`) instead seeds it with the pipe's own binding, which the segment's redirects
 /// below then correctly layer on top of via `apply_redirect`'s plain overwrite -- "the pipe binds
 /// before the stage's own redirects," with no new mechanism beyond what redirection already does.
 ///
-/// `report` is whether this call should print `exit {code}` (our stand-in for `$?` until Stage 17)
-/// for a nonzero result -- `true` for a plain command, `true` only for a pipeline's *last* stage
-/// (`run_pipeline`). The print happens *inside* the `with_stdio` scope, not after it returns, so a
+/// `report` is whether this call should print `exit {code}` (our stand-in for `$?` until Step 5) for a
+/// program that ran and returned nonzero -- `true` for a plain command, `true` only for a pipeline's *last*
+/// stage (`run_pipeline`). The print happens *inside* the `with_stdio` scope, not after it returns, so a
 /// redirected stderr captures it exactly like the rest of a failing command's own output -- moving
 /// it outside was tried and breaks `cmd 2> e`'s existing, already-tested behavior.
 ///
-/// Returns `None` if no program actually ran (a builtin, a script, or any of `launch`'s own
-/// already-reported failures) or `Some(code)` if one did -- see `launch`'s doc comment.
+/// Returns how it went (`Launched`): a redirect that failed is status 1 and nothing ran.
 fn run_segment_with(
     segment: &Segment,
     overrides: [Option<Stdio>; 3],
     report: bool,
     depth: usize,
-) -> Option<i32> {
+) -> Launched {
+    let argv = expand_words(&segment.argv);
     shell_state::frames().with_stdio(overrides, |frames| {
         for redir in &segment.redirs {
             if !apply_redirect(frames, redir) {
-                return None; // shell_err already reported; the command does not run
+                return Launched { status: 1, ran: false }; // shell_err already reported; the command does not run
             }
         }
-        let status = run_command(&segment.argv, depth);
-        if report
-            && let Some(code) = status
-            && code != 0
-        {
-            shell_err(&format!("exit {code}"));
+        let launched = run_command(&argv, depth);
+        if report && launched.ran && launched.status != 0 {
+            shell_err(&format!("exit {}", launched.status));
         }
-        status
+        launched
     })
 }
 
@@ -175,7 +188,9 @@ fn run_segment_with(
 /// via `shell_err`.
 fn apply_redirect(frames: &mut Frames, redir: &Redirection) -> bool {
     match redir {
-        Redirection::In(path) => match open_redirect_target(path, false, false) {
+        Redirection::In(path) => match redirect_target(path)
+            .and_then(|path| open_redirect_target(&path, false, false))
+        {
             Ok(file) => {
                 frames.top_mut().stdio[0] = Stdio::File(file);
                 true
@@ -185,7 +200,9 @@ fn apply_redirect(frames: &mut Frames, redir: &Redirection) -> bool {
                 false
             }
         },
-        Redirection::Out { fd, path, append } => match open_redirect_target(path, true, *append) {
+        Redirection::Out { fd, path, append } => match redirect_target(path)
+            .and_then(|path| open_redirect_target(&path, true, *append))
+        {
             Ok(file) => {
                 frames.top_mut().stdio[*fd as usize] = Stdio::File(file);
                 true
@@ -204,6 +221,14 @@ fn apply_redirect(frames: &mut Frames, redir: &Redirection) -> bool {
     }
 }
 
+/// The file name a redirection's word stands for, expanded like any other word but required to come out as
+/// exactly one (bash's `ambiguous redirect`).
+fn redirect_target(word: &Word) -> Result<String, String> {
+    let lookup = |name: &str| shell_state::frames().top().var(name).map(String::from);
+    let values = Values { lookup: &lookup, status: shell_state::last_status() };
+    expand::expand_target(word, &values).map_err(|_| format!("{word}: ambiguous redirect"))
+}
+
 /// Resolves `path` against the working directory and opens it for a redirection, in bash's wording
 /// on failure. The file outlives whatever program runs under the redirect because the frame's binding
 /// holds a reference to it, whatever that program does to its own fds.
@@ -213,18 +238,23 @@ fn open_redirect_target(path: &str, write: bool, append: bool) -> Result<FileRef
 }
 
 /// Runs a segment's command -- once its redirections (if any) are already bound -- as a builtin or a
-/// program. Empty `argv` (a stage of only redirections, `> f`) runs nothing: POSIX still creates the
-/// file. A builtin never contributes a numeric status (none of `cd`/`source`/`.`/`sh` have one,
-/// matching their existing behavior of never printing `exit N`); only a program launched via
-/// `launch` can return `Some(code)`.
-fn run_command(argv: &[String], depth: usize) -> Option<i32> {
-    let name = argv.first()?;
+/// program. Empty `argv` (a stage of only redirections, `> f`, or words that expanded to nothing) runs
+/// nothing, with status 0: POSIX still creates the file. A builtin's status is 0, or 1 if it reported an
+/// error (a script run by `source` or `sh` gives its last line's); a program's comes from `launch`.
+fn run_command(argv: &[String], depth: usize) -> Launched {
+    let Some(name) = argv.first() else {
+        return Launched { status: 0, ran: false };
+    };
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     if builtins::is_builtin(name) {
-        if let Err(message) = builtins::run(name, &argv[1..], depth) {
-            shell_err(&message);
-        }
-        None
+        let status = match builtins::run(name, &argv[1..], depth) {
+            Ok(status) => status,
+            Err(message) => {
+                shell_err(&message);
+                1
+            }
+        };
+        Launched { status, ran: false }
     } else {
         // SAFETY: as `run`'s doc comment says of the statics it uses.
         let vol = unsafe { static_ref!(VOL) };
@@ -287,12 +317,12 @@ fn cleanup_temps(paths: &[String]) {
 /// pipeline's status is the *last* stage's: only its call to `run_segment_with` passes `report:
 /// true`, so `exit N` (if the last stage's code is nonzero) is the only one that can ever print,
 /// from inside that stage's own `with_stdio` scope -- see `run_segment_with`'s doc comment for why
-/// it can't be printed here instead.
+/// it can't be printed here instead. A setup failure (no temp file) is status 1.
 ///
 /// Temp paths are all allocated before any stage runs and removed on every exit from this function.
 /// Each pipe file is held by the binding the stage runs under, so it is closed as soon as the stage's
 /// `run_segment_with` returns, committing the write side's size to disk before the next stage reads it.
-fn run_pipeline(pipeline: &[Segment], depth: usize) -> Option<i32> {
+fn run_pipeline(pipeline: &[Segment], depth: usize) -> i32 {
     let n = pipeline.len();
     let mut temps: Vec<String> = Vec::new();
     for _ in 0..n - 1 {
@@ -301,12 +331,12 @@ fn run_pipeline(pipeline: &[Segment], depth: usize) -> Option<i32> {
             Err(msg) => {
                 shell_err(&msg);
                 cleanup_temps(&temps);
-                return None;
+                return 1;
             }
         }
     }
 
-    let mut last_status = None;
+    let mut last_status = 0;
     for (i, segment) in pipeline.iter().enumerate() {
         let mut overrides = [None, None, None];
 
@@ -316,7 +346,7 @@ fn run_pipeline(pipeline: &[Segment], depth: usize) -> Option<i32> {
         {
             shell_err(&msg);
             cleanup_temps(&temps);
-            return None;
+            return 1;
         }
         if i < n - 1
             && let Err(msg) = open_redirect_target(&temps[i], true, false)
@@ -324,10 +354,10 @@ fn run_pipeline(pipeline: &[Segment], depth: usize) -> Option<i32> {
         {
             shell_err(&msg);
             cleanup_temps(&temps);
-            return None;
+            return 1;
         }
 
-        last_status = run_segment_with(segment, overrides, i == n - 1, depth);
+        last_status = run_segment_with(segment, overrides, i == n - 1, depth).status;
     }
 
     cleanup_temps(&temps);
@@ -351,21 +381,24 @@ const MAX_SCRIPT_DEPTH: usize = 16;
 /// and read the file (finding it works differently for each caller: `launch.rs`'s `./file` fallback
 /// already has the bytes it peeked at for the ELF-magic check; `source`/`sh`, in `builtins.rs`,
 /// resolve `path` against the working directory, unlike launching a program, and need no exec bit).
-pub(crate) fn run_script_content(content: &str, scoped: bool, depth: usize) -> Result<(), String> {
+///
+/// `Ok` carries the script's exit status: that of its last line that ran a command (`0` for none).
+pub(crate) fn run_script_content(content: &str, scoped: bool, depth: usize) -> Result<i32, String> {
     if depth >= MAX_SCRIPT_DEPTH {
         return Err(String::from("too many levels of scripts"));
     }
     let run_lines = || {
+        let mut status = 0;
         for line in content.lines() {
-            run_line_inner(line, depth + 1);
+            status = run_line_inner(line, depth + 1).unwrap_or(status);
         }
+        status
     };
-    if scoped {
-        shell_state::frames().with_scope(|_frames| run_lines());
+    Ok(if scoped {
+        shell_state::frames().with_scope(|_frames| run_lines())
     } else {
-        run_lines();
-    }
-    Ok(())
+        run_lines()
+    })
 }
 
 /// Reports one line of text as this segment's stderr: wherever the current frame's `stdio[2]` points
