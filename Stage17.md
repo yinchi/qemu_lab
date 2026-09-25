@@ -15,8 +15,8 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 7 | `$HOME` for `cd` and for where the init shell starts, `$TZ` for `date` and `stat` | done |
 | 8 | `$PATH`: the directories a bare command name is looked up in | done |
 | 9 | Drop the `.exe` naming: programs are `bin/cat`, not `bin/cat.exe` | done |
-| 10 | `$PS1`: a limited prompt string (working directory) | planned |
-| 11 | `~/.profile`: a per-user start-up script, run by the init shell | planned |
+| 10 | `$PS1`: a limited prompt string (working directory) | done |
+| 11 | `~/.profile`, and `source` searching `$PATH` | planned |
 | 12 | Docs, roadmap, regression sweep | planned |
 
 ## Context
@@ -264,7 +264,18 @@ The shell starts in `$HOME` and the prompt is a fixed `> `, so `pwd` is the only
   wide characters, a prompt long enough to wrap the row with editing (Home/End/backspace) still redrawing correctly, history recall unaffected, and `PS1` set in `/etc/environment` in effect at the first prompt.
 - Docs: `shell.md` (Starting up, the prompt paragraph in the line-editing text), `console.md` if it states the prompt is constant.
 
-## Step 11 -- `~/.profile`
+**As built (Step 10).** As planned, with these specifics:
+- `shell/prompt.rs` (pure, 11 host tests): `render(ps1, cwd)`. Escapes `\w`, `\W`, `\$` (-> `#`), `\\`; any other backslash sequence is kept as two characters; control characters dropped; **a prompt over 128 characters keeps its last 128**
+  (added beyond the plan: a long `\w` must not leave no room to type); unset, empty, or nothing left after dropping controls is `> `. No `$` expansion, no `\n`.
+- `LineDiscipline.prefix` is a `String` (was `&'static str`); `begin` takes `&str` and copies it, and the layout functions (`rows_needed`, `cursor_position`, `fits_on_screen`) already took `&str`, so redraw, wrap and cursor
+  arithmetic did not change. `start_prompt` renders from the top frame's `PS1` and working directory each time; the serial log gets the same text. A program's `read(0)` still begins with an empty prefix.
+- **The general image sets `PS1=\w> `** (the open question in the plan): a boot shows `/root> `. Test groups leave `PS1` unset unless a module sets it.
+- Harness: nothing changed, but note `wait_prompt` ends a transcript at the final `> `, so a prompt with more before it leaves that text on the end of `run`'s result; `prompt.py` expects it (`/tests`, `a\b`, ...).
+  The wide-character case comes from the environment file, since `Session.type` sends ASCII key names only.
+- Tests: new `prompt` group (escapes, `cd`, `\$`/`\\`/unknown, `$` not expanded, empty and unset, not exported, pipeline-stage assignment ignored, editing and history after a longer prompt, a prompt wrapping the row with a screendump
+  comparison) and `prompt_env` (`PS1` in `/etc/environment` at the first prompt, `HOME=/tests`, a wide glyph, a screendump comparison). 1049 checks in all.
+
+## Step 11 -- `~/.profile`, and `source` searching `$PATH`
 `/etc/environment` is data: `NAME=VALUE`, no expansion, so it cannot say `PATH=$PATH:/root/bin`. A per-user start-up script can, because the shell now has assignments, `$VAR` and `source`. Decision: a script (a plain
 second environment file adds nothing over `export A=b` lines in one), following Linux, where `/etc/environment` stays a system-wide data file and the shell's profile is a script layered on top.
 - `src/shell/mod.rs` `start_up`: after `enter_home` (so the shell is in `$HOME`, as after a login) and before the first prompt, run `$HOME/.profile` if it exists -- `run_script_content(content, false, 0)`, **unscoped**, so its
@@ -277,6 +288,13 @@ second environment file adds nothing over `export A=b` lines in one), following 
 - Tests (`profile.py`, its own group, `HOME=/tests`): assignments and `export`s in it are in effect at the first prompt (`echo $X`, `printenv`); `PATH=$PATH:...` (expansion works); a `cd` in it sticks; a bad line is
   reported and the rest still run; no file / a directory named `.profile` / an empty file are all silent or noted as above and the shell starts; output from a command in it appears before the first prompt (harness reads the
   boot log); `./script`-style isolation is *not* applied (it is not a scope); `PS1` set there shows at the first prompt.
+- **`source` and `.` search `$PATH`** (folded in here: scripts kept in a `PATH` directory, `~/bin` among them, become sourceable by name, which is what a profile wants). Bash's rule, checked against the host's bash: a
+  name with **no `/`** is looked up in the directories of `$PATH` first (`path_search::candidates`, in order; the file need only be readable, **not executable**), and if none has it, in the working directory (bash's non-POSIX
+  fallback; POSIX mode stops at `PATH`). A name with a `/` is used as written and never searched. A directory of that name is skipped. `builtins::run_script_file` does it for `source`/`.` only: **`sh FILE` is unchanged**
+  (it takes the path as given), as is `./script`. Failure wording stays as it is (`source: name: No such file or directory`). `PATH` unset is `/bin` (the shared rule), so `source echo` would find the binary and refuse it as
+  not text -- which is the right answer. Tests (in `path.py`, which already has the two program directories; scripts are added to them): a script found in a later `PATH` directory, `PATH` before the working directory
+  when both have the name, the working-directory fallback, no exec bit needed, a slash name not searched, `.` the same, a directory of that name skipped, unset and empty `PATH`, and `sh FILE` still cwd-only. Docs:
+  `shell.md` (the `source` row and Program lookup).
 - Docs: `shell.md` "Starting up" (the order is now environment, `$HOME`, profile, prompt), `filesystem.md` (`/root/.profile`), `tests.md` (`PROFILE`).
 
 ## Step 12 -- docs, roadmap, sweep

@@ -76,7 +76,7 @@ pub struct LineDiscipline {
     /// clear, since a line that just got shorter leaves its old last rows behind.
     height: usize,
     /// What is drawn before the line: the shell's prompt, or nothing for a program.
-    prefix: &'static str,
+    prefix: String,
     mode: Mode,
     /// The shell prompt's command history (`Mode::Prompt`'s Up/Down; untouched in `Mode::Canonical`,
     /// since a program's `read(0)` never records or recalls anything).
@@ -95,7 +95,7 @@ impl LineDiscipline {
             buffer: LineBuffer::new(),
             row: 0,
             height: 1,
-            prefix: "",
+            prefix: String::new(),
             mode: Mode::Prompt,
             history: History::new(),
         }
@@ -105,13 +105,14 @@ impl LineDiscipline {
     /// cursor mid-line, else on the cursor's own row. Draws nothing (see `redraw`); the buffer is empty
     /// -- a finished line already emptied it. Also ends any in-progress history browsing, so a stale
     /// recall position from a previous line never leaks into this one.
-    pub fn begin(&mut self, console: &mut Console, prefix: &'static str, mode: Mode) {
+    pub fn begin(&mut self, console: &mut Console, prefix: &str, mode: Mode) {
         if console.cursor().1 != 0 {
             console.write_char('\n', FG, BG);
         }
         self.row = console.cursor().0;
         self.height = 1;
-        self.prefix = prefix;
+        self.prefix.clear();
+        self.prefix.push_str(prefix);
         self.mode = mode;
         self.history.reset_recall();
     }
@@ -123,7 +124,7 @@ impl LineDiscipline {
     /// placing the visible cursor at its logical position (`self.buffer.cursor()`), which is not
     /// necessarily where `write_char` just left the console's own cursor -- the user may have moved left.
     pub fn redraw(&mut self, console: &mut Console) {
-        let height = rows_needed(self.prefix, self.buffer.as_str(), console.cols);
+        let height = rows_needed(&self.prefix, self.buffer.as_str(), console.cols);
         let last_row = (self.row + self.height.max(height)).min(console.rows);
         for row in self.row..last_row {
             console.clear_row(row, BG);
@@ -146,7 +147,7 @@ impl LineDiscipline {
     /// cell when it finishes (`handle`'s `Finished` arm) needs the text as it was *before* `feed`
     /// cleared the buffer -- `self.buffer.as_str()` is already empty by then.
     fn draw_cell_at(&self, console: &mut Console, text: &str, cursor: usize, inverted: bool) {
-        let (rel_row, col) = cursor_position(self.prefix, text, cursor, console.cols);
+        let (rel_row, col) = cursor_position(&self.prefix, text, cursor, console.cols);
         let c = text[cursor..].chars().next().unwrap_or(' ');
         let (fg, bg) = if inverted { (BG, FG) } else { (FG, BG) };
         console.put_char_at(self.row + rel_row, col, c, fg, bg);
@@ -218,7 +219,7 @@ impl LineDiscipline {
                 // way `Changed` can overflow, since every other edit it covers (Backspace, Delete,
                 // Ctrl+U/K) only ever shortens the line.
                 if !fits_on_screen(
-                    self.prefix,
+                    &self.prefix,
                     self.buffer.as_str(),
                     console.cols,
                     console.rows,

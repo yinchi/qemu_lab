@@ -3,3 +3,5 @@
 HOME=/root
 TZ=America/Toronto
 PATH=/bin
+# The prompt: `\w` is the working directory (see `shell/prompt.rs`; `\W`, `\$` and `\\` also work), filled in each time.
+PS1=\w> 

@@ -216,8 +216,22 @@ go to the serial log, all before that first `> `. There is no login or user syst
 the shell's own doing, and nothing else keeps the two together afterwards (as on Linux, `cd` never changes
 `$HOME` and changing `$HOME` never moves the shell). With no `HOME`, or an empty one, it stays in `/`; a `HOME` that names
 no directory is reported on the serial log (`Environment: cannot enter HOME=/x: ... -- staying in /.`) and does the
-same. The general image's file says `HOME=/root`, so the shell starts in `/root`; the prompt does not show the directory
-(it is a fixed `> `), `pwd` does.
+same. The general image's file says `HOME=/root`, so the shell starts in `/root`.
+
+### The prompt
+
+The prompt is **`$PS1`**, with four backslash escapes filled in each time one is drawn (`shell/prompt.rs`, pure and
+host-tested): `\w` is the working directory (the whole path: there is no `~`), `\W` its last component (`/` for the
+root), `\$` is `#` (there is only root) and `\\` a backslash. Any other backslash sequence stays as typed, and
+nothing else is interpreted: no `$VAR` expansion (bash does that; here the value is text plus those escapes), no
+`\n` (the line editor assumes a prompt on one row's worth of text), no colours. Control characters are dropped, so a
+prompt cannot move the cursor, and a prompt over 128 characters keeps its **last** 128 (the end is where the `> `
+is). **Unset or empty `PS1` is the default, `> `.** It is read from the shell's own variables and working directory
+each time, so `PS1='\w> '` or a `cd` shows on the very next prompt; it needs no `export`. The general image's
+`/etc/environment` sets `PS1=\w> `, so a boot shows `/root> `; the values in that file are literal, which is why the
+backslash escapes are still there to be filled in. The serial log gets the same text. One thing to know when driving
+the shell from a script or a test: the harness ends a transcript at the prompt's final `> `, so any `PS1` must end in
+`> ` for it to work, and the part before that is left on the end of the transcript.
 
 ## Builtins
 

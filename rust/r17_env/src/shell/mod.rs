@@ -16,6 +16,7 @@ pub mod expand;
 pub mod launch;
 pub mod lexer;
 pub mod path_search;
+pub mod prompt;
 pub mod syntax;
 
 use alloc::format;
@@ -101,19 +102,21 @@ fn start_up() {
     }
 }
 
-/// The prompt shown before the line being typed -- fixed text with no relation to the line's own
-/// content, so it's structurally impossible for any editing key (which only ever touches the line
-/// buffer, see `keyboard/line.rs`) to erase into or through it.
-pub const PROMPT: &str = "> ";
-
 /// Starts a fresh prompt: a new input line on the console (on a fresh row if whatever ran left the
 /// cursor mid-line), the prompt drawn on it, and the UART's transcript given the prompt too.
 /// Called once at boot and after every line the shell finishes with. Does not flush the display.
+///
+/// The prompt is `$PS1` with its few escapes filled in (`prompt.rs`), worked out afresh each time from the
+/// shell's own variables and working directory, so `PS1=...` or a `cd` shows at the next prompt. It is fixed text
+/// as far as the line editor is concerned -- unrelated to the line's own content, so no editing key (which only
+/// ever touches the line buffer, see `keyboard/line.rs`) can erase into or through it.
 pub fn start_prompt(discipline: &mut LineDiscipline, console: &mut Console) {
-    discipline.begin(console, PROMPT, Mode::Prompt);
+    let frame = shell_state::frames().top();
+    let prompt = prompt::render(frame.var("PS1"), &frame.cwd);
+    discipline.begin(console, &prompt, Mode::Prompt);
     discipline.redraw(console);
     uart_ensure_newline();
-    uart_write(PROMPT.as_bytes());
+    uart_write(prompt.as_bytes());
 }
 
 /// Runs one typed line: parses it (`syntax.rs`) and executes it -- a builtin (`builtins.rs`), a

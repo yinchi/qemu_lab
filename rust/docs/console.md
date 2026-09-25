@@ -52,7 +52,7 @@ serves the one console, and is used by two callers:
 
 | Caller | Prefix drawn before the line | Mode |
 |---|---|---|
-| the shell's prompt (`shell::start_prompt`) | `> ` | `Mode::Prompt` |
+| the shell's prompt (`shell::start_prompt`) | `$PS1` with a few escapes filled in (`> ` if unset); an owned string, redrawn each time | `Mode::Prompt` |
 | a program's `read(0)` (`keyboard/stdin.rs`) | none | `Mode::Canonical` |
 
 Its parts (each one file under `keyboard/`):
