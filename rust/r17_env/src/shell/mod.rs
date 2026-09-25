@@ -185,9 +185,8 @@ fn restore_assignments(saved: Vec<(String, Option<(String, bool)>)>) {
 ///
 /// A segment with a command runs it with its assignments as extra exported variables, put back afterwards
 /// (a builtin sees them while it runs); one with no command -- or whose words all expanded to nothing --
-/// sets the shell's own variables, for good. Every stage of a pipeline shares the one set of variables, so
-/// an assignment alone in a stage (`A=1 | cat`) is not confined to it as it would be in a shell that runs
-/// stages as processes.
+/// sets the shell's own variables, for good -- unless the segment is a stage of a pipeline, which runs in a
+/// subshell (`run_pipeline`), so what it sets goes when the stage ends.
 ///
 /// `overrides` is `[None, None, None]` for a plain command (`run_segment`); a pipeline stage
 /// (`run_pipeline`) instead seeds it with the pipe's own binding, which the segment's redirects
@@ -345,6 +344,8 @@ fn cleanup_temps(paths: &[String]) {
 /// the rest, never a stage's own failure. The pipe is bound before a stage's own redirections (see
 /// `run_segment_with`), so `a > f | b` sends `a`'s output to `f`, and `b` sees empty input. The
 /// pipeline's status is the *last* stage's (the others' are dropped, as in a shell without `pipefail`).
+/// Each stage runs in a subshell (`with_subshell`), the last one included, so a builtin or an assignment in a
+/// pipeline (`cd d | cat`, `A=1 | cat`, `echo $X | unset X`) does not touch the shell's own state, as in bash.
 /// A setup failure (no temp file) is status 1.
 ///
 /// Temp paths are all allocated before any stage runs and removed on every exit from this function.
@@ -385,7 +386,8 @@ fn run_pipeline(pipeline: &[Segment], depth: usize) -> i32 {
             return 1;
         }
 
-        last_status = run_segment_with(segment, overrides, depth);
+        // Each stage is a subshell: it sees every variable the shell has, and nothing it changes outlasts it.
+        last_status = shell_state::frames().with_subshell(|_| run_segment_with(segment, overrides, depth));
     }
 
     cleanup_temps(&temps);

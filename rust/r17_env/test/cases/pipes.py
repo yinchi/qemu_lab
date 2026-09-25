@@ -1,4 +1,4 @@
-"""Step 11: pipes via temp files. See `Stage12.md`'s Step 11 section for the design -- this module
+"""Step 11: pipes via temp files (and, from Stage 17, each stage running in a subshell). See `Stage12.md`'s Step 11 section for the design -- this module
 exercises execution end to end (the grammar itself is already covered by `syntax.py`'s host-level
 parser tests and its own `"a pipe runs"` check).
 """
@@ -64,3 +64,47 @@ def run(ctx):
     check("no leftover pipe temp files -- only the manually-created one from the collision test",
           s.run("ls /tmp"), "ls /tmp\n.pipe0\n")
     s.run("rm /tmp/.pipe0")
+
+    # ================================================================= each stage is a subshell (Stage 17)
+    # It starts with everything the shell has, unexported variables included, and nothing it does outlasts it -- so
+    # a builtin or an assignment in a pipeline changes that stage only, and the same alone changes the shell.
+    s.run("FOO=123")  # not exported
+    check("a stage reads a variable the shell never exported", s.run("echo $FOO | cat"), "echo $FOO | cat\n123\n")
+    check("echo $FOO | unset FOO prints nothing (the pipe took it)", s.run("echo $FOO | unset FOO"), "echo $FOO | unset FOO\n")
+    check("...and FOO is still set", s.run('echo "$FOO"'), 'echo "$FOO"\n123\n')
+    check("unset as the last stage", s.run("echo a | unset FOO"), "echo a | unset FOO\n")
+    check("...", s.run('echo "$FOO"'), 'echo "$FOO"\n123\n')
+    check("unset as the first stage", s.run("unset FOO | cat"), "unset FOO | cat\n")
+    check("...", s.run('echo "$FOO"'), 'echo "$FOO"\n123\n')
+    check("a lone unset does unset it", s.run("unset FOO"), "unset FOO\n")
+    check("...", s.run("echo [$FOO]"), "echo [$FOO]\n[]\n")
+    s.run("FOO=1")
+    check("...and so does one with a redirect (that is not a pipeline)", s.run("unset FOO > /tmp/o"), "unset FOO > /tmp/o\n")
+    check("...", s.run("echo [$FOO]"), "echo [$FOO]\n[]\n")
+
+    check("cd in a stage", s.run("cd /tests | cat"), "cd /tests | cat\n")
+    check("...leaves the working directory", s.run("pwd"), "pwd\n/\n")
+    check("cd in the last stage", s.run("echo a | cd /tests"), "echo a | cd /tests\n")
+    check("...too", s.run("pwd"), "pwd\n/\n")
+    check("a lone cd changes it", s.run("cd /tests"), "cd /tests\n")
+    check("...", s.run("pwd"), "pwd\n/tests\n")
+    check("...and a stage runs where the shell is", s.run("pwd | cat"), "pwd | cat\n/tests\n")
+    s.run("cd /")
+
+    check("export in a stage", s.run("export X=1 | cat"), "export X=1 | cat\n")
+    check("...exports nothing", s.run("printenv X"), "printenv X\n")
+    check("an assignment in a stage", s.run("A=1 | cat"), "A=1 | cat\n")
+    check("...sets nothing", s.run("echo [$A]"), "echo [$A]\n[]\n")
+    check("nor does an earlier stage's reach a later one", s.run("A=1 | echo [$A]"), "A=1 | echo [$A]\n[]\n")
+    check("a lone assignment sets it", s.run("A=1"), "A=1\n")
+    check("...", s.run("echo [$A]"), "echo [$A]\n[1]\n")
+    check("...and a stage sees it", s.run("echo $A | cat"), "echo $A | cat\n1\n")
+    s.run("unset A")
+
+    check("source in a stage", s.run("source tests/assign.sh | cat"),
+          "source tests/assign.sh | cat\none\nstatus 1\none\nstatus 0\n")
+    check("...leaves none of what it set", s.run("echo [$LOCALV]"), "echo [$LOCALV]\n[]\n")
+
+    check("the pipeline's status is still the last stage's", s.run_status("unset NOSUCH | false"),
+          ("unset NOSUCH | false\n", 1))
+    check("the shell is alive", s.run("echo ok"), "echo ok\nok\n")

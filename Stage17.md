@@ -11,8 +11,9 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 3 | Expansion: `$VAR`, `${VAR}`, `$?`, with field splitting | done |
 | 4 | Assignments: `NAME=value`, `NAME=value cmd` | done |
 | 5 | Retire the automatic `exit N` line | done |
-| 6 | `$HOME` for `cd`, `$TZ` for `date` and `stat` | planned |
-| 7 | Docs, roadmap, regression sweep | planned |
+| 6 | Pipeline stages run in a subshell (a discarded copy of the shell's frame) | done |
+| 7 | `$HOME` for `cd`, `$TZ` for `date` and `stat` | planned |
+| 8 | Docs, roadmap, regression sweep | planned |
 
 ## Context
 Stage 17 (renumbered from old 16; see `ROADMAP.md`, "Before Capstone 1") gives the shell POSIX-shaped variables and gives programs a real
@@ -22,7 +23,7 @@ reading `$TZ` instead of the hard-coded `America/Toronto` (`LOCAL_ZONE` in `user
 
 The work does not split cleanly into "copy / OS / user programs": the kernel's `envp` can only be observed through a user program,
 expansion is pure shell logic independent of `envp`, assignments need both the lexer and the expander, and retiring `exit N` is ~54
-mechanical test edits best reviewed on their own. So it is a copy plus six working steps, one commit each (the user commits; I stage after each step).
+mechanical test edits best reviewed on their own. So it is a copy plus seven working steps, one commit each (the user commits; I stage after each step).
 
 ## Decisions (settled)
 - **Variables are POSIX-shaped**: a frame holds shell variables, each with an `exported` flag. `NAME=value` on its own sets a shell variable (keeping its
@@ -157,14 +158,37 @@ Tier list unchanged. Verify `just test` = 643 checks, nothing else changed.
   silent `printenv` no longer shows its failure. 881 checks in all (the total rose because most of those converted checks now cost a second command).
 - Docs: `shell.md` (the `exit N` section replaced by one paragraph), `progs.md`'s Errors convention, `syscalls.md`, `tests.md`. `Stage12.md` and ROADMAP's Stage 12 text stay as history.
 
-## Step 6 -- `$HOME` and `$TZ`
+## Step 6 -- pipeline stages run in a subshell
+Steps 3-5 left one known difference from a POSIX shell: every stage of a pipeline shares the shell's one frame, so `echo $FOO | unset FOO` removes `FOO` from the shell (bash's stage is a
+subshell and leaves it), and `A=1 | cat`, `cd d | cat` and `export X=1 | cat` all leak. This step closes it; it is the same isolation `./script` has, but a subshell is a *fork*, not an exec, so it
+inherits everything.
+- `src/exec/frame_stack.rs`: `push_subshell` / `with_subshell` -- run against a full copy of the top frame (cwd, streams, **every** variable with its exported flag), then discard it. This is not
+  `with_scope` (a `./script` child inherits only the exported variables, all marked exported): `X=1` then `echo $X | cat` must still see the unexported `X`. Host tests: the copy is
+  complete, nothing done inside (`cd`, `set_var`, `unset_var`, `export_var`, stream rebinding) survives, and it nests inside `with_scope` and `with_stdio`.
+- `src/shell/mod.rs` `run_pipeline`: each stage's `run_segment_with` runs inside `with_subshell`, the last stage included (bash's default, no `lastpipe`). A one-stage line is not a pipeline and still
+  runs in the shell itself (`cd`, `export`, `A=1` alone must stick). `$?` is still the last stage's status, recorded after the pipeline (a global, so unaffected by the discarded frames).
+- Tests (`pipes.py`, a few lines each): `FOO=123` then `echo $FOO | unset FOO` leaves `FOO` (and the stage still printed 123); `cd /tests | cat` leaves the directory; `export X=1 | cat`
+  and `A=1 | cat` leave nothing; `source` in a stage is confined to it; an unexported variable is still readable in a later stage (`X=1` then `echo $X | cat`); a redirect and `$?` are as before;
+  a single command still changes the shell (`cd`, `export`, `A=1`). Whatever `pipes.py`'s existing checks assumed about leaking (if any) is corrected, not preserved.
+- Docs: `shell.md` (Pipelines: each stage is a subshell; the `A=1 | cat` note in "Variables and assignments" goes; the frame-stack section names the third operation) and the "As built" note.
+  The roadmap's Stage 23 keeps its own line: it replaces the temp-file *pipes* with streaming ones between real processes; the isolation of stages is already here.
+
+**As built (Step 6).** As planned, with these specifics:
+- `FrameStack::push_subshell` / `with_subshell` (a plain clone of the top frame; three host tests: the copy is complete, nothing inside survives, and it nests with `with_scope`/`with_stdio`).
+  `run_pipeline` wraps each stage's `run_segment_with` in it; the temp-file opens stay outside, in the shell's frame.
+- Tests: a subshell section in `pipes.py` (`echo $FOO | unset FOO` leaves `FOO` and the stage still read the unexported `FOO`; unset first/last stage; `cd`, `export`, `A=1`, `source` confined; the lone forms,
+  a lone command with a redirect included, still change the shell; an earlier stage's assignment does not reach a later stage). 911 checks in all.
+- Docs: `shell.md` (Pipelines, Variables and assignments' scope note, the frame-stack section now lists three operations). No roadmap change yet; Step 8's Stage 17 "As built" records it, and Stage 23 is
+  unchanged (it replaces the temp-file pipes, not the isolation).
+
+## Step 7 -- `$HOME` and `$TZ`
 - `src/shell/builtins.rs`: `cd` with no operand goes to `$HOME` (`cd: HOME not set` otherwise); update its doc and `shell.md`'s builtin table.
 - `user/progs_r17`: `date` and `stat` copied from `progs_r16`, `LOCAL_ZONE` replaced by `env::var("TZ")` parsed with `chrono_tz::Tz::from_str` (**verify `FromStr` is available with
   `default-features = false`; if not, enable the feature that provides it**), UTC when unset or unknown; `-u` still forces UTC. `progs_r15`/`progs_r16` versions stay for their kernels.
 - Tests: `clock.py`/`user_progs.py` use `ENVIRONMENT = "HOME=/\nTZ=America/Toronto\n"`; add `TZ=America/Vancouver date ...` (prefix form), `export TZ=...`, `unset TZ` => UTC, a bad name => UTC;
   `cd` no-operand with `HOME` set/unset/reassigned.
 
-## Step 7 -- docs, roadmap, sweep
+## Step 8 -- docs, roadmap, sweep
 `docs/shell.md` (variables, assignment, `export`, expansion, `$?`, the retired line), `docs/progs.md` (`env`, `printenv`, `date`/`stat` and `$TZ`), `docs/launching_programs.md` (`envp` layout
 and `x2`), `docs/filesystem.md` (`/etc/environment`, `/root`), `docs/tests.md` (environment-file injection, `ENVIRONMENT`), repoint `docs/*` from `r16_brk` to `r17_env`, `ROADMAP.md` Stage 17
 "As built" (and the `/etc/environment` + `/root` decisions), `just check-docs`, `just lint`. Regression: `r16_brk`, `r15_large_binaries`, ... `r11_busybox` (userlib and `progs` are shared:

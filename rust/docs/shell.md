@@ -122,6 +122,11 @@ a temporary file** under `/tmp/`, not a real pipe.
   input). Only a *setup* failure, such as a full disk or a missing `/tmp`, aborts the rest.
 - A stage's own redirections apply *after* the pipe is bound, so `a > f | b` sends `a`'s output to `f` and
   `b` sees empty input, and `a 2>&1 | b` sends stderr through the pipe too.
+- **Each stage is a subshell**, the last one included (bash's default): it starts with a copy of everything the
+  shell has, unexported variables too, and nothing it changes outlasts it. So `cd d | cat`, `export X=1 | cat`,
+  `A=1 | cat` and `echo $FOO | unset FOO` leave the shell's directory and variables alone; the same command
+  *alone* (a line of one command, redirects or not) is not a pipeline and does change the shell. `$?` is the last
+  stage's status.
 - Because the data goes through a file, a stage's whole output is written before the next stage starts
   reading it &mdash; no streaming, and it needs free disk space. This is a permanent limitation until
   Stage 23 replaces it with real pipes between resident programs.
@@ -148,8 +153,8 @@ a program's environment (`envp`, what `env` and `printenv` show) is the exported
   that look like assignments are expanded as assignments are (`expand_command`): `export A=$X` sets `A` to all
   of `X`, blanks and all, rather than splitting it into operands. Any other command's `A=$X` argument splits.
 - **Scope.** `./script` and `sh script` run as a child: they start with only the exported variables and
-  nothing they set survives. `source` (and `.`) shares the shell's. A pipeline's stages share one set of
-  variables, so `A=1 | cat` sets `A` in the shell (a process-per-stage shell would confine it).
+  nothing they set survives. `source` (and `.`) shares the shell's. Each stage of a pipeline is a subshell
+  (see "Pipelines"): `A=1 | cat` sets nothing.
 
 ## Expansion
 
@@ -239,13 +244,17 @@ Everything a script or a redirect must be able to save and restore lives in one 
 (`exec/frame_stack.rs`): the working directory, where each of the three standard streams goes
 (`StdioBinding::Default` &mdash; the keyboard for stdin, the console for stdout and stderr &mdash; or an open
 file), and the shell's variables (each a name, a value and an `exported` flag: all can be read, only exported ones
-are handed on to children). The frames form a stack whose bottom frame is the shell's own and is never popped. Two different
+are handed on to children). The frames form a stack whose bottom frame is the shell's own and is never popped. Three different
 operations use it, deliberately not one:
 
 - `with_scope` pushes the frame a *child process* would start with &mdash; the working directory and stream
   bindings, but only the **exported** variables (all of them exported) &mdash; runs, and pops: *everything* changed
   inside is gone afterwards. This is what `sh script` and `./script` use. (`source` pushes nothing: it sees and
   changes every variable.)
+- `with_subshell` pushes a *full copy* of the current frame &mdash; working directory, streams, and **every**
+  variable with its exported flag &mdash; runs, and pops, so nothing changed inside survives. This is what a stage
+  of a pipeline uses, as a forked subshell would: unlike a child process it can read the shell's unexported
+  variables.
 - `with_stdio` replaces some stream bindings on the *current* frame, runs, and puts them back &mdash; and
   nothing else, so a `cd` inside still sticks. This is what every redirection uses, builtins included.
 
@@ -262,7 +271,7 @@ bindings (and `launch` gives it the top frame's exported variables as its `envp`
   control and a single foreground program at a time. The only expansions are `$NAME`, `${NAME}` and `$?`.
 - Pipes go through files under `/tmp/`, and the shell needs that directory to exist.
 - No tab completion, and no history across reboots.
-- `cd` with no operand goes to `/`, not `$HOME` (Stage 17, Step 6).
+- `cd` with no operand goes to `/`, not `$HOME` (Stage 17, Step 7).
 
 ## Where the code lives
 

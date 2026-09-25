@@ -8,12 +8,16 @@
 //! `NAME=value command` gives the command a variable for as long as it runs: the shell sets it exported, and
 //! puts it back afterwards with `saved_var` and `restore_var`.
 //!
-//! Two different scoping operations, deliberately not one:
+//! Three different scoping operations, deliberately not one:
 //! - `with_scope`: push a *child process's* frame, run, pop. It starts with the working directory and stream
 //!   bindings of the frame it was pushed on, but only the **exported** variables, all of them exported, as a real
 //!   child process would inherit them. Everything the code inside changes -- the working directory, the stream
 //!   bindings, the variables -- is gone afterwards. What a script run as its own process (`./script.sh`,
 //!   `sh script.sh`) gets. (`source` pushes nothing: it runs against the current frame.)
+//! - `with_subshell`: push a *forked* frame -- the top frame copied whole, every variable with its exported flag
+//!   as well as the working directory and streams -- run, pop. What a stage of a pipeline gets, as in a POSIX shell
+//!   where each stage is a subshell: it can read the shell's unexported variables, and nothing it changes
+//!   survives. Unlike `with_scope`, which models an *exec* (only the environment crosses).
 //! - `with_stdio`: replace some stream bindings on the *current* frame, run, put them back -- and nothing
 //!   else. A `cd` done inside stays done. What every redirect uses, builtins included, so that
 //!   `cd dir > f` still changes directory.
@@ -205,6 +209,12 @@ impl<F: Clone> FrameStack<F> {
         self.frames.push(child);
     }
 
+    /// Pushes the frame a forked subshell would start with: a full copy of the top frame.
+    pub fn push_subshell(&mut self) {
+        let copy = self.top().clone();
+        self.frames.push(copy);
+    }
+
     /// Pops the top frame. Refuses (returns `false`) to pop the shell's own.
     pub fn pop(&mut self) -> bool {
         if self.frames.len() == 1 {
@@ -218,6 +228,15 @@ impl<F: Clone> FrameStack<F> {
     /// frame -- its `cd`s, its stream bindings, its variables -- survives.
     pub fn with_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         self.push_child();
+        let result = f(self);
+        self.pop();
+        result
+    }
+
+    /// Runs `f` against a forked subshell's frame (`push_subshell`), then discards it, as `with_scope` does for a
+    /// child process. The difference is what `f` starts with: everything, unexported variables included.
+    pub fn with_subshell<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.push_subshell();
         let result = f(self);
         self.pop();
         result
@@ -540,5 +559,65 @@ mod tests {
         // Restoring "not set" removes what the command made.
         f.restore_var("B", None);
         assert_eq!(f.var("B"), None);
+    }
+
+    #[test]
+    fn a_subshell_starts_as_a_full_copy() {
+        let mut s = FrameStack::new();
+        s.top_mut().cwd = String::from("/tests");
+        s.top_mut().stdio[1] = File(7);
+        s.top_mut().set_var("PLAIN", "p").unwrap();
+        s.top_mut().export_var("EXPORTED", Some("e")).unwrap();
+        s.with_subshell(|s| {
+            assert_eq!(s.depth(), 2);
+            assert_eq!(s.top().cwd, "/tests");
+            assert_eq!(s.top().stdio, [Default, File(7), Default]);
+            // Unlike a child process's, it has the variable that was never exported, and flags are kept.
+            assert_eq!(s.top().var("PLAIN"), Some("p"));
+            assert!(!s.top().is_exported("PLAIN"));
+            assert!(s.top().is_exported("EXPORTED"));
+        });
+        assert_eq!(s.with_scope(|s| s.top().var("PLAIN").map(String::from)), None);
+    }
+
+    #[test]
+    fn nothing_a_subshell_does_survives() {
+        let mut s = FrameStack::new();
+        s.top_mut().set_var("KEEP", "k").unwrap();
+        s.top_mut().export_var("GONE", Some("g")).unwrap();
+        s.with_subshell(|s| {
+            s.top_mut().cwd = String::from("/elsewhere");
+            s.top_mut().stdio[2] = File(9);
+            s.top_mut().unset_var("KEEP");
+            s.top_mut().unset_var("GONE");
+            s.top_mut().set_var("NEW", "n").unwrap();
+            s.top_mut().export_var("KEEP2", Some("x")).unwrap();
+        });
+        assert_eq!(s.depth(), 1);
+        assert_eq!(s.top().cwd, "/");
+        assert_eq!(s.top().stdio, [Default; 3]);
+        assert_eq!(s.top().var("KEEP"), Some("k"));
+        assert_eq!(s.top().var("GONE"), Some("g"));
+        assert_eq!(s.top().var("NEW"), None);
+        assert_eq!(s.top().var("KEEP2"), None);
+    }
+
+    #[test]
+    fn subshells_nest_with_the_other_scopes() {
+        let mut s = FrameStack::new();
+        s.top_mut().set_var("A", "1").unwrap();
+        s.with_subshell(|s| {
+            s.top_mut().set_var("A", "2").unwrap();
+            s.with_stdio([Some(File(3)), None, None], |s| {
+                s.with_subshell(|s| {
+                    assert_eq!(s.depth(), 3);
+                    assert_eq!(s.top().var("A"), Some("2"));
+                    assert_eq!(s.top().stdio[0], File(3));
+                });
+            });
+            assert_eq!(s.top().stdio[0], Default);
+            assert_eq!(s.top().var("A"), Some("2"));
+        });
+        assert_eq!(s.top().var("A"), Some("1"));
     }
 }
