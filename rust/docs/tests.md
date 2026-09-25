@@ -199,6 +199,9 @@ def run(ctx):
 
 - `check(name, got, want)` records a PASS/FAIL; results are printed after all groups finish.
 - `s.run(cmd)` types the command and returns the transcript up to the next prompt (the echoed line first).
+  The shell prints no exit status, so where a status matters `s.run_status(cmd)` returns `(transcript, status)`
+  (it follows the command with `echo $?`) and `s.status(cmd)` the status alone; a check that then reads `$?`
+  itself must use plain `run`, since `run_status` leaves `$?` as its own `echo` did.
   `s.type(...)`/`s.keys([...])` send keys without waiting, for editing before Enter.
 - `wait_until(pred, what)` waits for a condition on the log **but does not move the transcript checkpoint**;
   only `wait_prompt()` (and `run`) does. So a `wait_prompt()` after several `wait_until`s returns everything

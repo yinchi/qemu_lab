@@ -25,9 +25,7 @@ def run(ctx):
     check("echo", s.run("echo hello world"), "echo hello world\nhello world\n")
     check("hello", s.run("hello"), "hello\nhello from userspace\n")
     check(
-        "crash",
-        s.run("crash"),
-        "crash\nabout to crash\nSegmentation fault (address 0xffff800000000000, ESR_EL1 0x92000004)\nexit 139\n",
+        "crash", s.run_status("crash"), ("crash\nabout to crash\nSegmentation fault (address 0xffff800000000000, ESR_EL1 0x92000004)\n", 139),
     )
 
     # --- launcher ---
@@ -39,9 +37,8 @@ def run(ctx):
           "cat tests/docs/example.txt\na file in a subdirectory\n")
     check("cat two files", s.run("cat tests/docs/example.txt tests/docs/example.txt"),
           "cat tests/docs/example.txt tests/docs/example.txt\n" + "a file in a subdirectory\n" * 2)
-    check("cat missing", s.run("cat tests/nosuch.txt"),
-          "cat tests/nosuch.txt\ncat: tests/nosuch.txt: No such file or directory\nexit 1\n")
-    check("cat directory", s.run("cat tests/docs"), "cat tests/docs\ncat: tests/docs: Is a directory\nexit 1\n")
+    check("cat missing", s.run_status("cat tests/nosuch.txt"), ("cat tests/nosuch.txt\ncat: tests/nosuch.txt: No such file or directory\n", 1))
+    check("cat directory", s.run_status("cat tests/docs"), ("cat tests/docs\ncat: tests/docs: Is a directory\n", 1))
     check("ls", s.run("ls"), "ls\nbin\netc\nfonts\nroot\ntests\ntmp\n")
     check("ls -F", s.run("ls -F"), "ls -F\nbin/\netc/\nfonts/\nroot/\ntests/\ntmp/\n")
     # `bin/` is the one directory meant to grow as core utilities are added (unlike the fixed
@@ -50,18 +47,15 @@ def run(ctx):
     # sort-then-copy order, which is what ends up as the FAT on-disk order `ls` reports.
     bin_names = sorted(n[:-4] for n in os.listdir(ctx.bin_dir) if n.endswith(".exe"))
     check("ls -F bin", s.run("ls -F bin"), "ls -F bin\n" + "".join(f"{n}.exe*\n" for n in bin_names))
-    check("ls file", s.run("ls tests/hello.txt"),
-          "ls tests/hello.txt\nls: cannot open directory 'tests/hello.txt': Not a directory\nexit 1\n")
-    check("ls bad option", s.run("ls -x"), "ls -x\nls: invalid option -- 'x'\nTry 'ls --help' for more information.\nexit 1\n")
+    check("ls file", s.run_status("ls tests/hello.txt"), ("ls tests/hello.txt\nls: cannot open directory 'tests/hello.txt': Not a directory\n", 1))
+    check("ls bad option", s.run_status("ls -x"), ("ls -x\nls: invalid option -- 'x'\nTry 'ls --help' for more information.\n", 1))
 
     # --- cp ---
     check("cp", s.run("cp tests/hello.txt tests/copy.txt"), "cp tests/hello.txt tests/copy.txt\n")
     check("cat copy", s.run("cat tests/copy.txt"), "cat tests/copy.txt\n" + hello_txt)
     check("cp binary", s.run("cp tests/data.bin tests/data2.bin"), "cp tests/data.bin tests/data2.bin\n")
-    check("cp missing source", s.run("cp tests/nosuch.txt tests/x.txt"),
-          "cp tests/nosuch.txt tests/x.txt\ncp: cannot stat 'tests/nosuch.txt': No such file or directory\nexit 1\n")
-    check("cp directory source keeps dst", s.run("cp tests/docs tests/copy.txt"),
-          "cp tests/docs tests/copy.txt\ncp: -r not specified; omitting directory 'tests/docs'\nexit 1\n")
+    check("cp missing source", s.run_status("cp tests/nosuch.txt tests/x.txt"), ("cp tests/nosuch.txt tests/x.txt\ncp: cannot stat 'tests/nosuch.txt': No such file or directory\n", 1))
+    check("cp directory source keeps dst", s.run_status("cp tests/docs tests/copy.txt"), ("cp tests/docs tests/copy.txt\ncp: -r not specified; omitting directory 'tests/docs'\n", 1))
     check("cp overwrite shorter", s.run("cp tests/docs/example.txt tests/copy.txt"),
           "cp tests/docs/example.txt tests/copy.txt\n")
     check("cat overwritten", s.run("cat tests/copy.txt"), "cat tests/copy.txt\na file in a subdirectory\n")
@@ -74,12 +68,11 @@ def run(ctx):
     check("tail -n 2", s.run(f"tail -n 2 {f}"), f"tail -n 2 {f}\n" + "".join(lines[-2:]))
     check("tail default", s.run(f"tail {f}"), f"tail {f}\n" + "".join(lines[-10:]))
     check("tail -n 100", s.run(f"tail -n 100 {f}"), f"tail -n 100 {f}\n" + hello_txt)
-    check("head bad count", s.run(f"head -n x {f}"), f"head -n x {f}\nhead: invalid number of lines: 'x'\nexit 1\n")
-    check("head -c bad count", s.run(f"head -c x {f}"), f"head -c x {f}\nhead: invalid number of bytes: 'x'\nexit 1\n")
-    check("tail bad count", s.run(f"tail -n -3 {f}"), f"tail -n -3 {f}\ntail: invalid number of lines: '-3'\nexit 1\n")
-    check("head -n with no count", s.run("head -n"), "head -n\nhead: option requires an argument -- 'n'\nTry 'head --help' for more information.\nexit 1\n")
-    check("cp a file onto itself", s.run("cp tests/hello.txt tests/hello.txt"),
-          "cp tests/hello.txt tests/hello.txt\ncp: 'tests/hello.txt' and 'tests/hello.txt' are the same file\nexit 1\n")
+    check("head bad count", s.run_status(f"head -n x {f}"), (f"head -n x {f}\nhead: invalid number of lines: 'x'\n", 1))
+    check("head -c bad count", s.run_status(f"head -c x {f}"), (f"head -c x {f}\nhead: invalid number of bytes: 'x'\n", 1))
+    check("tail bad count", s.run_status(f"tail -n -3 {f}"), (f"tail -n -3 {f}\ntail: invalid number of lines: '-3'\n", 1))
+    check("head -n with no count", s.run_status("head -n"), ("head -n\nhead: option requires an argument -- 'n'\nTry 'head --help' for more information.\n", 1))
+    check("cp a file onto itself", s.run_status("cp tests/hello.txt tests/hello.txt"), ("cp tests/hello.txt tests/hello.txt\ncp: 'tests/hello.txt' and 'tests/hello.txt' are the same file\n", 1))
     check("wc", s.run(f"wc {f}"), f"wc {f}\n{len(lines)} {words} {len(hello_txt)} {f}\n")
     check("wc -l", s.run(f"wc -l {f}"), f"wc -l {f}\n{len(lines)} {f}\n")
     check("wc -wc", s.run(f"wc -wc {f}"), f"wc -wc {f}\n{words} {len(hello_txt)} {f}\n")
@@ -88,7 +81,7 @@ def run(ctx):
 
     # --- exit status ---
     check("true", s.run("true"), "true\n")
-    check("false", s.run("false"), "false\nexit 1\n")
+    check("false", s.run_status("false"), ("false\n", 1))
 
     # --- chmod ---
     check("chmod -x", s.run("chmod -x bin/hello.exe"), "chmod -x bin/hello.exe\n")
@@ -96,12 +89,9 @@ def run(ctx):
     check("chmod +x", s.run("chmod +x bin/hello.exe"), "chmod +x bin/hello.exe\n")
     check("run with exec bit", s.run("hello"), "hello\nhello from userspace\n")
     check("chmod -w", s.run("chmod -w tests/copy.txt"), "chmod -w tests/copy.txt\n")
-    check("cp onto read-only", s.run("cp tests/hello.txt tests/copy.txt"),
-          "cp tests/hello.txt tests/copy.txt\ncp: cannot create regular file 'tests/copy.txt': Permission denied\nexit 1\n")
-    check("chmod bad mode", s.run("chmod 755 tests/copy.txt"),
-          "chmod 755 tests/copy.txt\nchmod: invalid mode: '755'\nexit 1\n")
-    check("chmod missing", s.run("chmod +x tests/nosuch"),
-          "chmod +x tests/nosuch\nchmod: cannot access 'tests/nosuch': No such file or directory\nexit 1\n")
+    check("cp onto read-only", s.run_status("cp tests/hello.txt tests/copy.txt"), ("cp tests/hello.txt tests/copy.txt\ncp: cannot create regular file 'tests/copy.txt': Permission denied\n", 1))
+    check("chmod bad mode", s.run_status("chmod 755 tests/copy.txt"), ("chmod 755 tests/copy.txt\nchmod: invalid mode: '755'\n", 1))
+    check("chmod missing", s.run_status("chmod +x tests/nosuch"), ("chmod +x tests/nosuch\nchmod: cannot access 'tests/nosuch': No such file or directory\n", 1))
 
     # --- tee ---
     check("tee copies stdin to stdout and a file", s.run("tee tests/tee1.txt < tests/hello.txt"),
@@ -115,10 +105,8 @@ def run(ctx):
           "tee tests/tee2.txt tests/tee3.txt < tests/hello.txt\n" + hello_txt)
     check("...first file", s.run("cat tests/tee2.txt"), "cat tests/tee2.txt\n" + hello_txt)
     check("...second file", s.run("cat tests/tee3.txt"), "cat tests/tee3.txt\n" + hello_txt)
-    check("tee still passes stdin through even if a file can't be opened",
-          s.run("tee tests/nosuchdir/x.txt < tests/hello.txt"),
-          "tee tests/nosuchdir/x.txt < tests/hello.txt\n"
-          "tee: tests/nosuchdir/x.txt: No such file or directory\n" + hello_txt + "exit 1\n")
+    check("tee still passes stdin through even if a file can't be opened", s.run_status("tee tests/nosuchdir/x.txt < tests/hello.txt"), ("tee tests/nosuchdir/x.txt < tests/hello.txt\n"
+          "tee: tests/nosuchdir/x.txt: No such file or directory\n" + hello_txt, 1))
     check("tee --help", s.run("tee --help"), "tee --help\n"
           "usage: tee [-a] [file...]\n"
           "  -a  append to each file instead of truncating it\n")

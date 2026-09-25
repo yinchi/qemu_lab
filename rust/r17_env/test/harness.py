@@ -223,6 +223,17 @@ class Session:
         self.type(command + "\n")
         return self.wait_prompt()
 
+    def run_status(self, command):
+        """Runs `command`, then `echo $?`: returns `(transcript, status)`, the transcript as `run` gives it and the
+        status the shell reported, as an int. What to check where the exit status matters, now that the shell
+        no longer prints one itself."""
+        transcript = self.run(command)
+        return transcript, int(self.run("echo $?").split("\n")[1])
+
+    def status(self, command):
+        """`run_status`'s status alone."""
+        return self.run_status(command)[1]
+
     def close(self):
         try:
             self.sock.sendall(b"quit\n")

@@ -11,7 +11,6 @@ memory would not fit under the ceiling, and a file too big to read into the kern
 """
 
 BASE = 0x4400_0000
-FAULT = "exit 139\n"
 
 DATA_SUM = 512 * 1024 * 0xA5A5_A5A5
 RODATA_SUM = 7 * 1024 * 1024
@@ -19,7 +18,7 @@ BIGIMAGE = f"data: {DATA_SUM}\nrodata: {RODATA_SUM}\nbss: 2048 pages\n"
 
 
 def faults(out):
-    return "Segmentation fault" in out and out.endswith(FAULT)
+    return "Segmentation fault" in out
 
 
 def run(ctx):

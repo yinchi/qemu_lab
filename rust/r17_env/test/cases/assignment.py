@@ -21,7 +21,7 @@ def run(ctx):
 
     def no(name):
         """`printenv NAME` for a variable programs do not see."""
-        check(f"printenv {name}: not in the environment", s.run(f"printenv {name}"), f"printenv {name}\nexit 1\n")
+        check(f"printenv {name}: not in the environment", s.run_status(f"printenv {name}"), (f"printenv {name}\n", 1))
 
     # --- on its own: a shell variable, not exported ---
     check("assign", s.run("FOO=bar"), "FOO=bar\n")
@@ -87,7 +87,7 @@ def run(ctx):
     check("several", s.run("A=1 B=2 printenv A B"), "A=1 B=2 printenv A B\n1\n2\n")
     check("later ones see earlier ones", s.run("A=1 B=$A printenv B"), "A=1 B=$A printenv B\n1\n")
     check("the command's own words see the old values", s.run("FOO=new echo [$FOO]"), "FOO=new echo [$FOO]\n[]\n")
-    check("the exit status is the command's", s.run("FOO=1 false"), "FOO=1 false\nexit 1\n")
+    check("the exit status is the command's", s.run("FOO=1 false"), "FOO=1 false\n")
     echo('echo "$?"', "1")
     check("a program that fails to start leaves nothing behind", s.run("FOO=1 nosuchcommand"),
           "FOO=1 nosuchcommand\nnosuchcommand: command not found\n")
@@ -130,14 +130,14 @@ def run(ctx):
     # --- scripts: `./script` is a child that inherits only what is exported; `source` is the shell ---
     s.run("chmod +x tests/assign.sh")
     check("./script: its variable is its own, not exported until it says so", s.run("./tests/assign.sh"),
-          "./tests/assign.sh\none\nexit 1\none\n")
+          "./tests/assign.sh\none\nstatus 1\none\nstatus 0\n")
     echo("echo [$LOCALV]", "[]")
-    check("source: the variable stays", s.run("source tests/assign.sh"), "source tests/assign.sh\none\nexit 1\none\n")
+    check("source: the variable stays", s.run("source tests/assign.sh"), "source tests/assign.sh\none\nstatus 1\none\nstatus 0\n")
     echo("echo $LOCALV", "one")
     check("...and was exported by the script", s.run("printenv LOCALV"), "printenv LOCALV\none\n")
     s.run("unset LOCALV")
     check("an assignment before a script is its environment, and so is exported in it", s.run("LOCALV=outer ./tests/assign.sh"),
-          "LOCALV=outer ./tests/assign.sh\none\none\none\n")
+          "LOCALV=outer ./tests/assign.sh\none\none\nstatus 0\none\nstatus 0\n")
     no("LOCALV")
 
     check("the shell is alive", s.run("echo ok"), "echo ok\nok\n")

@@ -76,10 +76,9 @@ def run(ctx):
     check("getcwd with nothing is ERANGE", s.run("./probe.exe getcwd 0"), "./probe.exe getcwd 0\ngetcwd(0): -34\n")
 
     # --- pwd's own options ---
-    check("pwd -L is refused", s.run("pwd -L"),
-          "pwd -L\npwd: -L: not supported (there are no symbolic links)\nexit 1\n")
-    check("pwd -x is refused", s.run("pwd -x"), "pwd -x\npwd: invalid option -- 'x'\nTry 'pwd --help' for more information.\nexit 1\n")
-    check("pwd with an operand is refused", s.run("pwd a"), "pwd a\npwd: extra operand 'a'\nTry 'pwd --help' for more information.\nexit 1\n")
+    check("pwd -L is refused", s.run_status("pwd -L"), ("pwd -L\npwd: -L: not supported (there are no symbolic links)\n", 1))
+    check("pwd -x is refused", s.run_status("pwd -x"), ("pwd -x\npwd: invalid option -- 'x'\nTry 'pwd --help' for more information.\n", 1))
+    check("pwd with an operand is refused", s.run_status("pwd a"), ("pwd a\npwd: extra operand 'a'\nTry 'pwd --help' for more information.\n", 1))
 
     check("cd back to the root", *cd("/"))
     check("pwd at the end", s.run("pwd"), "pwd\n/\n")

@@ -98,15 +98,14 @@ def run(ctx):
     # --- refusals ---
     def refused(cmd, message, try_line=True):
         tail = "Try 'date --help' for more information.\n" if try_line else ""
-        check(f"{cmd!r} is refused", s.run(cmd), f"{cmd}\ndate: {message}\n{tail}exit 1\n")
+        check(f"{cmd!r} is refused", s.run_status(cmd), (f"{cmd}\ndate: {message}\n{tail}", 1))
 
     refused("date foo", "invalid date 'foo'", try_line=False)
     refused("date -d tomorrow", "invalid date 'tomorrow'", try_line=False)
     refused("date -d @x", "invalid date '@x'", try_line=False)
     refused("date +%s extra", "invalid date 'extra'", try_line=False)
     # A conversion `chrono` does not know is an error, not printed as written (GNU prints it as written).
-    check("date +%Q (an unknown conversion)", s.run("date '+%Q'"),
-          "date '+%Q'\ndate: invalid format '+%Q'\nexit 1\n")
+    check("date +%Q (an unknown conversion)", s.run_status("date '+%Q'"), ("date '+%Q'\ndate: invalid format '+%Q'\n", 1))
     refused("date -I -R", "multiple output formats specified", try_line=False)
     refused("date -Ix", "invalid argument 'x' for '--iso-8601'")
     refused("date -x", "invalid option -- 'x'")

@@ -34,7 +34,7 @@ use crate::platform::globals::{CONSOLE, GPU};
 use crate::platform::uart::{uart_ensure_newline, uart_write};
 use crate::{static_mut_ref, static_ref};
 use expand::Values;
-use launch::{Launched, launch};
+use launch::launch;
 use lexer::Word;
 use syntax::{Redirection, Segment};
 
@@ -111,11 +111,8 @@ fn run_line_inner(line: &str, depth: usize) -> Option<i32> {
             return Some(2);
         }
     };
-    // `exit N` (our stand-in for `$?`, until Step 5 retires it) is still printed by `run_segment_with` itself,
-    // while its `with_stdio` scope is active, so a redirected stderr captures it like the rest of a failing
-    // command's own output.
     let status = if let [segment] = pipeline.as_slice() {
-        run_segment(segment, depth).status
+        run_segment(segment, depth)
     } else {
         run_pipeline(&pipeline, depth)
     };
@@ -123,10 +120,10 @@ fn run_line_inner(line: &str, depth: usize) -> Option<i32> {
     Some(status)
 }
 
-/// Runs one segment with no pipe bindings -- the plain, single-command case, always reporting its
-/// own exit status. A thin wrapper over `run_segment_with`; see it for what actually happens.
-fn run_segment(segment: &Segment, depth: usize) -> Launched {
-    run_segment_with(segment, [None, None, None], true, depth)
+/// Runs one segment with no pipe bindings -- the plain, single-command case. A thin wrapper over
+/// `run_segment_with`; see it for what actually happens.
+fn run_segment(segment: &Segment, depth: usize) -> i32 {
+    run_segment_with(segment, [None, None, None], depth)
 }
 
 /// Runs `f` with `Values` for a `$` expansion: the current frame's variables as they are at that moment, and
@@ -197,33 +194,23 @@ fn restore_assignments(saved: Vec<(String, Option<(String, bool)>)>) {
 /// below then correctly layer on top of via `apply_redirect`'s plain overwrite -- "the pipe binds
 /// before the stage's own redirects," with no new mechanism beyond what redirection already does.
 ///
-/// `report` is whether this call should print `exit {code}` (our stand-in for `$?` until Step 5) for a
-/// program that ran and returned nonzero -- `true` for a plain command, `true` only for a pipeline's *last*
-/// stage (`run_pipeline`). The print happens *inside* the `with_stdio` scope, not after it returns, so a
-/// redirected stderr captures it exactly like the rest of a failing command's own output -- moving
-/// it outside was tried and breaks `cmd 2> e`'s existing, already-tested behavior.
-///
-/// Returns how it went (`Launched`): a redirect that failed is status 1 and nothing ran.
+/// Returns the segment's exit status: a redirect that failed is 1 and nothing ran.
 fn run_segment_with(
     segment: &Segment,
     overrides: [Option<Stdio>; 3],
-    report: bool,
     depth: usize,
-) -> Launched {
+) -> i32 {
     let argv = expand_words(&segment.argv);
     shell_state::frames().with_stdio(overrides, |frames| {
         for redir in &segment.redirs {
             if !apply_redirect(frames, redir) {
-                return Launched { status: 1, ran: false }; // shell_err already reported; the command does not run
+                return 1; // shell_err already reported; the command does not run
             }
         }
         let saved = apply_assignments(&segment.assignments, !argv.is_empty());
-        let launched = run_command(&argv, depth);
+        let status = run_command(&argv, depth);
         restore_assignments(saved);
-        if report && launched.ran && launched.status != 0 {
-            shell_err(&format!("exit {}", launched.status));
-        }
-        launched
+        status
     })
 }
 
@@ -285,20 +272,19 @@ fn open_redirect_target(path: &str, write: bool, append: bool) -> Result<FileRef
 /// program. Empty `argv` (a stage of only redirections, `> f`, or words that expanded to nothing) runs
 /// nothing, with status 0: POSIX still creates the file. A builtin's status is 0, or 1 if it reported an
 /// error (a script run by `source` or `sh` gives its last line's); a program's comes from `launch`.
-fn run_command(argv: &[String], depth: usize) -> Launched {
+fn run_command(argv: &[String], depth: usize) -> i32 {
     let Some(name) = argv.first() else {
-        return Launched { status: 0, ran: false };
+        return 0;
     };
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     if builtins::is_builtin(name) {
-        let status = match builtins::run(name, &argv[1..], depth) {
+        match builtins::run(name, &argv[1..], depth) {
             Ok(status) => status,
             Err(message) => {
                 shell_err(&message);
                 1
             }
-        };
-        Launched { status, ran: false }
+        }
     } else {
         // SAFETY: as `run`'s doc comment says of the statics it uses.
         let vol = unsafe { static_ref!(VOL) };
@@ -358,10 +344,8 @@ fn cleanup_temps(paths: &[String]) {
 /// one failed, faulted, or wasn't found -- only a *setup* failure (disk full, `/tmp` missing) aborts
 /// the rest, never a stage's own failure. The pipe is bound before a stage's own redirections (see
 /// `run_segment_with`), so `a > f | b` sends `a`'s output to `f`, and `b` sees empty input. The
-/// pipeline's status is the *last* stage's: only its call to `run_segment_with` passes `report:
-/// true`, so `exit N` (if the last stage's code is nonzero) is the only one that can ever print,
-/// from inside that stage's own `with_stdio` scope -- see `run_segment_with`'s doc comment for why
-/// it can't be printed here instead. A setup failure (no temp file) is status 1.
+/// pipeline's status is the *last* stage's (the others' are dropped, as in a shell without `pipefail`).
+/// A setup failure (no temp file) is status 1.
 ///
 /// Temp paths are all allocated before any stage runs and removed on every exit from this function.
 /// Each pipe file is held by the binding the stage runs under, so it is closed as soon as the stage's
@@ -401,7 +385,7 @@ fn run_pipeline(pipeline: &[Segment], depth: usize) -> i32 {
             return 1;
         }
 
-        last_status = run_segment_with(segment, overrides, i == n - 1, depth).status;
+        last_status = run_segment_with(segment, overrides, depth);
     }
 
     cleanup_temps(&temps);

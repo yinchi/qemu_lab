@@ -11,7 +11,6 @@ BASE = 0x4400_0000
 WINDOW = 0x200_0000  # the ceiling; only what a program needs is mapped
 STACK_BOTTOM = BASE + WINDOW - 0x10_0000
 GUARD_BOTTOM = STACK_BOTTOM - 0x1_0000
-FAULT = "exit 139\n"
 
 MALFORMED = {
     "elf-inguard.exe": "a segment in the guard",
@@ -22,7 +21,7 @@ MALFORMED = {
 
 
 def faults(out):
-    return "Segmentation fault" in out and out.endswith(FAULT)
+    return "Segmentation fault" in out
 
 
 def run(ctx):

@@ -20,7 +20,7 @@ def run(ctx):
     check("poweroff --help", s.run("poweroff --help"),
           "poweroff --help\nusage: poweroff [--reboot]\n  --reboot  restart instead of powering off\n")
     check("reboot --help", s.run("reboot --help"), "reboot --help\nusage: reboot\n")
-    check("reboot unknown option", s.run("reboot -x"), "reboot -x\nreboot: invalid option -- 'x'\nTry 'reboot --help' for more information.\nexit 1\n")
+    check("reboot unknown option", s.run_status("reboot -x"), ("reboot -x\nreboot: invalid option -- 'x'\nTry 'reboot --help' for more information.\n", 1))
 
     # --- `reboot`: the whole boot banner reappears, proving the board actually reset ---
     s.type("reboot\n")

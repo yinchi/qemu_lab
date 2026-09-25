@@ -49,13 +49,12 @@ def run(ctx):
     check("tee writes ten files (the old cap was eight)", s.run("cat tests/tee9 tests/tee10"), "cat tests/tee9 tests/tee10\nten\nten\n")
     # In a pipeline the shell holds the pipe's temp file open for `tee`'s stdin, one of the kernel's 13 open files, so 12 remain.
     names = " ".join(f"tests/tf{i}" for i in range(1, 15))
-    out = s.run(f"echo many | tee {names}")
     check("tee with 14 files: the kernel's limit reports the ones that do not open, and the rest are written",
-          out, f"echo many | tee {names}\ntee: tests/tf13: Too many open files\n"
-               "tee: tests/tf14: Too many open files\nmany\nexit 1\n")
+          s.run_status(f"echo many | tee {names}"),
+          (f"echo many | tee {names}\ntee: tests/tf13: Too many open files\n"
+           "tee: tests/tf14: Too many open files\nmany\n", 1))
     check("...the twelfth was written", s.run("cat tests/tf12"), "cat tests/tf12\nmany\n")
-    check("...the thirteenth was not", s.run("cat tests/tf13"),
-          "cat tests/tf13\ncat: tests/tf13: No such file or directory\nexit 1\n")
+    check("...the thirteenth was not", s.run_status("cat tests/tf13"), ("cat tests/tf13\ncat: tests/tf13: No such file or directory\n", 1))
 
     # --- chmod -R and rm -r on a tree deeper than the open-file limit ---
     path = "tests/deep"
@@ -70,7 +69,6 @@ def run(ctx):
           ["d--"])
     check("...and the file at the bottom", s.run(f"ls -l {path}").split("\n")[1].split()[0], "---")
     check("rm -r removes it", s.run("rm -r tests/deep"), "rm -r tests/deep\n")
-    check("...all of it", s.run("ls tests/deep"),
-          "ls tests/deep\nls: cannot access 'tests/deep': No such file or directory\nexit 1\n")
+    check("...all of it", s.run_status("ls tests/deep"), ("ls tests/deep\nls: cannot access 'tests/deep': No such file or directory\n", 1))
 
     check("shell alive", s.run("echo ok"), "echo ok\nok\n")

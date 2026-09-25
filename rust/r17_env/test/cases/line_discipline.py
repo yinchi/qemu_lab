@@ -36,7 +36,7 @@ def run(ctx):
     check("prompt: line wider than the row", s.run(LONG), LONG + "\n" + "y" * 95 + "\n")
 
     check("unknown program", s.run("nosuch"), "nosuch\nnosuch: command not found\n")
-    check("exit status", s.run("false"), "false\nexit 1\n")
+    check("exit status", s.run_status("false"), ("false\n", 1))
     check("hello", s.run("hello"), "hello\nhello from userspace\n")
 
     # A program reading typed lines: the same editing, Ctrl+D on an empty line ends it.

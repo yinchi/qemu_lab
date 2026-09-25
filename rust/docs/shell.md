@@ -190,16 +190,10 @@ carries on as the status of the `./script` that ran it):
 | `127` | not found (`command not found`, or a path that does not exist) |
 | `2` | a syntax error |
 
-Until Stage 17's Step 5, a program that exits nonzero also still has an `exit N` line printed for it (see
-below); after that only `$?` shows it.
-
-### Exit status: the `exit N` line
-
-When a *program* exits with a nonzero status, the shell prints `exit N` on that command's stderr (inside its
-redirections, so `cmd 2> e` captures it too). A program stopped by a fault reports `exit 139`. A builtin, a
-script and a command that never started never print one. For a pipeline only the **last** stage's status
-counts, so `false | true` prints nothing and `true | false` prints `exit 1`. Stage 17 (Step 5) retires this
-convention: `$?` is the way to see a status.
+The shell prints nothing for a nonzero status: `$?` is the only way to see one (`false`, then `echo $?`). Until
+Stage 17 it printed an `exit N` line on stderr after a failing program, as a stand-in for `$?`. For a pipeline
+only the **last** stage's status counts, so `false | true` is 0 and `true | false` is 1. A program stopped by a
+fault has said so already (`Segmentation fault (address ...)`) and is 139.
 
 ## Builtins
 

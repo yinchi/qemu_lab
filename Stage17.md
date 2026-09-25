@@ -10,7 +10,7 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 2 | `envp` to programs; `userlib::env`; `env` and `printenv` (new tier `progs_r17`) | done |
 | 3 | Expansion: `$VAR`, `${VAR}`, `$?`, with field splitting | done |
 | 4 | Assignments: `NAME=value`, `NAME=value cmd` | done |
-| 5 | Retire the automatic `exit N` line | planned |
+| 5 | Retire the automatic `exit N` line | done |
 | 6 | `$HOME` for `cd`, `$TZ` for `date` and `stat` | planned |
 | 7 | Docs, roadmap, regression sweep | planned |
 
@@ -148,6 +148,14 @@ Tier list unchanged. Verify `just test` = 643 checks, nothing else changed.
 - Tests (~54 expectations across `core_utils`, `user_progs`, `launch`, `cwd`, `redirection`, `pipes`, `power`, `stack`): drop the trailing `exit N` line; `stack.py`'s `faults()` helper checks the
   segfault message alone. Add a harness helper `s.status(cmd)` (runs `cmd`, then `echo $?`) for the handful of checks where the status matters (fault = 139, `false` = 1, not found = 127).
 - Docs: `shell.md` and `progs.md`'s "Errors" convention (statuses are visible through `$?`, nothing is printed); `Stage12.md` left as history.
+
+**As built (Step 5).** As planned, with these specifics:
+- `launch` and the segment runners return a plain `i32` again: `Launched { status, ran }` and `run_segment_with`'s `report` parameter are gone. Nothing prints a status.
+- Tests: 86 expectations ended in an `exit N` line. A script rewrote them from the AST (`check(name, s.run(cmd), want)` with a trailing `exit N\n` became `check(name, s.run_status(cmd), (want, N))`), so
+  each still verifies the status it used to show; `FAULT` constants became a plain `"Segmentation fault" in out`. New harness helpers `Session.run_status(cmd) -> (transcript, status)` and `Session.status(cmd)`.
+  A check that goes on to read `$?` itself must use plain `run` (a `run_status` leaves `$?` as its own `echo` set it). `tests/assign.sh` now prints `status $?` after each `printenv`, since a
+  silent `printenv` no longer shows its failure. 881 checks in all (the total rose because most of those converted checks now cost a second command).
+- Docs: `shell.md` (the `exit N` section replaced by one paragraph), `progs.md`'s Errors convention, `syscalls.md`, `tests.md`. `Stage12.md` and ROADMAP's Stage 12 text stay as history.
 
 ## Step 6 -- `$HOME` and `$TZ`
 - `src/shell/builtins.rs`: `cd` with no operand goes to `$HOME` (`cd: HOME not set` otherwise); update its doc and `shell.md`'s builtin table.

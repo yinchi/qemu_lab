@@ -77,7 +77,7 @@ syscall arrives when state is per-process.
 A data or instruction abort from EL0 is caught by the same handler (`sync_el0_handler`, reached from
 `sync_el0_64` in `arch/vectors.s`). The kernel prints `Segmentation fault (address 0x..., ESR_EL1 0x...)` on
 the console and the serial port, and the program ends with status **139** (`128 + SIGSEGV`, the shell
-convention), which the shell reports as `exit 139`. Any other kind of exception from EL0 is treated as a
+convention), which is what `$?` shows afterwards. Any other kind of exception from EL0 is treated as a
 kernel-level unexpected exception.
 
 ## Error values

@@ -25,11 +25,10 @@ def run(ctx):
     check("a value with a space", s.run("printenv GREETING"), "printenv GREETING\nhello world\n")
     check("an empty value is set, and prints an empty line", s.run("printenv EMPTY"), "printenv EMPTY\n\n")
     check("quotes and $ in the file are literal", s.run("printenv Q"), "printenv Q\n\"quoted\" $x\n")
-    check("a name that is not set: nothing, status 1", s.run("printenv NOSUCH"), "printenv NOSUCH\nexit 1\n")
-    check("several names, in the order given; one missing makes it 1",
-          s.run("printenv TZ NOSUCH HOME"), "printenv TZ NOSUCH HOME\nUTC\n/\nexit 1\n")
-    check("names are case-sensitive", s.run("printenv home"), "printenv home\nexit 1\n")
-    check("a name with '=' is not a variable", s.run("printenv HOME=/"), "printenv HOME=/\nexit 1\n")
+    check("a name that is not set: nothing, status 1", s.run_status("printenv NOSUCH"), ("printenv NOSUCH\n", 1))
+    check("several names, in the order given; one missing makes it 1", s.run_status("printenv TZ NOSUCH HOME"), ("printenv TZ NOSUCH HOME\nUTC\n/\n", 1))
+    check("names are case-sensitive", s.run_status("printenv home"), ("printenv home\n", 1))
+    check("a name with '=' is not a variable", s.run_status("printenv HOME=/"), ("printenv HOME=/\n", 1))
 
     # --- export and unset change what the next program sees ---
     s.run("export FOO=bar")
@@ -40,7 +39,7 @@ def run(ctx):
     s.run("export HOME")
     check("export NAME alone keeps the value", s.run("printenv HOME"), "printenv HOME\n/\n")
     s.run("unset FOO")
-    check("unset removes it", s.run("printenv FOO"), "printenv FOO\nexit 1\n")
+    check("unset removes it", s.run_status("printenv FOO"), ("printenv FOO\n", 1))
     check("...and nothing else", s.run("env"), "env\n" + INITIAL)
 
     # --- a redirect or a pipeline does not change the environment; both programs see it ---
@@ -52,19 +51,17 @@ def run(ctx):
     s.run("chmod +x tests/exportenv.sh")
     check("a script sees the exports and can make its own",
           s.run("./tests/exportenv.sh"), "./tests/exportenv.sh\ninside\n")
-    check("...which are gone afterwards", s.run("printenv SCRIPTVAR"), "printenv SCRIPTVAR\nexit 1\n")
+    check("...which are gone afterwards", s.run_status("printenv SCRIPTVAR"), ("printenv SCRIPTVAR\n", 1))
     check("source keeps them", s.run("source tests/exportenv.sh"), "source tests/exportenv.sh\ninside\n")
     check("...so a later command has it", s.run("printenv SCRIPTVAR"), "printenv SCRIPTVAR\ninside\n")
     s.run("unset SCRIPTVAR")
 
     # --- the options ---
-    check("env takes no operand (the shell runs a command in a changed environment, Step 4)",
-          s.run("env FOO=bar"), "env FOO=bar\nenv: extra operand 'FOO=bar'\nTry 'env --help' for more information.\nexit 1\n")
-    check("env -i", s.run("env -i"), "env -i\nenv: invalid option -- 'i'\nTry 'env --help' for more information.\nexit 1\n")
+    check("env takes no operand (the shell runs a command in a changed environment, Step 4)", s.run_status("env FOO=bar"), ("env FOO=bar\nenv: extra operand 'FOO=bar'\nTry 'env --help' for more information.\n", 1))
+    check("env -i", s.run_status("env -i"), ("env -i\nenv: invalid option -- 'i'\nTry 'env --help' for more information.\n", 1))
     check("env --help", s.run("env --help"), "env --help\nusage: env\n")
     check("printenv --help", s.run("printenv --help"), "printenv --help\nusage: printenv [NAME]...\n")
-    check("printenv -x", s.run("printenv -x"),
-          "printenv -x\nprintenv: invalid option -- 'x'\nTry 'printenv --help' for more information.\nexit 1\n")
+    check("printenv -x", s.run_status("printenv -x"), ("printenv -x\nprintenv: invalid option -- 'x'\nTry 'printenv --help' for more information.\n", 1))
 
     # --- the layout of envp on the stack ---
     s.run("chmod +x tests/probe.exe")

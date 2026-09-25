@@ -23,8 +23,7 @@ def run(ctx):
     # ================================================================= exit status: last stage only
     check("false | true reports nothing (pipeline status is true's)",
           s.run("false | true"), "false | true\n")
-    check("true | false reports exit 1 (pipeline status is false's)",
-          s.run("true | false"), "true | false\nexit 1\n")
+    check("true | false has status 1 (the pipeline's is false's)", s.run_status("true | false"), ("true | false\n", 1))
 
     # ================================================================= pipe binds before a stage's own redirects
     check("a > f | b: a's output goes to f, b sees empty input",

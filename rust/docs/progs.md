@@ -20,8 +20,8 @@ The table below is the record of exactly which subset. Anything not listed as su
 option is refused with a message and exit 1 (worded as under "Errors").
 
 - **Errors** go to stderr, both stdout and stderr reach the console (and the serial log), and the program exits 1.
-  Success is exit 0. A nonzero status is reported by the launcher as `exit N`; a program stopped by a fault is
-  reported as `exit 139`. The wording is GNU coreutils' (in the C locale, ASCII quotes), from Stage 12 on:
+  Success is exit 0. A nonzero status is visible as `$?` (the shell prints nothing itself, from Stage 17; before
+  that the launcher printed `exit N`); a program stopped by a fault is 139. The wording is GNU coreutils' (in the C locale, ASCII quotes), from Stage 12 on:
   - a failed operation is `<prog>: cannot <verb> '<path>': <reason>` (`cannot remove`, `cannot stat`, `cannot create
     directory`, `cannot create regular file`, `cannot move 'a' to 'b'`, `cannot access`, `cannot open ... for
     reading`), or `error reading`/`error writing '<path>'`, `reading directory`, `changing permissions of` where GNU

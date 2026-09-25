@@ -50,19 +50,16 @@ def run(ctx):
     check("the read-only file is untouched", s.run("cat f"), "cat f\ny\nz\n")
     check("restore write permission on f", s.run("chmod +w f"), "chmod +w f\n")
 
-    # --- T8.5: a command's own nonzero status still reports under a redirect ---
-    check("false > f still reports exit 1", s.run("false > f"), "false > f\nexit 1\n")
+    # --- T8.5: a command's own nonzero status survives a redirect ---
+    check("false > f keeps false's status", s.run_status("false > f"), ("false > f\n", 1))
     check("f was still truncated (the redirect took effect regardless)", s.run("cat f"), "cat f\n")
 
     # --- stdout redirect doesn't hide stderr, and vice versa ---
-    check("a redirected stdout doesn't hide the command's own stderr",
-          s.run("cat nosuchfile > o"),
-          "cat nosuchfile > o\ncat: nosuchfile: No such file or directory\nexit 1\n")
+    check("a redirected stdout doesn't hide the command's own stderr", s.run_status("cat nosuchfile > o"), ("cat nosuchfile > o\ncat: nosuchfile: No such file or directory\n", 1))
     check("o is empty (nothing was ever written to stdout)", s.run("cat o"), "cat o\n")
     check("a redirected stderr leaves the console silent",
           s.run("cat nosuchfile 2> e"), "cat nosuchfile 2> e\n")
-    check("e holds the error text and the exit status, both redirected the same way",
-          s.run("cat e"), "cat e\ncat: nosuchfile: No such file or directory\nexit 1\n")
+    check("e holds the error text, redirected like a program's own stderr", s.run("cat e"), "cat e\ncat: nosuchfile: No such file or directory\n")
 
     # --- T8.5a: redirection applies to builtins too ---
     check("cd > f creates/truncates an empty file and still changes directory",

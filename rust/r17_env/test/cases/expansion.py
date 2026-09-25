@@ -7,8 +7,7 @@ runnable, 2 a syntax error, 1 for a builtin that failed or a redirect that could
 
 The exact rules for splitting and quoting are host tests in `expand.rs` and `lexer.rs`; here it is the shell end to
 end: what a program's `argv` holds, where an expansion may appear (a command word, a redirect target, a builtin's
-operand) and where `$?` comes from. The variables are the ones the group's `/etc/environment` defines; the
-`exit N` line a failing program still prints (until Step 5) is part of the expected output.
+operand) and where `$?` comes from. The variables are the ones the group's `/etc/environment` defines.
 """
 
 ENVIRONMENT = (
@@ -90,11 +89,11 @@ def run(ctx):
 
     # --- $? ---
     echo("echo $?", "2")  # the last line was a syntax error
-    check("after a failing program", s.run("false"), "false\nexit 1\n")
+    check("after a failing program", s.run("false"), "false\n")
     echo("echo $?", "1")
     echo("echo $?", "0")  # ...and the `echo` itself succeeded
     out = s.run("tests/probe.exe poke 0")
-    check("after a fault", "Segmentation fault" in out and out.endswith("exit 139\n"), True)
+    check("after a fault", "Segmentation fault" in out, True)
     echo("echo $?", "139")
     check("after a command that is not found", s.run("nosuchcommand"), "nosuchcommand\nnosuchcommand: command not found\n")
     echo("echo $?", "127")
@@ -116,13 +115,13 @@ def run(ctx):
     echo("echo $?", "1")
     check("after an ambiguous one", s.run("echo x > $NOSUCH"), "echo x > $NOSUCH\n$NOSUCH: ambiguous redirect\n")
     echo("echo $?", "1")
-    check("a blank line changes nothing", s.run("false"), "false\nexit 1\n")
+    check("a blank line changes nothing", s.run("false"), "false\n")
     check("...even a blank one", s.run(""), "\n")
     check("...nor does a comment", s.run("# just a comment"), "# just a comment\n")
     echo("echo $?", "1")
     check("a pipeline's is its last stage's (a failing first one)", s.run("false | true"), "false | true\n")
     echo("echo $?", "0")
-    check("...and the other way round", s.run("true | false"), "true | false\nexit 1\n")
+    check("...and the other way round", s.run("true | false"), "true | false\n")
     echo("echo $?", "1")
 
     s.run("false")

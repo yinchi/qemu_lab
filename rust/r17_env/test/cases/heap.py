@@ -14,7 +14,6 @@ gone for the next.
 """
 
 BASE = 0x4400_0000
-FAULT = "exit 139\n"
 
 BRK = (
     "start: page-aligned true\n"
@@ -48,7 +47,7 @@ HEAPUSE = (
 
 
 def faults(out):
-    return "Segmentation fault" in out and out.endswith(FAULT)
+    return "Segmentation fault" in out
 
 
 def run(ctx):

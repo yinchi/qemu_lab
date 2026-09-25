@@ -1,5 +1,5 @@
 //! Starting a program from a command line: finding the file a command word names, checking that it
-//! may run, running it, and reporting what went wrong (or its nonzero exit status) -- via
+//! may run, running it, and reporting what went wrong -- via
 //! `shell_err` (`shell/mod.rs`), same as any other shell-reported error, so it is redirectable.
 
 use alloc::string::String;
@@ -47,15 +47,6 @@ const ELF_MAGIC: &[u8] = b"\x7fELF";
 /// script" -- bash's own `ENOEXEC` fallback heuristic (a NUL anywhere in that prefix means binary).
 const SCRIPT_PROBE_LEN: usize = 128;
 
-/// How a launch went: the status the command line's `$?` becomes, and whether a program actually ran.
-pub struct Launched {
-    pub status: i32,
-    /// A program ran (as opposed to nothing starting, or a script running instead): the only case where
-    /// Stage 12's stand-in for `$?`, an `exit N` line, is printed for a nonzero status. Goes with that line
-    /// in Step 5.
-    pub ran: bool,
-}
-
 /// Exit statuses for a command that did not run, as in POSIX shells: `126` found but could not be run (a
 /// directory, no exec bit, too big, not a valid program), `127` not found.
 const STATUS_CANNOT_EXECUTE: i32 = 126;
@@ -80,11 +71,9 @@ const STATUS_NOT_FOUND: i32 = 127;
 /// them, not silently ignored.
 ///
 /// Returns the exit status: the program's, or a script's last line's, or `127` / `126` for a command that
-/// could not run (every one of these already reported via `shell_err`). Printing `exit {code}` (our
-/// stand-in for `$?`, `Stage12.md`'s Step 11) is the caller's decision, not this function's: a single
-/// command prints it unconditionally, a pipeline only for its last stage, and only if `ran`.
-pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> Launched {
-    let cannot = |status| Launched { status, ran: false };
+/// could not run (every one of these already reported via `shell_err`). The status is not printed: it is
+/// what `$?` shows.
+pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> i32 {
     let name = argv[0];
     let prog_entry = match find_program(name) {
         Ok(entry) => entry,
@@ -93,36 +82,36 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> Launched {
             // A name or path nothing answers to is "not found"; a lookup that failed for another reason (a path
             // through a file, one over the length limit) is not.
             let missing = why == "command not found" || why == errmsg(ENOENT);
-            return cannot(if missing { STATUS_NOT_FOUND } else { STATUS_CANNOT_EXECUTE });
+            return if missing { STATUS_NOT_FOUND } else { STATUS_CANNOT_EXECUTE };
         }
     };
 
     if prog_entry.is_directory() {
         shell_err(&alloc::format!("{name}: {}", errmsg(EISDIR)));
-        return cannot(STATUS_CANNOT_EXECUTE);
+        return STATUS_CANNOT_EXECUTE;
     }
     if prog_entry.attributes().bits() & ATTR_EXEC == 0 {
         shell_err(&alloc::format!("{name}: {}", errmsg(EACCES)));
-        return cannot(STATUS_CANNOT_EXECUTE);
+        return STATUS_CANNOT_EXECUTE;
     }
     if prog_entry.len() as usize > MAX_PROGRAM_SIZE {
         shell_err(&alloc::format!(
             "{name}: cannot execute: {}",
             errmsg(ENOEXEC)
         ));
-        return cannot(STATUS_CANNOT_EXECUTE);
+        return STATUS_CANNOT_EXECUTE;
     }
 
     let file_bytes = match read_file_checked(vol, &prog_entry) {
         Ok(bytes) => bytes,
         Err(e) => {
             shell_err(&alloc::format!("{name}: {}", errmsg(e)));
-            return cannot(STATUS_CANNOT_EXECUTE);
+            return STATUS_CANNOT_EXECUTE;
         }
     };
 
     if !file_bytes.starts_with(ELF_MAGIC) {
-        return cannot(run_as_script_fallback(name, &file_bytes, argv, depth));
+        return run_as_script_fallback(name, &file_bytes, argv, depth);
     }
     // The program's environment: what the shell has exported, as `NAME=VALUE` strings.
     let env: Vec<String> = shell_state::frames()
@@ -132,17 +121,17 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> Launched {
         .collect();
     let env: Vec<&str> = env.iter().map(String::as_str).collect();
     match process::run_program(&file_bytes, argv, &env) {
-        Ok(status) => Launched { status, ran: true },
+        Ok(status) => status,
         Err(e) if e.errno() == E2BIG => {
             shell_err(&alloc::format!("{name}: {}", errmsg(E2BIG)));
-            cannot(STATUS_CANNOT_EXECUTE)
+            STATUS_CANNOT_EXECUTE
         }
         Err(e) => {
             shell_err(&alloc::format!(
                 "{name}: cannot execute: {}",
                 errmsg(e.errno())
             ));
-            cannot(STATUS_CANNOT_EXECUTE)
+            STATUS_CANNOT_EXECUTE
         }
     }
 }
