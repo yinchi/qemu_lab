@@ -273,6 +273,30 @@ def set_environment(img_path, workdir, text):
     subprocess.run(["mcopy", "-i", img_path, "-o", local, f"::{ENVIRONMENT_FILE}"], check=True)
 
 
+def home_of(environment):
+    """The `HOME` an environment file (text) names, `/` if it names none."""
+    home = "/"
+    for line in (environment or "").splitlines():
+        if line.startswith("HOME="):
+            home = line[len("HOME="):] or "/"
+    return home
+
+
+def set_profile(img_path, workdir, environment, content):
+    """Puts `content` (text or bytes) in `$HOME/.profile` on the image, where `$HOME` is what the environment file
+    `environment` says, or -- with `content` None -- removes the file, so the image's own default profile (which sits at
+    `/root/.profile`, and which no test group's `HOME` reaches) is never involved. Private copy, before boot."""
+    home = home_of(environment).strip("/")
+    target = f"::{home + '/' if home else ''}.profile"
+    if content is None:
+        subprocess.run(["mdel", "-i", img_path, target], stderr=subprocess.DEVNULL)  # nothing to remove is fine
+        return
+    local = os.path.join(workdir, "profile")
+    with open(local, "wb") as f:
+        f.write(content if isinstance(content, bytes) else content.encode())
+    subprocess.run(["mcopy", "-i", img_path, "-o", local, target], check=True)
+
+
 CELL_W, CELL_H = 8, 16  # a console cell on the display
 
 

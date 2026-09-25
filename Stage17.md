@@ -16,7 +16,7 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 8 | `$PATH`: the directories a bare command name is looked up in | done |
 | 9 | Drop the `.exe` naming: programs are `bin/cat`, not `bin/cat.exe` | done |
 | 10 | `$PS1`: a limited prompt string (working directory) | done |
-| 11 | `~/.profile`, and `source` searching `$PATH` | planned |
+| 11 | `~/.profile`, and `source` searching `$PATH` | done |
 | 12 | Docs, roadmap, regression sweep | planned |
 
 ## Context
@@ -282,7 +282,7 @@ second environment file adds nothing over `export A=b` lines in one), following 
   assignments, `export`s, `cd`s and `PS1`/`PATH` changes are the shell's own, as `source` would. No `HOME`, or no such file: nothing happens, silently (the environment file *notes* a missing file; a profile is optional).
   A file that is not text, is too large (64 KiB, as `/etc/environment`) or is a directory: one serial note and it is skipped. A failing line reports and the script goes on, as any script does; that output, and any a command in it
   prints, reaches the console before the first prompt.
-- Straight-line only: the shell has no control flow. `$?` after start-up is the profile's last command's, which is reset to 0 before the first prompt so a broken profile does not show in `echo $?` (decide when implementing).
+- Straight-line only: the shell has no control flow. `$?` after start-up is the profile's last command's, as in bash and dash (settled in Step 11's "As built").
 - `disk/root/.profile` ships a default: a comment header and, if Steps 8 and 10 want them there, `PATH`/`PS1` lines (kept commented so the general image's behaviour is the environment file's). Test groups have no profile unless a
   module supplies one: `PROFILE = "..."` (like `ENVIRONMENT`), written to `$HOME/.profile` in the group's image copy by the harness (`set_profile`), `None` removes it.
 - Tests (`profile.py`, its own group, `HOME=/tests`): assignments and `export`s in it are in effect at the first prompt (`echo $X`, `printenv`); `PATH=$PATH:...` (expansion works); a `cd` in it sticks; a bad line is
@@ -296,6 +296,16 @@ second environment file adds nothing over `export A=b` lines in one), following 
   when both have the name, the working-directory fallback, no exec bit needed, a slash name not searched, `.` the same, a directory of that name skipped, unset and empty `PATH`, and `sh FILE` still cwd-only. Docs:
   `shell.md` (the `source` row and Program lookup).
 - Docs: `shell.md` "Starting up" (the order is now environment, `$HOME`, profile, prompt), `filesystem.md` (`/root/.profile`), `tests.md` (`PROFILE`).
+
+**As built (Step 11).** As planned, with these specifics:
+- `shell::run_profile` (in `start_up`, after `enter_home`): `$HOME/.profile` resolved against `/`, looked up with `files::lookup`; `ENOENT`/`ENOTDIR` (or no `HOME`) are silent; a directory, an unreadable file, one over 64 KiB or not UTF-8 is one serial note
+  (`Profile: <path>: <why> -- skipped.`). It runs with `run_script_content(content, false, 0)` -- unscoped, so it is the shell's own state -- and **`$?` is left as the profile's last command set it**. The plan had it reset to 0 ("decide when implementing"); it was implemented that way first, then checked against bash 5.2 and dash, which both leave the last status (`127` after a failing last line), and changed to match.
+- `builtins::search_path_for`: `source`/`.` (not `sh`) look a bare name up through `path_search::candidates` (a directory of that name skipped, no exec bit needed), then fall back to the working directory as before; a name with a `/` is not
+  searched. Error wording is unchanged.
+- Default `disk/root/.profile`: comments only (examples for `PATH`, `PS1`, `TZ`), so a boot with it changes nothing.
+- Harness: `PROFILE` module attribute (text or bytes; none means no file), written by `set_profile` to `$HOME/.profile` where `HOME` is what the group's `ENVIRONMENT` says (`home_of`); the image's own `/root/.profile` is never
+  involved because no test group has `HOME=/root`. Tests: `profile` (an export, a plain assignment, `PATH=$PATH:...`, a `PS1`, output before the prompt, a `cd` that sticks, failing lines with the rest still running, `$?` at the
+  first prompt: 127), `profile_bad` (not UTF-8), `profile_big` (over 64 KiB), `home` (no note for a missing one), and the `source` search cases in `path.py` (scripts that only assign, so `PATH=` can be empty while they run). 1083 checks.
 
 ## Step 12 -- docs, roadmap, sweep
 `docs/shell.md` (variables, assignment, `export`, expansion, `$?`, the retired line, `PATH`, `PS1`), `docs/progs.md` (`env`, `printenv`, `date`/`stat` and `$TZ`), `docs/launching_programs.md` (`envp` layout

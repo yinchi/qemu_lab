@@ -23,7 +23,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use abi::errno::errmsg;
+use abi::errno::{EISDIR, ENOENT, ENOTDIR, errmsg};
 
 use crate::console::{BG, Console, FG};
 use crate::exec::shell_state::{self, Frames, Stdio};
@@ -44,6 +44,9 @@ const ENVIRONMENT_FILE: &str = "/etc/environment";
 
 /// More than this is not an environment file: it is ignored rather than parsed.
 const ENVIRONMENT_FILE_MAX: usize = 64 * 1024;
+
+/// The same limit for `~/.profile`.
+const PROFILE_MAX: usize = 64 * 1024;
 
 /// Reads `/etc/environment` into the shell's bottom frame, every variable exported, and reports what it did on
 /// `out` (the serial log): a missing or unreadable file is an empty environment, and a bad line is skipped, never
@@ -88,13 +91,52 @@ fn enter_home(out: &mut impl core::fmt::Write) {
     }
 }
 
+/// Runs `$HOME/.profile`, the user's start-up script, if there is one: its lines run in the shell itself, as
+/// `source` would (so its assignments, `export`s, `cd`s and `PATH`/`PS1` changes are the shell's own), and what it
+/// prints appears before the first prompt. No `HOME` or no such file is silent -- a profile is optional, unlike the
+/// environment file. A profile that is a directory, is not UTF-8 text, or is over `PROFILE_MAX` is one note on `out`
+/// and is skipped. A failing line reports and the script goes on, as any script does. `$?` is left as the profile's
+/// last command set it, as in bash and dash (both show a failing last line's status at the first prompt).
+fn run_profile(out: &mut impl core::fmt::Write) {
+    let Some(home) = shell_state::frames().top().var("HOME").filter(|home| !home.is_empty()).map(String::from) else {
+        return;
+    };
+    let Ok(path) = crate::fs::path::abspath("/", &format!("{home}/.profile")) else { return };
+    let mut skip = |why: &str| {
+        let _ = write!(out, "Profile: {path}: {why} -- skipped.\r\n");
+    };
+    let entry = match files::lookup(&path) {
+        Ok(entry) => entry,
+        Err(ENOENT | ENOTDIR) => return,
+        Err(e) => return skip(errmsg(e)),
+    };
+    if entry.is_directory() {
+        return skip(errmsg(EISDIR));
+    }
+    // SAFETY: as `run`'s doc comment says of the statics it uses.
+    let vol = unsafe { static_ref!(VOL) };
+    if entry.len() as usize > PROFILE_MAX {
+        return skip("not a text file of at most 64 KiB");
+    }
+    let bytes = match crate::fs::read_file_checked(vol, &entry) {
+        Ok(bytes) => bytes,
+        Err(e) => return skip(errmsg(e)),
+    };
+    let Ok(content) = core::str::from_utf8(&bytes) else {
+        return skip("not a text file of at most 64 KiB");
+    };
+    let _ = run_script_content(content, false, 0);
+}
+
 /// What the init shell does for itself before it reads its first line, in this order: load its environment, enter
-/// `$HOME`, and draw the first prompt. The notes the first two make go to the serial log, and all of them come
-/// before the prompt's `> `, so that a log ending in `> ` means the shell is ready (the test harness relies on it).
+/// `$HOME`, run its `.profile`, and draw the first prompt. The notes the first three make go to the serial log (what
+/// the profile prints goes to the console), and all of them come before the prompt's `> `, so that a log ending in
+/// `> ` means the shell is ready (the test harness relies on it).
 fn start_up() {
     let mut serial = UartWriter { uart: &UART0 };
     load_environment(&mut serial);
     enter_home(&mut serial);
+    run_profile(&mut serial);
     // SAFETY: as `run`'s doc comment says of the statics it uses.
     unsafe {
         start_prompt(static_mut_ref!(LINE_DISCIPLINE), static_mut_ref!(CONSOLE));

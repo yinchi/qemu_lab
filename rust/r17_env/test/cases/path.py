@@ -111,6 +111,40 @@ def run(ctx):
     check("a missing path is 127 too", s.run_status("PATH=/bin tmp/nosuch"),
           ("PATH=/bin tmp/nosuch\ntmp/nosuch: No such file or directory\n", 127))
 
+    # --- `source` and `.` find a bare name through PATH first, then the working directory (bash's rule) ---
+    # The scripts only assign, so they need no program (the overlay `PATH=` can be empty while they run), and they are
+    # plain files: no exec bit is needed to source one.
+    s.run("mkdir /tmp/cwd")
+    s.run("echo WHERE=pbin > /tmp/pbin/s.sh")
+    s.run("echo WHERE=cwd > /tmp/cwd/s.sh")
+    s.run("mkdir /tmp/pbin2/s.sh")  # a directory of that name: skipped
+
+    def sourced(line, where):
+        s.run(line)
+        check(line, s.run('echo "$WHERE"'), f'echo "$WHERE"\n{where}\n')
+        s.run("unset WHERE")
+
+    sourced("PATH=/tmp/pbin source s.sh", "pbin")
+    sourced("PATH=/tmp/pbin . s.sh", "pbin")
+    s.run("cd /tmp/cwd")
+    sourced("PATH=/tmp/pbin source s.sh", "pbin")  # PATH is searched before the working directory
+    sourced("PATH=/bin source s.sh", "cwd")  # ...which is the fallback
+    sourced("PATH= source s.sh", "cwd")  # even with no directory at all
+    sourced("PATH=/tmp/pbin source ./s.sh", "cwd")  # a name with a slash is not searched
+    sourced("PATH=/tmp/pbin . ./s.sh", "cwd")
+    sourced("PATH=/tmp/pbin2:/tmp/pbin source s.sh", "pbin")  # the directory called s.sh is skipped
+    sourced("PATH=/tmp/pbin:/tmp/pbin2 source s.sh", "pbin")
+    check("sh is not searched: it runs the working directory's file, in a scope of its own",
+          s.run('sh s.sh'), "sh s.sh\n")
+    s.run("cd /")
+    check("sh with the file only on PATH", s.run("PATH=/tmp/pbin sh s.sh"),
+          "PATH=/tmp/pbin sh s.sh\nsh: s.sh: No such file or directory\n")
+    check("source of a name that is nowhere", s.run_status("PATH=/tmp/pbin source nosuch.sh"),
+          ("PATH=/tmp/pbin source nosuch.sh\nsource: nosuch.sh: No such file or directory\n", 1))
+    check("...and one that is a directory everywhere", s.run("PATH=/tmp/pbin2 source s.sh"),
+          "PATH=/tmp/pbin2 source s.sh\nsource: s.sh: No such file or directory\n")
+    s.run("PATH=/bin")
+
     # --- the command word can itself come from a variable ---
     s.run("export PATH=/tmp/pbin")
     s.run("T=tool")

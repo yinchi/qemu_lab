@@ -13,6 +13,7 @@ def run(ctx):
 
     boot = s.log()
     check("boot: no complaint about HOME", "cannot enter" not in boot, True)
+    check("boot: no profile is not worth a note", "Profile" not in boot, True)
     check("the shell starts in $HOME", s.run("pwd"), "pwd\n/tests\n")
     check("...so a relative path is relative to it", s.run("cat hello.txt"), "cat hello.txt\n" + ctx.fixture("hello.txt"))
     check("cd elsewhere", s.run("cd /bin"), "cd /bin\n")

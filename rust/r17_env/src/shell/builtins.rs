@@ -9,9 +9,10 @@ use alloc::string::String;
 use crate::exec::shell_state;
 use crate::fs::blkio::VOL;
 use crate::fs::{files, read_file_checked};
-use crate::shell::run_script_content;
+use crate::shell::{path_search, run_script_content};
 use crate::static_ref;
-use abi::errno::{EISDIR, errmsg};
+use abi::errno::{EISDIR, ENOENT, ENOTDIR, errmsg};
+use hadris_fat::sync::FileEntry;
 
 /// The builtin `name` is, if it is one.
 pub fn is_builtin(name: &str) -> bool {
@@ -67,13 +68,42 @@ pub fn run(name: &str, args: &[&str], depth: usize) -> Result<i32, String> {
     }
 }
 
-/// Resolves `path` against the working directory (unlike launching a program: no `/bin` search, and
-/// no exec bit required -- POSIX's rule for both `source`/`.` and `sh FILE`) and runs it as a script.
+/// Finds the file `source` or `.` names, as bash does: a name **without a `/`** is looked up in the directories of
+/// `$PATH` first (`path_search`, in order; the file need only be readable, **not executable**, and a directory of
+/// that name is skipped) and, if none has it, in the working directory (bash's non-POSIX fallback). A name with a
+/// `/` is used as written, against the working directory, and never searched. `None` if a bare name is in no
+/// `PATH` directory, so the caller falls back to the working directory.
+fn search_path_for(name: &str) -> Result<Option<FileEntry>, isize> {
+    if name.contains('/') {
+        return Ok(None);
+    }
+    let path = shell_state::frames().top().var("PATH").map(String::from);
+    for candidate in path_search::candidates(path.as_deref(), name) {
+        let Ok(absolute) = shell_state::absolute(&candidate) else { continue };
+        match files::lookup(&absolute) {
+            Ok(entry) if entry.is_directory() => {}
+            Ok(entry) => return Ok(Some(entry)),
+            Err(ENOENT | ENOTDIR | EISDIR) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+
+/// Runs the script `path` names. `source` and `.` (`search_path`) find a bare name through `$PATH` before the working
+/// directory (`search_path_for`); `sh FILE` -- like a script run by name -- takes the path as given, relative to the
+/// working directory. No exec bit is needed either way (POSIX's rule for `source`/`.` and `sh FILE`).
 /// `cmd` (`"source"`, `"."` or `"sh"`) only names the caller, for the error prefix.
 fn run_script_file(cmd: &str, path: &str, scoped: bool, depth: usize) -> Result<i32, String> {
-    let abspath =
-        shell_state::absolute(path).map_err(|e| format!("{cmd}: {path}: {}", errmsg(e)))?;
-    let entry = files::lookup(&abspath).map_err(|e| format!("{cmd}: {path}: {}", errmsg(e)))?;
+    let fail = |e: isize| format!("{cmd}: {path}: {}", errmsg(e));
+    let found = if scoped { None } else { search_path_for(path).map_err(fail)? };
+    let entry = match found {
+        Some(entry) => entry,
+        None => {
+            let abspath = shell_state::absolute(path).map_err(fail)?;
+            files::lookup(&abspath).map_err(fail)?
+        }
+    };
     if entry.is_directory() {
         return Err(format!("{cmd}: {path}: {}", errmsg(EISDIR)));
     }

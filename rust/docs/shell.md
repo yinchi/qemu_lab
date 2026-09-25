@@ -211,12 +211,26 @@ fault has said so already (`Segmentation fault (address ...)`) and is 139.
 
 `kernel_main` only brings the machine up and then calls `shell::run()`, whose first act (`start_up`, in
 `shell/mod.rs`) is what the shell does for itself: it reads `/etc/environment` into its variables (see "Variables
-and assignments"), then, like a login program would, `chdir`s to `$HOME`, and last draws the first prompt. Its notes
-go to the serial log, all before that first `> `. There is no login or user system, so this is
+and assignments"), then, like a login program would, `chdir`s to `$HOME`, then runs `$HOME/.profile` (below), and last
+draws the first prompt. Its notes go to the serial log, all before that first `> `. There is no login or user system, so this is
 the shell's own doing, and nothing else keeps the two together afterwards (as on Linux, `cd` never changes
 `$HOME` and changing `$HOME` never moves the shell). With no `HOME`, or an empty one, it stays in `/`; a `HOME` that names
 no directory is reported on the serial log (`Environment: cannot enter HOME=/x: ... -- staying in /.`) and does the
 same. The general image's file says `HOME=/root`, so the shell starts in `/root`.
+
+### `~/.profile`
+
+`/etc/environment` is data -- `NAME=VALUE`, no expansion -- so it cannot say `PATH=$PATH:/root/bin`. A per-user
+start-up script can, and this shell has assignments, `$VAR` and `source`, so `$HOME/.profile` is a script, run once
+at start-up (Linux's own split: `/etc/environment` stays a system-wide data file, and the shell's profile is a script
+layered on top). Its lines run **in the shell itself, as `source` would**, not in a scope: its assignments, `export`s,
+`cd`s and changes to `PATH` and `PS1` are the shell's own, and what a command in it prints appears on the console
+before the first prompt. A failing line reports and the rest still run, as in any script. There is no control flow, so
+it is straight-line assignments, `export`s and commands. `$?` is left as the profile's last command set it, as in bash and dash (both show a failing last
+line's status at the first prompt, which was checked). No `HOME`, or no `.profile`, is silent (unlike the
+environment file, a profile is optional); a profile that is a directory, is not UTF-8 text, or is over 64 KiB is one
+serial note (`Profile: /root/.profile: ... -- skipped.`) and is skipped. The general image ships a `/root/.profile` of
+commented-out examples (`PATH=$PATH:$HOME/bin`, `PS1`, `export TZ`).
 
 ### The prompt
 
@@ -242,14 +256,15 @@ Only what has to change the shell's own state is built in.
 | `cd [DIR]` | Make `DIR` (absolute, or relative to the working directory) the working directory. With no operand, go to `$HOME` (`cd: HOME not set` if it is unset or empty; before Stage 17, `/`). `cd -`, `-L` and `-P` are refused with an explanation, as is more than one operand. On any error the directory is unchanged. |
 | `export NAME[=VALUE]...` | Mark each variable **exported** -- handed to every program the shell starts, and to scripts run as their own process -- and, with a `=VALUE`, assign it first. `export NAME` for a variable that is not set does nothing. Every operand is attempted; a name that is not a valid identifier (`[A-Za-z_][A-Za-z0-9_]*`) is reported as bash does, `export: 'a-b': not a valid identifier`. `export` alone and `-p` are refused. |
 | `unset NAME...` | Remove each variable, set or not. An invalid name is reported; options are refused. |
-| `source FILE`, `. FILE` | Run the lines of `FILE` in the *current* shell state: a `cd` inside it sticks. |
+| `source FILE`, `. FILE` | Run the lines of `FILE` in the *current* shell state: a `cd` inside it sticks. A bare `FILE` is looked up in the directories of `$PATH` first, then in the working directory (bash's rule) |
 | `sh FILE` | Run the lines of `FILE` in a *scope* of its own, as a child shell process would: its `cd`s and redirections are gone afterwards. |
 
 `cd` also accepts `--` before its operand (`cd -- -odd-name`) and rejects any other option (`cd: -x: invalid option`).
 `source` and `sh` take exactly one `FILE` (`usage: source FILE`, or `too many arguments`).
 
-`source` and `sh` resolve `FILE` against the working directory (no `/bin` search) and need no executable bit,
-as in POSIX. `pwd` is not a builtin but a program (`progs.md`), reading the directory through the `getcwd`
+`source` and `.` find a bare `FILE` (no `/`) in the directories of `$PATH` first -- a directory of that name is skipped
+-- and, if none has it, in the working directory; a `FILE` with a `/` is used as written and never searched.
+`sh FILE` resolves `FILE` against the working directory only. None of them needs an executable bit, as in POSIX. `pwd` is not a builtin but a program (`progs.md`), reading the directory through the `getcwd`
 syscall.
 
 ## Scripts and scoping

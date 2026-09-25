@@ -36,8 +36,8 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env
-from harness import DEFAULT_ENVIRONMENT, Context, Session, set_environment
+from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big
+from harness import DEFAULT_ENVIRONMENT, Context, Session, set_environment, set_profile
 
 GROUPS = [
     [core_utils],
@@ -72,6 +72,9 @@ GROUPS = [
     [path],
     [prompt],
     [prompt_env],
+    [profile],
+    [profile_bad],
+    [profile_big],
 ]
 
 
@@ -109,6 +112,13 @@ def run_group(elf, orig_img, disk_dir, modules):
             environment = m.ENVIRONMENT
             break
     set_environment(img, workdir, environment)
+    # A module may also say what `$HOME/.profile` holds (text or bytes), or `None`/nothing for no file.
+    profile = None
+    for m in modules:
+        if hasattr(m, "PROFILE"):
+            profile = m.PROFILE
+            break
+    set_profile(img, workdir, environment, profile)
 
     results = []
 
