@@ -1116,8 +1116,8 @@ there") is only honest with somewhere for the edit to live.
   # <source>        <mount point>  <type>  <options>
   LABEL=HOME        /root          vfat    defaults
   ```
-  The source is `LABEL=name` or `UUID=XXXX-XXXX` (the volume ID); the type `vfat` or `fat`; the options `defaults`, `noauto` (skip the line),
-  `nofail` and `noatime` (accepted, no effect), while `ro` is refused with a note rather than silently ignored (read-only mounts are not enforced);
+  The source is `LABEL=name` or `UUID=XXXX-XXXX` (the volume ID); the type `vfat` or `fat`; the options `defaults` (= `auto,fail`), `auto`/`noauto` (mount at start-up or leave for
+  `mount` by hand) and `fail`/`nofail` (report a missing volume or not), and nothing else: `ro` and every other option is refused with a note rather than silently ignored (read-only mounts are not enforced);
   trailing `dump`/`pass` fields are ignored. Lines mount in file order, so a mount may be nested in an earlier one. A pure, host-tested parser (the
   shape of Stage 17's `/etc/environment` one) returns the entries and the line-numbered problems. A missing file, a bad line, a source no device
   matches, two devices with the same label (the first is used), or a mount point that is not a directory is one note on the serial log and never
@@ -1148,7 +1148,7 @@ there") is only honest with somewhere for the edit to live.
   a mount point that is a file; `umount` with an open file (`EBUSY`) and with the working directory inside; the file cap and open handles counted
   across volumes; and that a rebuilt system image with the same `home.img` still has the earlier files (the property the stage exists for).
 
-**Not in this stage:** stacked mounts on one point, mounting over a parent of a mount and one device at several points (each mount point holds one mount, none covers another, a volume is mounted once -- stricter than Linux on purpose; the rules are in `rust/docs/filesystem.md`), more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but its label or volume ID (the
+**Not in this stage:** `mount` reading `/etc/fstab` (it takes both operands; a `noauto` line is only syntax-checked), stacked mounts on one point, mounting over a parent of a mount and one device at several points (each mount point holds one mount, none covers another, a volume is mounted once -- stricter than Linux on purpose; the rules are in `rust/docs/filesystem.md`), more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but its label or volume ID (the
 virtio serial is not used), read-only mounts and the other mount options, bind mounts, `root=` on a kernel command line (the root is found by label),
 a mount of one volume inside another that is itself a mount (allowed, but untested beyond one level), and moving a directory across volumes.
 

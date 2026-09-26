@@ -63,9 +63,11 @@ disk:
     done
     # Malformed and oversized ELF files derived from the programs just staged.
     python3 test/mkfixtures.py disk/bin disk/tests
-    # Empty in git (and gitignored), so it has to be created here for folder_to_img.sh to mmd it.
+    # Empty in git (and gitignored), so it has to be created here for folder_to_img.sh to mmd it. /root is the mount
+    # point of the HOME disk (disk/etc/fstab); on the system image it is just an empty directory, which is what the
+    # shell starts in when no home disk is attached.
     rm -rf disk/tmp
-    mkdir -p disk/tmp
+    mkdir -p disk/tmp disk/root
     # TZ=UTC: mtools writes SOURCE_DATE_EPOCH as *local* time, and the kernel reads FAT stamps as UTC (Stage 14),
     # so the bundled files' fixed stamp must not depend on the build host's zone.
     TZ=UTC ../folder_to_img.sh disk.img 64M SYSTEM {{VOLUME_SERIAL}} disk

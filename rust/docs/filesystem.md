@@ -29,8 +29,10 @@ flowchart TD
   carries `/tests` (test programs and fixtures), `/fonts` and whatever else is in `disk/`. From Stage 17 it also
   carries **`/etc/environment`** (the shell's initial environment, `NAME=VALUE` lines read once at boot: `HOME=/root`,
   `TZ`, `PATH=/bin`, `PS1`) and **`/root`**, the home directory (it was `/home` before Stage 17, renamed for the single
-  root user Linux would also give one): a demo text file and `/root/.profile`, the start-up script (see
-  [`shell.md`](shell.md)). The kernel never names `/root` or `/home`; only the environment file's `HOME` does.
+  root user Linux would also give one): until Stage 19 a demo text file and `/root/.profile`, the start-up script (see
+  [`shell.md`](shell.md)); from Stage 19 an **empty directory**, the mount point of the `HOME` disk (**`/etc/fstab`**, read by the
+  shell at start-up), whose demo file and profile come from the seed the disk was made from (`just home-disk`). The kernel
+  never names `/root` or `/home`; only the environment file's `HOME` does.
 - **Mounting.** `kernel_main` opens the root volume once, over a `BlkIo` (below), into the static `VOL` (before Stage 19; see "Mounts"), and it stays
   mounted for the kernel's whole life. Everything else re-derives directories and files from it on each lookup;
   nothing else is cached. Until Stage 19 there is one volume: no mount points, no other filesystems. **From Stage 19** the

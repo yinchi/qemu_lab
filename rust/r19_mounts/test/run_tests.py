@@ -41,8 +41,8 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools, flags, filters, textflags, disks, disks_first, disks_odd, disks_many, mounts
-from harness import DEFAULT_ENVIRONMENT, Context, Session, file_hash, make_extra_disk, relabel, set_environment, set_profile
+from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools, flags, filters, textflags, disks, disks_first, disks_odd, disks_many, mounts, fstab, fstab_nodisk, fstab_bad, fstab_missing
+from harness import DEFAULT_ENVIRONMENT, DEFAULT_FSTAB, Context, Session, file_hash, make_extra_disk, relabel, set_environment, set_fstab, set_profile
 
 GROUPS = [
     [core_utils],
@@ -89,6 +89,10 @@ GROUPS = [
     [disks_odd],
     [disks_many],
     [mounts],
+    [fstab],
+    [fstab_nodisk],
+    [fstab_bad],
+    [fstab_missing],
 ]
 
 
@@ -126,6 +130,14 @@ def run_group(elf, orig_img, disk_dir, modules):
             environment = m.ENVIRONMENT
             break
     set_environment(img, workdir, environment)
+    # `/etc/fstab`, likewise: an empty one unless a module says otherwise with an `FSTAB` attribute (text, or None for no
+    # file at all) -- the image's own (`LABEL=HOME /root`) would mount a home disk in every group that attaches one.
+    fstab = DEFAULT_FSTAB
+    for m in modules:
+        if hasattr(m, "FSTAB"):
+            fstab = m.FSTAB
+            break
+    set_fstab(img, workdir, fstab)
     # A module may also say what `$HOME/.profile` holds (text or bytes), or `None`/nothing for no file.
     profile = None
     for m in modules:

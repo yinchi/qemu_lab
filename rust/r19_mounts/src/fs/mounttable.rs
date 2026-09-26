@@ -185,10 +185,10 @@ mod tests {
     }
 
     #[test]
-    fn the_longest_match_wins_whatever_the_order() {
+    fn the_longest_match_wins() {
         let mut t = table();
+        t.add("/a", 1).unwrap(); // (an outer mount cannot be added after an inner one: `a_mount_cannot_cover_another_mount`)
         t.add("/a/b", 2).unwrap();
-        t.add("/a", 1).unwrap();
         assert_eq!(t.resolve("/a/b/c"), (2, "/c"));
         assert_eq!(t.resolve("/a/b"), (2, ""));
         assert_eq!(t.resolve("/a/x"), (1, "/x"));

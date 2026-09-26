@@ -210,13 +210,48 @@ fault has said so already (`Segmentation fault (address ...)`) and is 139.
 ## Starting up
 
 `kernel_main` only brings the machine up and then calls `shell::run()`, whose first act (`start_up`, in
-`shell/mod.rs`) is what the shell does for itself: it reads `/etc/environment` into its variables (see "Variables
+`shell/mod.rs`) is what the shell does for itself: **from Stage 19** it first mounts what `/etc/fstab` lists (below); then it reads
+`/etc/environment` into its variables (see "Variables
 and assignments"), then, like a login program would, `chdir`s to `$HOME`, then runs `$HOME/.profile` (below), and last
 draws the first prompt. Its notes go to the serial log, all before that first `> `. There is no login or user system, so this is
 the shell's own doing, and nothing else keeps the two together afterwards (as on Linux, `cd` never changes
 `$HOME` and changing `$HOME` never moves the shell). With no `HOME`, or an empty one, it stays in `/`; a `HOME` that names
 no directory is reported on the serial log (`Environment: cannot enter HOME=/x: ... -- staying in /.`) and does the
 same. The general image's file says `HOME=/root`, so the shell starts in `/root`.
+
+### `/etc/fstab` (Stage 19)
+
+The kernel mounts only the root, which it chooses at boot (the volume labelled `SYSTEM`, else the first FAT volume); the
+shell's start-up mounts the rest from `/etc/fstab` -- Linux's split between `root=` and `mount -a`. It comes first
+because `/etc/environment`, `$HOME` and `~/.profile` may be on a mounted volume: on the general image `/root` is the
+mount point of the persistent `HOME` disk. Lines are `<source> <mount point> <type> <options> [dump [pass]]`, blanks
+between fields, `#` for comments:
+
+```
+LABEL=HOME     /root          vfat    defaults
+```
+
+- **source:** `LABEL=name` or `UUID=XXXX-XXXX`, as for `mount` by hand. **type:** `vfat` or `fat`. **mount point:** absolute,
+  normalized like any path (`/fonts/` is `/fonts`), and it must exist.
+- **options,** comma-separated, are two choices and a shorthand: `auto` (mount it at start-up) or `noauto` (leave the line for
+  `mount SOURCE TARGET` by hand), and `fail` (report a volume no device matches) or `nofail` (say nothing); `defaults` is
+  `auto,fail`. They are read left to right and the last of a pair wins; `defaults` does not undo an earlier choice. Nothing
+  else is accepted: every mount is read-write and nothing tracks access times, so `rw` and `noatime` would mean nothing,
+  and `ro` (read-only mounts are not enforced) or any other option is refused rather than ignored, the line skipped with a
+  note. `dump` and `pass` are ignored.
+- **`noauto` lines are only syntax-checked.** `mount` never reads `/etc/fstab`: it takes both operands (`mount SOURCE TARGET`), so a
+  `noauto` line documents a volume to be mounted by hand rather than supplying a default for it. (Linux's `mount /mnt` and
+  `mount LABEL=HOME`, which look the line up, are not here; see `Stage19.md`.)
+- **In file order,** so a mount may go inside an earlier one; the rules are those of `mount` (`filesystem.md`, "Mounts").
+- **A line for `/`** is only checked: the root was chosen before the file could be read, so a line naming another volume is
+  noted and ignored, and one naming the root volume is silent. The general image has none.
+- **Nothing is fatal.** A missing or unreadable file (`Fstab: /etc/fstab: No such file or directory -- nothing to
+  mount.`), a bad line (`Fstab: /etc/fstab: line 3: ... -- ignored.`) and a line that cannot be mounted (`Fstab:
+  /etc/fstab: line 2: LABEL=HOME on /root: no volume has that label or ID -- skipped.`) are notes on the serial log; the
+  last line says how many mounted. With no `HOME` disk attached, `/root` is an empty directory on the system volume and
+  the shell starts there.
+
+The parser (`shell/fstab.rs`) is pure and host-tested, like `environment.rs`.
 
 ### `~/.profile`
 
@@ -229,7 +264,7 @@ before the first prompt. A failing line reports and the rest still run, as in an
 it is straight-line assignments, `export`s and commands. `$?` is left as the profile's last command set it, as in bash and dash (both show a failing last
 line's status at the first prompt, which was checked). No `HOME`, or no `.profile`, is silent (unlike the
 environment file, a profile is optional); a profile that is a directory, is not UTF-8 text, or is over 64 KiB is one
-serial note (`Profile: /root/.profile: ... -- skipped.`) and is skipped. The general image ships a `/root/.profile` of
+serial note (`Profile: /root/.profile: ... -- skipped.`) and is skipped. The general image's `/root/.profile` (from Stage 19 it lives on the `HOME` disk, put there once from `disk-home-seed/`) is
 commented-out examples (`PATH=$PATH:$HOME/bin`, `PS1`, `export TZ`).
 
 ### The prompt

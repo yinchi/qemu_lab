@@ -280,6 +280,22 @@ def set_environment(img_path, workdir, text):
     subprocess.run(["mcopy", "-i", img_path, "-o", local, f"::{ENVIRONMENT_FILE}"], check=True)
 
 
+FSTAB_FILE = "etc/fstab"
+DEFAULT_FSTAB = ""  # what a test kernel boots with unless its module says otherwise: nothing to mount
+
+
+def set_fstab(img_path, workdir, text):
+    """Puts `text` in the image's `/etc/fstab` (what the init shell mounts at start-up), or removes the file if `text` is
+    None. Only ever done to a group's private copy of the image, before it boots."""
+    if text is None:
+        subprocess.run(["mdel", "-i", img_path, f"::{FSTAB_FILE}"], check=True)
+        return
+    local = os.path.join(workdir, "fstab")
+    with open(local, "w") as f:
+        f.write(text)
+    subprocess.run(["mcopy", "-i", img_path, "-o", local, f"::{FSTAB_FILE}"], check=True)
+
+
 def home_of(environment):
     """The `HOME` an environment file (text) names, `/` if it names none."""
     home = "/"
@@ -315,12 +331,19 @@ def relabel(img_path, label=None, volume_id=None):
 
 def make_extra_disk(path, spec):
     """Creates an extra disk image from a description: a dict with `kind` `"fat"` (the default; `label`,
-    `volume_id`, `size_kib`), `"blank"` (all zeros) or `"noise"` (deterministic random bytes, not a filesystem)."""
+    `volume_id`, `size_kib`, and `files`, a dict of `{"/name": text_or_bytes}` copied in with `mcopy`), `"blank"` (all
+    zeros) or `"noise"` (deterministic random bytes, not a filesystem)."""
     kind = spec.get("kind", "fat")
     size_kib = spec.get("size_kib", 1024)
     if kind == "fat":
         cmd = ["mkfs.fat", "-C", "-n", spec.get("label", "NOLABEL"), "-i", spec.get("volume_id", "00000001")]
         subprocess.run(cmd + [path, str(size_kib)], check=True, capture_output=True)
+        for name, content in spec.get("files", {}).items():
+            local = path + ".tmp"
+            with open(local, "wb") as f:
+                f.write(content if isinstance(content, bytes) else content.encode())
+            subprocess.run(["mcopy", "-i", path, "-o", local, f"::{name}"], check=True)
+            os.remove(local)
     elif kind == "blank":
         with open(path, "wb") as f:
             f.truncate(size_kib * 1024)

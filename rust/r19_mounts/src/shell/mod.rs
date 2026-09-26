@@ -13,6 +13,7 @@
 pub mod builtins;
 pub mod environment;
 pub mod expand;
+pub mod fstab;
 pub mod launch;
 pub mod lexer;
 pub mod path_search;
@@ -23,7 +24,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use abi::errno::{EISDIR, ENOENT, ENOTDIR, errmsg};
+use abi::errno::{EINVAL, EISDIR, ENODEV, ENOENT, ENOTDIR, errmsg};
 
 use crate::console::{BG, Console, FG};
 use crate::exec::shell_state::{self, Frames, Stdio};
@@ -41,11 +42,71 @@ use syntax::{Redirection, Segment};
 /// The environment file: plain `NAME=VALUE` lines (see `environment.rs`), read once at boot.
 const ENVIRONMENT_FILE: &str = "/etc/environment";
 
+/// The file systems to mount at start-up: `NAME source, mount point, type, options` lines (see `fstab.rs`).
+const FSTAB_FILE: &str = "/etc/fstab";
+
 /// More than this is not an environment file: it is ignored rather than parsed.
 const ENVIRONMENT_FILE_MAX: usize = 64 * 1024;
 
+/// The same limit for `/etc/fstab`.
+const FSTAB_FILE_MAX: usize = 64 * 1024;
+
 /// The same limit for `~/.profile`.
 const PROFILE_MAX: usize = 64 * 1024;
+
+/// Mounts what `/etc/fstab` lists, in file order -- the shell's part of what Linux splits into `root=` (the kernel mounts
+/// the root) and `mount -a` (init mounts the rest) -- and reports on `out` (the serial log). Nothing here is fatal: a
+/// missing or unreadable file mounts nothing, a bad line is skipped (`fstab::parse`), and a line that cannot be mounted
+/// (no volume matches, the mount point is not a directory or is in use, ...) is skipped with the reason. `noauto` lines are
+/// left alone and a `nofail` line says nothing if no volume matches. A line for `/` is only checked: the root was chosen
+/// at boot, by label (see `fs::devices`), before this file could be read, so it must name that volume or it is noted and
+/// ignored.
+fn mount_fstab(out: &mut impl core::fmt::Write) {
+    let bytes = match crate::fs::read_path(FSTAB_FILE) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let _ = write!(out, "Fstab: {FSTAB_FILE}: {} -- nothing to mount.\r\n", errmsg(e));
+            return;
+        }
+    };
+    let text = match core::str::from_utf8(&bytes) {
+        Ok(text) if bytes.len() <= FSTAB_FILE_MAX => text,
+        _ => {
+            let _ = write!(out, "Fstab: {FSTAB_FILE}: not a text file of at most 64 KiB -- nothing to mount.\r\n");
+            return;
+        }
+    };
+    let parsed = fstab::parse(text);
+    for problem in &parsed.problems {
+        let _ = write!(out, "Fstab: {FSTAB_FILE}: line {}: {} -- ignored.\r\n", problem.line, problem.why);
+    }
+    let mut mounted = 0;
+    for entry in parsed.entries.iter().filter(|entry| !entry.noauto) {
+        let note = |out: &mut dyn core::fmt::Write, what: &str, result: &str| {
+            let _ = write!(out, "Fstab: {FSTAB_FILE}: line {}: {what}: {result}.\r\n", entry.line);
+        };
+        let Ok(point) = crate::fs::path::abspath("/", &entry.point) else {
+            note(out, &format!("{} on {}", entry.source_text, entry.point), "not a usable mount point -- skipped");
+            continue;
+        };
+        let what = format!("{} on {point}", entry.source_text);
+        if point == "/" {
+            let root = crate::fs::mounts::table().resolve("/").0;
+            if entry.source.find(&crate::fs::devices::identities()) != Some(root) {
+                note(out, &what, "the root is chosen at boot (the volume labelled SYSTEM), not from this file -- ignored");
+            }
+            continue;
+        }
+        match crate::fs::mounts::mount(&entry.source_text, &point) {
+            0 => mounted += 1,
+            ENODEV if entry.nofail => {}
+            ENODEV => note(out, &what, "no volume has that label or ID -- skipped"),
+            EINVAL => note(out, &what, "not a FAT filesystem -- skipped"),
+            e => note(out, &what, &format!("{} -- skipped", errmsg(e))),
+        }
+    }
+    let _ = write!(out, "Fstab: {mounted} mount(s) from {FSTAB_FILE}.\r\n");
+}
 
 /// Reads `/etc/environment` into the shell's bottom frame, every variable exported, and reports what it did on
 /// `out` (the serial log): a missing or unreadable file is an empty environment, and a bad line is skipped, never
@@ -123,12 +184,14 @@ fn run_profile(out: &mut impl core::fmt::Write) {
     let _ = run_script_content(content, false, 0);
 }
 
-/// What the init shell does for itself before it reads its first line, in this order: load its environment, enter
-/// `$HOME`, run its `.profile`, and draw the first prompt. The notes the first three make go to the serial log (what
+/// What the init shell does for itself before it reads its first line, in this order: mount the file systems in
+/// `/etc/fstab` (before anything else, so that `/etc/environment` and `$HOME` may live on one), load its environment, enter
+/// `$HOME`, run its `.profile`, and draw the first prompt. The notes the first four make go to the serial log (what
 /// the profile prints goes to the console), and all of them come before the prompt's `> `, so that a log ending in
 /// `> ` means the shell is ready (the test harness relies on it).
 fn start_up() {
     let mut serial = UartWriter { uart: &UART0 };
+    mount_fstab(&mut serial);
     load_environment(&mut serial);
     enter_home(&mut serial);
     run_profile(&mut serial);

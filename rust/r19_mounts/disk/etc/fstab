@@ -1,0 +1,12 @@
+# /etc/fstab -- the file systems the init shell mounts at start-up, in this order (`shell::mount_fstab`).
+# The root (/) is not listed: the kernel chooses it at boot, as the volume labelled SYSTEM.
+#
+# <source>     <mount point>  <type>  <options>
+# source: `LABEL=name` or `UUID=XXXX-XXXX`; type: `vfat`; options, comma-separated, are only these:
+#   defaults    = auto,fail
+#   auto/noauto = mount it at start-up (the default) / leave it out (`mount SOURCE TARGET` by hand; `mount` does not read this file)
+#   fail/nofail = report a volume that is not there (the default) / say nothing
+# Every mount is read-write; `ro` and every other option is refused.
+#
+# The persistent home disk, kept apart from the system image (`just home-disk`).
+LABEL=HOME     /root          vfat    defaults

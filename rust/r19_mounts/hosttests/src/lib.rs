@@ -41,6 +41,8 @@ pub mod keymap;
 pub mod environment;
 #[path = "../../src/shell/expand.rs"]
 pub mod expand;
+#[path = "../../src/shell/fstab.rs"]
+pub mod fstab;
 #[path = "../../src/shell/lexer.rs"]
 pub mod lexer;
 #[path = "../../src/shell/path_search.rs"]
@@ -56,9 +58,9 @@ pub mod fattime;
 #[path = "../../src/fs/mounttable.rs"]
 pub mod mounttable;
 
-/// As `exec` above: `fs/mounttable.rs`'s tests name `crate::fs::bootsector`.
+/// As `exec` above: `fs/mounttable.rs`'s tests name `crate::fs::bootsector`, and `shell/fstab.rs` names `crate::fs::mounttable`.
 pub mod fs {
-    pub use crate::bootsector;
+    pub use crate::{bootsector, mounttable};
 }
 #[path = "../../src/fs/path.rs"]
 pub mod path;
