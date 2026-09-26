@@ -41,7 +41,7 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools, flags, filters
+from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools, flags, filters, textflags
 from harness import DEFAULT_ENVIRONMENT, Context, Session, set_environment, set_profile
 
 GROUPS = [
@@ -83,6 +83,7 @@ GROUPS = [
     [tools],
     [flags],
     [filters],
+    [textflags],
 ]
 
 

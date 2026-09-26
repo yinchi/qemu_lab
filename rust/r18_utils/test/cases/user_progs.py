@@ -254,24 +254,7 @@ def run(ctx):
     # ================================================================= --help
     # (mkdir, rm, mv, cp and ls have more flags since Stage 18: their `--help` is checked in `flags.py`.)
     check("stat --help", s.run("stat --help"), "stat --help\nusage: stat FILE...\n")
-    check("wc --help", s.run("wc --help"), "wc --help\n"
-          "usage: wc [-l] [-w] [-c] [-L] [file...]\n"
-          "  -l  count lines\n"
-          "  -w  count words\n"
-          "  -c  count bytes\n"
-          "  -L  report the longest line's length\n")
-    check("head --help", s.run("head --help"), "head --help\n"
-          "usage: head [-n N | -c N] [file]\n"
-          "  -n N  print the first N lines (default 10)\n"
-          "  -c N  print the first N bytes\n")
-    check("tail --help", s.run("tail --help"), "tail --help\n"
-          "usage: tail [-n N | -c N] [file]\n"
-          "  -n N  print the last N lines (default 10)\n"
-          "  -c N  print the last N bytes\n")
-    check("echo --help", s.run("echo --help"), "echo --help\n"
-          "usage: echo [-n] args...\n"
-          "  -n  suppress the trailing newline\n")
-    check("cat --help", s.run("cat --help"), "cat --help\nusage: cat [file...]\n")
+    # (wc, head, tail, echo and cat gained flags in Stage 18: their `--help` is checked in `textflags.py`.)
     check("hexdump --help", s.run("hexdump --help"), "hexdump --help\nusage: hexdump [file]\n")
     check("true --help", s.run("true --help"), "true --help\nusage: true\n")
     check("false --help", s.run("false --help"), "false --help\nusage: false\n")

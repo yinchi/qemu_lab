@@ -70,7 +70,7 @@ def run(ctx):
     check("tail -n 100", s.run(f"tail -n 100 {f}"), f"tail -n 100 {f}\n" + hello_txt)
     check("head bad count", s.run_status(f"head -n x {f}"), (f"head -n x {f}\nhead: invalid number of lines: 'x'\n", 1))
     check("head -c bad count", s.run_status(f"head -c x {f}"), (f"head -c x {f}\nhead: invalid number of bytes: 'x'\n", 1))
-    check("tail bad count", s.run_status(f"tail -n -3 {f}"), (f"tail -n -3 {f}\ntail: invalid number of lines: '-3'\n", 1))
+    check("tail bad count", s.run_status(f"tail -n x {f}"), (f"tail -n x {f}\ntail: invalid number of lines: 'x'\n", 1))  # (`-n -3` is the last three lines: a minus is no sign for tail, since Stage 18)
     check("head -n with no count", s.run_status("head -n"), ("head -n\nhead: option requires an argument -- 'n'\nTry 'head --help' for more information.\n", 1))
     check("cp a file onto itself", s.run_status("cp tests/hello.txt tests/hello.txt"), ("cp tests/hello.txt tests/hello.txt\ncp: 'tests/hello.txt' and 'tests/hello.txt' are the same file\n", 1))
     check("wc", s.run(f"wc {f}"), f"wc {f}\n{len(lines)} {words} {len(hello_txt)} {f}\n")

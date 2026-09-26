@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+pub mod countspec;
 pub mod cutlist;
 pub mod glob;
 pub mod human;

@@ -77,3 +77,5 @@ pub mod sortkey;
 pub mod textutil;
 #[path = "../../../user/progs_r18/src/trset.rs"]
 pub mod trset;
+#[path = "../../../user/progs_r18/src/countspec.rs"]
+pub mod countspec;

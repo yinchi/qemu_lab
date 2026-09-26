@@ -10,7 +10,7 @@
 | 1 | The tier `progs_r18`; `rmdir`, `touch`, `seq`, `cmp` | done |
 | 2 | Flag catch-up: `mkdir -p -v`, `cp -r -n -v`, `mv -n -v -f`, `rm -v -d`, `ls -a -d -R -r -t -S -h` (dotfiles hidden by default) | done |
 | 3 | Filters: `sort`, `uniq`, `cut`, `tr`, `find`, `fgrep`; pure helpers host-tested | done |
-| 4 | Text-tool flags: `cat -n -E -T -s`, `head`/`tail` several files and `-n -N`/`-n +N`, `wc -m`, `echo -e -E` | planned |
+| 4 | Text-tool flags: `cat -n -E -T -s`, `head`/`tail` several files and `-n -N`/`-n +N`, `wc -m`, `echo -e -E` | done |
 | 5 | Docs, roadmap "As built", regression sweep | planned |
 
 ## Decisions (settled)
@@ -85,6 +85,14 @@ Pure helpers in `progs_r18/src/{glob,cutlist,trset}.rs` (`no_std` + `alloc`, inc
 
 ## Step 4 -- text-tool flags
 `cat -n -E -T -s`; `head`/`tail` with several files (`==> f <==`, `-q`), `head -n -N`, `tail -n +N`; `wc -m`; `echo -e -E`. Tests: group `textflags`.
+
+**As built (Step 4).** As planned, with these specifics:
+- Overrides in `progs_r18`: `cat`, `echo`, `wc`, `head`, `tail`. The pure count parser is `countspec.rs` (a sign and a number; 2 host tests: 260 in all). `cat` with no flag is still the plain byte copy (binary-safe); with a flag it runs a small state machine (line number,
+  "line has started", "last line was blank") that carries across files. `echo`'s options are the leading arguments made of a dash and only `n`/`e`/`E`, so `-ne` and `-en` work and `-x` is text. `wc` prints in GNU's order (lines, words, characters, bytes, longest line).
+- `head` and `tail` gather their file operands in the single option pass (the `cut` lesson again: `cli::operands` would take an option's value for one). A file that cannot be opened gets an error and no header; the blank line between listings comes before the next
+  header. `head -n -N` and `-c -N` hold the whole input in the heap (`read_all`); `tail -n +N` and `-c +N` are one streaming pass that reuses `emit_lines`/`emit_bytes`. `-` stays an ordinary file name in all of them (it was for `cat`; GNU treats it as stdin for `head`/`tail`).
+- Behaviour changes, rewritten rather than kept: `tail -n -3` was an invalid count and is now the last three lines (GNU treats a minus as no sign), and the `--help` texts of `cat`, `echo`, `wc`, `head` and `tail` moved from `user_progs.py` into `textflags.py`.
+- Tests: group `textflags` (79 checks); rows updated for the five programs in `docs/progs.md`. `just test` = 1468 checks and 260 host tests, lint and `check-docs` clean. (The first full run tripped the known `token_queue` flake, with the whole `echo intact` line missing this time; the rerun passed.)
 
 ## Step 5 -- docs, roadmap, sweep
 `docs/progs.md`, `docs/tests.md`, `ROADMAP.md` Stage 18 "As built", `just check-docs`, `just lint`; regression: `r17_env` and the older stages' suites (only the new `progs_r18` crate is added to the shared tree), restoring any tracked build
