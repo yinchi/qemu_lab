@@ -31,11 +31,11 @@ flowchart TD
   `TZ`, `PATH=/bin`, `PS1`) and **`/root`**, the home directory (it was `/home` before Stage 17, renamed for the single
   root user Linux would also give one): a demo text file and `/root/.profile`, the start-up script (see
   [`shell.md`](shell.md)). The kernel never names `/root` or `/home`; only the environment file's `HOME` does.
-- **Mounting.** `kernel_main` opens the volume once, over a `BlkIo` (below), into the static `VOL`, and it stays
+- **Mounting.** `kernel_main` opens the root volume once, over a `BlkIo` (below), into the static `VOL` (before Stage 19; see "Mounts"), and it stays
   mounted for the kernel's whole life. Everything else re-derives directories and files from it on each lookup;
-  nothing else is cached. There is one mounted volume: no mount points, no other filesystems. **From Stage 19** the kernel
-  finds every block device and reads each one's boot sector (below), and the root is chosen among them, but still only
-  the root is opened: the other devices are described, not mounted (mounting is what the rest of Stage 19 adds).
+  nothing else is cached. Until Stage 19 there is one volume: no mount points, no other filesystems. **From Stage 19** the
+  kernel finds every block device and reads each one's boot sector (below), the root is chosen among them, and the others
+  can be mounted on directories ("Mounts", below); `VOL` became one open volume per device.
 - **The executable bit.** FAT has no execute permission, so this project claims one of the attribute byte's
   unused bits, `ATTR_EXEC` (`0x40`), alongside the real FAT ones. At boot the kernel sets it on every file in
   `/bin`; nothing else is executable until `chmod +x`. See [`launching_programs.md`](launching_programs.md).
@@ -63,6 +63,49 @@ from the folder `disk-home-seed/` and never touches it again, `just run` attache
 `just home-reset` throws it away and recreates it. The seed folder is only the starting content of a new disk, not
 something kept in step with `home.img`. The host must not read or write `home.img` (with `mtools`, say) while QEMU has it
 open: the guest can be part-way through an update.
+
+## Mounts (Stage 19)
+
+`fs/mounts.rs` keeps one open `FatVolume` per mounted device and a **mount table** (`fs/mounttable.rs`, pure and
+host-tested): a list of `(mount point, device)`, the root (`/`) first. Every path reaches `fs/files.rs` already absolute
+and normalized, and the first thing each operation does is `resolve` it: the mount whose point is the longest match on
+a whole component (`/root` covers `/root/a` but not `/rootbeer`), and the rest of the path, looked up from that volume's
+own root. There is nothing special for `..`, which is gone before a path gets there, so going up from a mount's root
+is going up in the path. An open file remembers its device, which is how `umount` knows a volume is in use.
+
+- **Mounting** (`mount`, `umount`; the syscalls and programs of the same names) takes `LABEL=name` or `UUID=XXXX-XXXX`,
+  finds the device by what its boot sector says, and needs an existing directory to mount on. A mounted directory's old
+  contents are hidden, not gone: they come back at `umount`. A volume is mounted once, a point holds one mount, and mounts
+  nest (a mount point inside a mounted volume).
+- **What a mount point is.** `stat` and `ls` of it show the mounted volume's root; the entry in its *parent's* listing is
+  the hidden directory. It cannot be removed or renamed (`EBUSY`), nor can `umount` take it away while a working
+  directory or an open file is inside it, or another mount.
+- **Two volumes are two filesystems.** A `rename` between them is `EXDEV`, checked before anything is touched (a program
+  copies and removes instead); every other operation stays on the volume its path resolves to. Everything `getdents`
+  lists for a directory is that volume's, so `find /` and `ls -R /` walk straight across mount points.
+- **Nothing is cached** (`BlkIo` writes through), so unmounting has nothing to flush: the volume is dropped, and what
+  was written is on its disk already.
+
+**The rules, in one place.** A path goes to the mount with the **longest point** that matches it on a whole component.
+
+| | |
+|---|---|
+| Mount on a directory | It must exist as a directory on the volume the path resolves to (`ENOENT`, `ENOTDIR`). Its old contents are hidden until `umount`. |
+| Mount on a **subdirectory of a mount** | Allowed. The directory is looked up on the mounted volume, so it must exist there. Mounts nest. |
+| Mount on a mount point | `EBUSY`: a point holds one mount. |
+| Mount on a **parent of a mount** | `EBUSY`: a mount cannot cover another mount. (Mounting on `/p` is fine while nothing is mounted under it.) |
+| Mount a volume that is mounted already | `EBUSY`: a volume is mounted once. |
+| `umount` | Only the exact mount point (`EINVAL` otherwise). `EBUSY` for the root, for a mount with another mounted inside it (innermost first), for a volume with an open file on it, and for one that any shell frame's working directory is inside. |
+| `unlink`, `rmdir`, `rename` of a mount point | `EBUSY`. (`rm -r` on one removes the volume's contents and then fails there, as GNU `rm` does.) |
+| `rename` between two volumes | `EXDEV`, before anything is changed. |
+
+These are **stricter than Linux** in three places, on purpose, to keep the table a simple list of unique points: Linux lets
+you mount again on a point (the new mount hides the old, which returns when it is unmounted), lets you mount on a parent
+of a mount (the inner mount stays, hidden), and lets one device be mounted at several points. It also crosses into a
+mount while walking a path one directory at a time, where the table matches the whole path by prefix; the answers agree for
+every rule above. Other differences: `stat` of a mount point shows the mounted volume's root with the FAT epoch for its
+times (a FAT root has no entry of its own), sources are only `LABEL=` and `UUID=` (no `/dev` paths), and `umount` has
+no lazy form. Nothing planned needs any of them.
 
 ## Getting bytes to the disk: `BlkIo`
 
@@ -235,8 +278,9 @@ and case-insensitive names.
 
 | File | What it holds |
 |---|---|
-| `fs/blkio.rs` | `BlkIo`, and the `VOL` static (the mounted volume) |
+| `fs/blkio.rs` | `BlkIo`, one per device (and, before Stage 19, the `VOL` static, the mounted volume) |
 | `fs/devices.rs`, `fs/bootsector.rs` | The block devices found and each one's label and volume ID; choosing the root (Stage 19) |
+| `fs/mounts.rs`, `fs/mounttable.rs` | The open volumes and the mount table: `mount`, `umount`, resolving a path to a device (Stage 19) |
 | `fs/files.rs` | Open files (`FileRef`) and every operation above |
 | `fs/path.rs` | `abspath` (pure, host-tested) |
 | `fs/mod.rs` | `find_entry_checked` (look up one name in a directory) and `read_file_checked` (read a whole file into a `Vec`) |

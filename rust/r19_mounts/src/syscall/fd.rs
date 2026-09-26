@@ -211,7 +211,7 @@ pub(super) fn validate(ptr: usize, len: usize, write: bool) -> bool {
 
 /// Validates a user-supplied path and returns it as a `&str`: `EFAULT` if the pointer is bad,
 /// `EINVAL` if the bytes aren't UTF-8 (paths here are `str`s, not arbitrary byte strings).
-fn user_path(ptr: usize, len: usize) -> Result<&'static str, isize> {
+pub(super) fn user_path(ptr: usize, len: usize) -> Result<&'static str, isize> {
     if !validate(ptr, len, false) {
         return Err(EFAULT);
     }

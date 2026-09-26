@@ -1130,7 +1130,7 @@ there") is only honest with somewhere for the edit to live.
   back to copy-then-remove for a file, as GNU `mv` does; a directory across volumes is reported, not yet moved.
 - **`lsblk`, `mount` and `umount`: programs over new syscalls,** as on Linux (util-linux tools over `mount(2)`/`umount2(2)`, not builtins). A
   `blkinfo(index, &mut BlkInfo)` syscall reports each block device (size, label, volume ID, and once there is a mount table, where it is mounted), and
-  `lsblk` lists them (`NAME SIZE LABEL UUID MOUNTPOINT`, names `vda`, `vdb`, ... by device order). `mount(source, target, type)` and `umount(target)`
+  `lsblk` lists them (`SIZE LABEL UUID MOUNTPOINT`, in device order -- no `vda`-style names, since there is no `/dev` to use one with). `mount(source, target, type)` and `umount(target)`
   syscalls take a source in the `fstab` spellings (`LABEL=X`, `UUID=X`) and do what an `fstab` line would; `mount` alone lists the table, and
   `umount` fails with `EBUSY` while a file on the volume is open or the working directory is inside it. The programs live in the new tier
   `progs_r19` beside `mv`. The shell's own start-up mounts through the same kernel function the syscall calls.
@@ -1148,7 +1148,7 @@ there") is only honest with somewhere for the edit to live.
   a mount point that is a file; `umount` with an open file (`EBUSY`) and with the working directory inside; the file cap and open handles counted
   across volumes; and that a rebuilt system image with the same `home.img` still has the earlier files (the property the stage exists for).
 
-**Not in this stage:** more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but its label or volume ID (the
+**Not in this stage:** stacked mounts on one point, mounting over a parent of a mount and one device at several points (each mount point holds one mount, none covers another, a volume is mounted once -- stricter than Linux on purpose; the rules are in `rust/docs/filesystem.md`), more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but its label or volume ID (the
 virtio serial is not used), read-only mounts and the other mount options, bind mounts, `root=` on a kernel command line (the root is found by label),
 a mount of one volume inside another that is itself a mount (allowed, but untested beyond one level), and moving a directory across volumes.
 

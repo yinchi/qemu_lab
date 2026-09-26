@@ -9,7 +9,7 @@
 
 use abi::syscall::{
     SYS_CHMOD, SYS_CLOSE, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT, SYS_NEWFSTATAT,
-    SYS_OPEN, SYS_READ, SYS_RENAMEAT, SYS_UNLINKAT, SYS_WRITE,
+    SYS_MOUNT, SYS_OPEN, SYS_READ, SYS_RENAMEAT, SYS_UMOUNT2, SYS_UNLINKAT, SYS_WRITE,
 };
 
 // `O_*` flags, directory-record layout and attribute bits: the definitions live in the shared `abi`
@@ -199,6 +199,17 @@ pub fn rename(old: &str, new: &str) -> isize {
         new.as_ptr() as usize,
         new.len()
     )
+}
+
+/// Mounts the volume `source` names (`LABEL=name` or `UUID=XXXX-XXXX`) on the existing directory `target`. Returns `0`,
+/// or a negative error -- see `abi::syscall::SYS_MOUNT` for which.
+pub fn mount(source: &str, target: &str) -> isize {
+    syscall!(SYS_MOUNT, source.as_ptr() as usize, source.len(), target.as_ptr() as usize, target.len())
+}
+
+/// Unmounts the volume mounted at `target`. Returns `0`, or a negative error -- see `abi::syscall::SYS_UMOUNT2`.
+pub fn umount(target: &str) -> isize {
+    syscall!(SYS_UMOUNT2, target.as_ptr() as usize, target.len())
 }
 
 /// A path's size, attributes, and timestamps, as `stat` reports them -- the raw fields a FAT

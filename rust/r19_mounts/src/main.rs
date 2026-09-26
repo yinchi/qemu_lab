@@ -38,10 +38,7 @@ use crate::arch::{
 use crate::console::{BG, Console};
 use crate::drivers::virtio::{blk::{Blk, MAX_BLK}, gpu::Gpu, input::Keyboard};
 use crate::exec::shell_state::{FRAMES, Frames};
-use crate::fs::{
-    blkio::{BlkIo, VOL},
-    find_entry_checked,
-};
+use crate::fs::find_entry_checked;
 use crate::keyboard::{
     keymap::{KEY_NAMES, KEY_STATE, KeyState, LOCK_STATE, LockState, build_key_names},
     line_discipline::{LINE_DISCIPLINE, LineDiscipline},
@@ -143,16 +140,13 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
     let root_dev = unsafe { crate::fs::devices::probe(&mut uart0_writer) }
         .expect("no FAT volume found on any block device");
 
-    // Mount the FAT filesystem built by `just disk` (see justfile) -- BlkIo presents the whole
+    // Open the FAT filesystem built by `just disk` (see justfile) -- BlkIo presents the whole
     // block device as one byte-addressable stream, so hadris-fat can find its own boot sector,
-    // FAT tables, and directory entries without this code needing to know their layout.
+    // FAT tables, and directory entries without this code needing to know their layout. It is
+    // mounted at `/` below, once the executable bits are set.
     //
     // SAFETY: `root_dev` is a populated BLK index with its SPI enabled, above.
-    let blk_io = unsafe { BlkIo::new(root_dev) };
-    // The volume stamps new and changed entries from the real-time clock (UTC), not the FAT epoch.
-    let vol = hadris_fat::sync::FatVolumeBuilder::new(blk_io)
-        .time_provider(&crate::fs::rtc_time::RTC_TIME)
-        .open()
+    let vol = unsafe { crate::fs::mounts::open_volume(root_dev) }
         .expect("failed to mount the FAT filesystem");
     uart0_writer
         .write_str("FAT filesystem mounted.\r\n")
@@ -227,8 +221,8 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
         LOCK_STATE = Some(init_locks);
         LINE_DISCIPLINE = Some(line_discipline);
         FRAMES = Some(Frames::new()); // the shell's own frame; `shell::run` fills it from `/etc/environment`
-        VOL = Some(vol);
     }
+    crate::fs::mounts::install_root(root_dev, vol);
     KEYBOARD_SPI.store(kb_spi, Ordering::Relaxed);
     gic_enable(kb_spi);
 

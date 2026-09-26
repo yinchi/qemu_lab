@@ -8,6 +8,8 @@ pub mod bootsector;
 pub mod devices;
 pub mod fattime;
 pub mod files;
+pub mod mounts;
+pub mod mounttable;
 pub mod path;
 pub mod rtc_time;
 
@@ -35,28 +37,15 @@ pub fn find_entry_checked<'a>(
     Ok(None)
 }
 
-/// Reads the whole file at the absolute path `path` on `vol`: `ENOENT` if any component is missing, `ENOTDIR`
-/// if a directory component is a file, `EISDIR` if the last one is a directory. Takes the volume as an argument
-/// (not the `VOL` static) so boot code can use it before the statics are set up; `files.rs` is what programs'
-/// paths go through once they are.
-pub fn read_path(vol: &FatVolume<BlkIo>, path: &str) -> Result<alloc::vec::Vec<u8>, isize> {
-    use abi::errno::{EISDIR, ENOENT, ENOTDIR};
-    let mut dir = vol.root_dir();
-    let mut components = path.split('/').filter(|c| !c.is_empty()).peekable();
-    while let Some(name) = components.next() {
-        let entry = find_entry_checked(&dir, name)?.ok_or(ENOENT)?;
-        if components.peek().is_some() {
-            if !entry.is_directory() {
-                return Err(ENOTDIR);
-            }
-            dir = dir.open_entry(&entry).map_err(|_| EIO)?;
-        } else if entry.is_directory() {
-            return Err(EISDIR);
-        } else {
-            return read_file_checked(vol, &entry);
-        }
+/// Reads the whole file at the absolute path `path`, through the mount table like any other path: `ENOENT` if any
+/// component is missing, `ENOTDIR` if a directory component is a file, `EISDIR` if the last one is a directory.
+/// What the shell's start-up reads its own files with (`/etc/environment`, and `/etc/fstab` from the next Step).
+pub fn read_path(path: &str) -> Result<alloc::vec::Vec<u8>, isize> {
+    let found = files::lookup(path)?;
+    if found.is_directory() {
+        return Err(abi::errno::EISDIR);
     }
-    Err(EISDIR) // no components: the root
+    found.read_all()
 }
 
 /// Reads a whole file into a freshly allocated `Vec<u8>`, or `Err(EIO)` if the filesystem can't

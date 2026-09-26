@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use core::sync::atomic::Ordering;
 
-use abi::blk::{BLK_FAT, BLK_LABEL_MAX, BLK_ROOT, BlkInfo};
+use abi::blk::{BLK_FAT, BLK_LABEL_MAX, BLK_MOUNT_MAX, BLK_ROOT, BlkInfo};
 
 use super::bootsector::{self, BootInfo};
 use crate::drivers::virtio::blk;
@@ -104,7 +104,15 @@ fn size_text(bytes: u64) -> alloc::string::String {
 pub fn blkinfo(index: usize) -> Option<BlkInfo> {
     let devices = table()?;
     let device = devices.list.get(index)?;
-    let mut info = BlkInfo { capacity: device.capacity, flags: 0, volume_id: 0, label_len: 0, label: [0; BLK_LABEL_MAX] };
+    let mut info = BlkInfo {
+        capacity: device.capacity,
+        flags: 0,
+        volume_id: 0,
+        label_len: 0,
+        label: [0; BLK_LABEL_MAX],
+        mount_len: 0,
+        mount: [0; BLK_MOUNT_MAX],
+    };
     if let Some(boot) = device.boot {
         info.flags |= BLK_FAT;
         info.volume_id = boot.volume_id.0;
@@ -114,5 +122,17 @@ pub fn blkinfo(index: usize) -> Option<BlkInfo> {
     if index == devices.root {
         info.flags |= BLK_ROOT;
     }
+    if let Some(point) = super::mounts::table().point_of(index) {
+        let point = point.as_bytes();
+        let n = point.len().min(BLK_MOUNT_MAX); // `mount` refuses a longer one
+        info.mount[..n].copy_from_slice(&point[..n]);
+        info.mount_len = u16::try_from(n).unwrap_or(0);
+    }
     Some(info)
+}
+
+/// What each device holds, in device order: its boot-sector identity, `None` for one that is not a FAT volume. What a
+/// mount source is matched against.
+pub fn identities() -> Vec<Option<BootInfo>> {
+    table().map_or_else(Vec::new, |t| t.list.iter().map(|d| d.boot).collect())
 }

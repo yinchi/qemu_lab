@@ -30,8 +30,8 @@ def run(ctx):
           [" 64 MiB  R12SH        0000-0000  (root: no SYSTEM volume, using the first FAT volume)"])
     rows = lsblk_table(s.run("lsblk"))
     check("lsblk: all three, in device order",
-          [(r["NAME"], r["SIZE"], r["LABEL"], r["UUID"], r["MOUNTPOINT"]) for r in rows],
-          [("vda", "512K", "", "", ""), ("vdb", "2M", "", "", ""), ("vdc", "64M", "R12SH", "0000-0000", "/")])
+          [(r["SIZE"], r["LABEL"], r["UUID"], r["MOUNTPOINT"]) for r in rows],
+          [("512K", "", "", ""), ("2M", "", "", ""), ("64M", "R12SH", "0000-0000", "/")])
     check("ls /: the system volume", "bin" in s.run("ls /").split("\n"), True)
     check("the shell is alive", s.run("echo ok"), "echo ok\nok\n")
 

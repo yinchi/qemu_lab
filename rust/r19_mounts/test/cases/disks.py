@@ -40,10 +40,11 @@ def run(ctx):
     check("lsblk: both devices", sorted(by_label), ["HOME", "SYSTEM"])
     check("lsblk: SYSTEM", (by_label["SYSTEM"]["SIZE"], by_label["SYSTEM"]["UUID"], by_label["SYSTEM"]["MOUNTPOINT"]), ("64M", "0000-0000", "/"))
     check("lsblk: HOME", (by_label["HOME"]["SIZE"], by_label["HOME"]["UUID"], by_label["HOME"]["MOUNTPOINT"]), ("1M", "5E6F-7A8B", ""))
-    check("lsblk: the names are vda and vdb", sorted(r["NAME"] for r in rows), ["vda", "vdb"])
     # Precondition of `disks_first`: QEMU numbers the slots against the command line, so a disk attached after the
-    # system image is device 0. If this ever fails, the two groups no longer cover both orders.
-    check("the extra disk attached after the system image is vda", by_label["HOME"]["NAME"], "vda")
+    # system image is device 0, and `lsblk` lists devices in device order. If this ever fails, the two groups no longer
+    # cover both orders.
+    check("the extra disk attached after the system image is listed first", [r["LABEL"] for r in rows], ["HOME", "SYSTEM"])
+    check("lsblk: the whole table", s.run("lsblk"), "lsblk\nSIZE  LABEL   UUID       MOUNTPOINT\n1M    HOME    5E6F-7A8B\n64M   SYSTEM  0000-0000  /\n")
     check("lsblk -b: sizes in bytes", [(r["LABEL"], r["SIZE"]) for r in sorted(lsblk_table(s.run("lsblk -b")), key=lambda r: r["LABEL"])],
           [("HOME", "1048576"), ("SYSTEM", "67108864")])
     check("lsblk --help", s.run("lsblk --help"), "lsblk --help\nusage: lsblk [-b]\n  -b  print sizes in bytes instead of `ls -h` units\n")

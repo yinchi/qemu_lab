@@ -7,12 +7,9 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::exec::shell_state;
-use crate::fs::blkio::VOL;
-use crate::fs::{files, read_file_checked};
+use crate::fs::files::{self, Located};
 use crate::shell::{path_search, run_script_content};
-use crate::static_ref;
 use abi::errno::{EISDIR, ENOENT, ENOTDIR, errmsg};
-use hadris_fat::sync::FileEntry;
 
 /// The builtin `name` is, if it is one.
 pub fn is_builtin(name: &str) -> bool {
@@ -73,7 +70,7 @@ pub fn run(name: &str, args: &[&str], depth: usize) -> Result<i32, String> {
 /// that name is skipped) and, if none has it, in the working directory (bash's non-POSIX fallback). A name with a
 /// `/` is used as written, against the working directory, and never searched. `None` if a bare name is in no
 /// `PATH` directory, so the caller falls back to the working directory.
-fn search_path_for(name: &str) -> Result<Option<FileEntry>, isize> {
+fn search_path_for(name: &str) -> Result<Option<Located>, isize> {
     if name.contains('/') {
         return Ok(None);
     }
@@ -107,11 +104,7 @@ fn run_script_file(cmd: &str, path: &str, scoped: bool, depth: usize) -> Result<
     if entry.is_directory() {
         return Err(format!("{cmd}: {path}: {}", errmsg(EISDIR)));
     }
-    // SAFETY: VOL is populated before any program can run (kernel_main) and never cleared; builtins
-    // run from the same single-threaded, non-reentrant shell loop as everything else that reads it.
-    let vol = unsafe { static_ref!(VOL) };
-    let bytes =
-        read_file_checked(vol, &entry).map_err(|e| format!("{cmd}: {path}: {}", errmsg(e)))?;
+    let bytes = entry.read_all().map_err(|e| format!("{cmd}: {path}: {}", errmsg(e)))?;
     let content =
         core::str::from_utf8(&bytes).map_err(|_| format!("{cmd}: {path}: not valid UTF-8"))?;
     run_script_content(content, scoped, depth).map_err(|e| format!("{cmd}: {path}: {e}"))

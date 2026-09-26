@@ -184,6 +184,11 @@ impl<F: Clone> FrameStack<F> {
             .expect("the frame stack is never empty")
     }
 
+    /// The working directory of every frame, innermost last: what a `umount` must find none of inside the volume.
+    pub fn cwds(&self) -> impl Iterator<Item = &str> {
+        self.frames.iter().map(|f| f.cwd.as_str())
+    }
+
     /// How many frames there are; 1 is just the shell's own. `with_stdio` uses it to check it
     /// leaves the stack as it found it. (It does not limit script nesting:
     /// `shell::MAX_SCRIPT_DEPTH` is a separate counter, since it also has to catch *unscoped*
@@ -272,6 +277,17 @@ mod tests {
 
     /// The tests' stand-in for an open file: a number.
     type FrameStack = super::FrameStack<u32>;
+
+    #[test]
+    fn cwds_lists_every_frames_working_directory_innermost_last() {
+        let mut s = FrameStack::new();
+        s.top_mut().cwd = String::from("/a");
+        s.push_child();
+        s.top_mut().cwd = String::from("/b");
+        assert_eq!(s.cwds().collect::<Vec<_>>(), ["/a", "/b"]);
+        s.pop();
+        assert_eq!(s.cwds().collect::<Vec<_>>(), ["/a"]);
+    }
 
     #[test]
     fn it_starts_with_the_shells_own_frame() {

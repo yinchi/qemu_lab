@@ -1,7 +1,7 @@
 //! `lsblk [-b]` -- see `docs/progs.md`. Lists the block devices the kernel found (`blkinfo`, asked for device 0, 1, ...
-//! until `ENODEV`): a name (`vda`, `vdb`, ... in the kernel's device order), the size, and for a FAT volume its label
-//! and its volume ID (what `blkid` calls the UUID). `MOUNTPOINT` is `/` for the root and empty for the rest until
-//! there are mounts to show. A device that holds no FAT volume has an empty label and UUID.
+//! until `ENODEV`): the size, and for a FAT volume its label
+//! and its volume ID (what `blkid` calls the UUID). `MOUNTPOINT` is where the volume is mounted (`/` for the root),
+//! empty for a device that is not. A device that holds no FAT volume has an empty label and UUID.
 
 #![no_std]
 #![no_main]
@@ -12,12 +12,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
 
-use abi::blk::{BLK_FAT, BLK_ROOT};
+use abi::blk::BLK_FAT;
 use abi::errno::ENODEV;
 use progs::{Fd, fail};
 use progs_r12::cli;
 use progs_r18::human::human_size;
-use progs_r19::table::{device_name, render};
+use progs_r19::table::render;
 use userlib::{ExitCode, blkinfo};
 
 userlib::entry_with_args!(run);
@@ -70,10 +70,10 @@ fn run(args: userlib::Args) -> ExitCode {
         } else {
             String::new()
         };
-        let mount = if info.flags & BLK_ROOT != 0 { "/" } else { "" };
-        rows.push(alloc::vec![device_name(index), size, label, uuid, String::from(mount)]);
+        let mount = String::from_utf8_lossy(info.mount()).into_owned();
+        rows.push(alloc::vec![size, label, uuid, mount]);
     }
 
-    let _ = write!(Fd(1), "{}", render(&["NAME", "SIZE", "LABEL", "UUID", "MOUNTPOINT"], &rows));
+    let _ = write!(Fd(1), "{}", render(&["SIZE", "LABEL", "UUID", "MOUNTPOINT"], &rows));
     ExitCode(0)
 }

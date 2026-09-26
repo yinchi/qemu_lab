@@ -23,7 +23,7 @@ def run(ctx):
     by_label = {r["LABEL"]: r for r in rows}
     check("lsblk: SYSTEM is the root", (by_label["SYSTEM"]["UUID"], by_label["SYSTEM"]["MOUNTPOINT"]), ("0000-0000", "/"))
     check("lsblk: HOME is not mounted", (by_label["HOME"]["UUID"], by_label["HOME"]["MOUNTPOINT"]), ("5E6F-7A8B", ""))
-    check("the extra disk attached before the system image is not vda", by_label["HOME"]["NAME"], "vdb")
+    check("the extra disk attached before the system image is listed last", [r["LABEL"] for r in rows], ["SYSTEM", "HOME"])
     check("ls /: the system volume", "bin" in s.run("ls /").split("\n"), True)
     check("the shell is alive", s.run("echo ok"), "echo ok\nok\n")
 

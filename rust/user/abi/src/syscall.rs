@@ -60,6 +60,17 @@ pub const SYS_CLOCK_GETTIME: usize = 113;
 /// what it asked for. Memory between the start and the break is zeroed, writable and never executable.
 pub const SYS_BRK: usize = 214;
 
+/// `mount(source, source_len, target, target_len)`: mounts the volume `source` names on the directory `target`. The
+/// source is `LABEL=name` or `UUID=XXXX-XXXX` (the spellings of an `fstab` line) and picks a block device by what its
+/// FAT boot sector says; the target must be an existing directory. Linux's number for `mount`, shape much simplified
+/// (no filesystem type, flags or data: the only type is FAT, and nothing else is supported). Errors: `EINVAL` for a source
+/// that is neither spelling, `ENODEV` for one no device matches, `EBUSY` if that device is mounted already or the target is
+/// a mount point, `ENOENT`/`ENOTDIR` for the target, `ENAMETOOLONG` for a target longer than `abi::blk::BLK_MOUNT_MAX`.
+pub const SYS_MOUNT: usize = 40;
+/// `umount(target, target_len)`: unmounts the volume mounted exactly at `target`. `EINVAL` if `target` is not a mount
+/// point, `EBUSY` for the root, for a mount with another mounted inside it, and for a volume with open files or a working
+/// directory inside it. Linux's number for `umount2`, minus its flags argument.
+pub const SYS_UMOUNT2: usize = 39;
 /// `blkinfo(index, out)`: describes block device `index` (0-based, in the order the kernel found them) by writing
 /// `abi::blk::BLKINFO_SIZE` bytes to `out`: its size, whether it holds a FAT volume and is the root, and the volume's
 /// label and ID. `ENODEV` for an index past the last device (so a caller counts devices by asking until it does),
@@ -117,6 +128,11 @@ mod tests {
     #[test]
     fn step16_number_is_linuxs_number() {
         assert_eq!(SYS_BRK, 214);
+    }
+
+    #[test]
+    fn mount_numbers_are_linuxs_numbers() {
+        assert_eq!([SYS_MOUNT, SYS_UMOUNT2], [40, 39]);
     }
 
     #[test]

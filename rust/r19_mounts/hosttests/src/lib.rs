@@ -53,6 +53,13 @@ pub mod line;
 pub mod bootsector;
 #[path = "../../src/fs/fattime.rs"]
 pub mod fattime;
+#[path = "../../src/fs/mounttable.rs"]
+pub mod mounttable;
+
+/// As `exec` above: `fs/mounttable.rs`'s tests name `crate::fs::bootsector`.
+pub mod fs {
+    pub use crate::bootsector;
+}
 #[path = "../../src/fs/path.rs"]
 pub mod path;
 #[path = "../../src/keyboard/ring_buffer.rs"]
@@ -81,5 +88,7 @@ pub mod textutil;
 pub mod trset;
 #[path = "../../../user/progs_r18/src/countspec.rs"]
 pub mod countspec;
+#[path = "../../../user/progs_r19/src/spell.rs"]
+pub mod spell;
 #[path = "../../../user/progs_r19/src/table.rs"]
 pub mod table;

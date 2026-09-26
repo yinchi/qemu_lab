@@ -7,12 +7,10 @@ use alloc::vec::Vec;
 
 use abi::errno::{E2BIG, EACCES, EISDIR, ENOENT, ENOEXEC, ENOTDIR, errmsg};
 use abi::fs::ATTR_EXEC;
-use hadris_fat::sync::{FatVolume, FileEntry};
 
 use crate::HEAP_SIZE;
 use crate::exec::{process, shell_state};
-use crate::fs::blkio::BlkIo;
-use crate::fs::{files, read_file_checked};
+use crate::fs::files::{self, Located};
 use crate::shell::{path_search, shell_err};
 
 /// The largest executable `launch` will read into memory: anything bigger is refused as not
@@ -25,7 +23,7 @@ const MAX_PROGRAM_SIZE: usize = HEAP_SIZE / 2;
 /// programs as `cat.exe` and tried `name.exe` after the bare name; the name is exact now.) The
 /// first regular file found wins; a directory of that name is skipped, as is a candidate that does not
 /// exist. `Err` carries the text to report after `name: `.
-fn find_program(name: &str) -> Result<FileEntry, &'static str> {
+fn find_program(name: &str) -> Result<Located, &'static str> {
     if name.contains('/') {
         return shell_state::absolute(name)
             .and_then(|path| files::lookup(&path))
@@ -79,7 +77,7 @@ const STATUS_NOT_FOUND: i32 = 127;
 /// Returns the exit status: the program's, or a script's last line's, or `127` / `126` for a command that
 /// could not run (every one of these already reported via `shell_err`). The status is not printed: it is
 /// what `$?` shows.
-pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> i32 {
+pub fn launch(argv: &[&str], depth: usize) -> i32 {
     let name = argv[0];
     let prog_entry = match find_program(name) {
         Ok(entry) => entry,
@@ -108,7 +106,7 @@ pub fn launch(vol: &FatVolume<BlkIo>, argv: &[&str], depth: usize) -> i32 {
         return STATUS_CANNOT_EXECUTE;
     }
 
-    let file_bytes = match read_file_checked(vol, &prog_entry) {
+    let file_bytes = match prog_entry.read_all() {
         Ok(bytes) => bytes,
         Err(e) => {
             shell_err(&alloc::format!("{name}: {}", errmsg(e)));

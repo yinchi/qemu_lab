@@ -97,8 +97,8 @@ home-reset:
     cd {{justfile_directory()}} && just home-disk
 
 # Run with serial connected to the terminal (stdio), the system disk (rebuilt by `just disk`) and the home disk
-# (home.img, kept) over virtio-blk, a virtio-gpu display, and a virtio-keyboard input device. QEMU numbers the
-# devices against the command line, so home.img is listed first to make the system disk `vda`.
+# (home.img, kept) over virtio-blk, a virtio-gpu display, and a virtio-keyboard input device. Which disk is which never
+# depends on the order here: the kernel tells them apart by label and volume ID.
 
 # Run in QEMU.
 run: build disk home-disk

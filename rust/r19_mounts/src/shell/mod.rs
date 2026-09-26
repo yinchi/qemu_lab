@@ -27,13 +27,12 @@ use abi::errno::{EISDIR, ENOENT, ENOTDIR, errmsg};
 
 use crate::console::{BG, Console, FG};
 use crate::exec::shell_state::{self, Frames, Stdio};
-use crate::fs::blkio::VOL;
 use crate::fs::files::{self, FileRef};
 use crate::keyboard::line_discipline::{LINE_DISCIPLINE, LineDiscipline, LineOutcome, Mode};
 use crate::keyboard::queue;
 use crate::platform::globals::{CONSOLE, GPU};
 use crate::platform::uart::{UART0, UartWriter, uart_ensure_newline, uart_write};
-use crate::{static_mut_ref, static_ref};
+use crate::static_mut_ref;
 use expand::Values;
 use launch::launch;
 use lexer::Word;
@@ -52,10 +51,8 @@ const PROFILE_MAX: usize = 64 * 1024;
 /// `out` (the serial log): a missing or unreadable file is an empty environment, and a bad line is skipped, never
 /// fatal.
 fn load_environment(out: &mut impl core::fmt::Write) {
-    // SAFETY: as `run`'s doc comment says of the statics it uses.
-    let vol = unsafe { static_ref!(VOL) };
     let frames = shell_state::frames();
-    let bytes = match crate::fs::read_path(vol, ENVIRONMENT_FILE) {
+    let bytes = match crate::fs::read_path(ENVIRONMENT_FILE) {
         Ok(bytes) => bytes,
         Err(e) => {
             let _ = write!(out, "Environment: {ENVIRONMENT_FILE}: {} -- starting empty.\r\n", errmsg(e));
@@ -113,12 +110,10 @@ fn run_profile(out: &mut impl core::fmt::Write) {
     if entry.is_directory() {
         return skip(errmsg(EISDIR));
     }
-    // SAFETY: as `run`'s doc comment says of the statics it uses.
-    let vol = unsafe { static_ref!(VOL) };
     if entry.len() as usize > PROFILE_MAX {
         return skip("not a text file of at most 64 KiB");
     }
-    let bytes = match crate::fs::read_file_checked(vol, &entry) {
+    let bytes = match entry.read_all() {
         Ok(bytes) => bytes,
         Err(e) => return skip(errmsg(e)),
     };
@@ -359,9 +354,7 @@ fn run_command(argv: &[String], depth: usize) -> i32 {
             }
         }
     } else {
-        // SAFETY: as `run`'s doc comment says of the statics it uses.
-        let vol = unsafe { static_ref!(VOL) };
-        launch(vol, &argv, depth)
+        launch(&argv, depth)
     }
 }
 

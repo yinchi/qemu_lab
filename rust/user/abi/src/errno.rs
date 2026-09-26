@@ -19,8 +19,14 @@ pub const ENOMEM: isize = -12;
 pub const EACCES: isize = -13;
 /// Bad address.
 pub const EFAULT: isize = -14;
+/// Device or resource busy -- here: a mount point that is in use (mounted already, or with something mounted inside
+/// it, or open files or a working directory inside it), or a volume that is already mounted; also a `unlink` or `rename`
+/// of a mount point itself.
+pub const EBUSY: isize = -16;
 /// File exists.
 pub const EEXIST: isize = -17;
+/// Invalid cross-device link -- `rename` between two volumes (a program copies and removes instead).
+pub const EXDEV: isize = -18;
 /// No such device -- here: `blkinfo` was asked about a device index past the last one.
 pub const ENODEV: isize = -19;
 /// Not a directory.
@@ -55,7 +61,9 @@ pub fn errmsg(code: isize) -> &'static str {
         ENOMEM => "Cannot allocate memory",
         EACCES => "Permission denied",
         EFAULT => "Bad address",
+        EBUSY => "Device or resource busy",
         EEXIST => "File exists",
+        EXDEV => "Invalid cross-device link",
         ENODEV => "No such device",
         ENOTDIR => "Not a directory",
         EISDIR => "Is a directory",
@@ -88,8 +96,8 @@ mod tests {
     #[test]
     fn new_values_are_linux_numbers() {
         assert_eq!(
-            [E2BIG, ENOEXEC, ENOMEM, EFAULT, EEXIST, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY, ENODEV],
-            [-7, -8, -12, -14, -17, -25, -28, -34, -36, -38, -39, -19]
+            [E2BIG, ENOEXEC, ENOMEM, EFAULT, EEXIST, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY, ENODEV, EBUSY, EXDEV],
+            [-7, -8, -12, -14, -17, -25, -28, -34, -36, -38, -39, -19, -16, -18]
         );
     }
 
@@ -97,7 +105,7 @@ mod tests {
     fn every_error_has_a_message() {
         for code in [
             ENOENT, EIO, E2BIG, ENOEXEC, EBADF, ENOMEM, EACCES, EFAULT, EEXIST, ENOTDIR, EISDIR, EINVAL,
-            EMFILE, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY, ENODEV,
+            EMFILE, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY, ENODEV, EBUSY, EXDEV,
         ] {
             assert_ne!(errmsg(code), "Unknown error", "{code}");
         }
