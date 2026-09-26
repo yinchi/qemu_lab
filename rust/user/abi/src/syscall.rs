@@ -60,6 +60,13 @@ pub const SYS_CLOCK_GETTIME: usize = 113;
 /// what it asked for. Memory between the start and the break is zeroed, writable and never executable.
 pub const SYS_BRK: usize = 214;
 
+/// `blkinfo(index, out)`: describes block device `index` (0-based, in the order the kernel found them) by writing
+/// `abi::blk::BLKINFO_SIZE` bytes to `out`: its size, whether it holds a FAT volume and is the root, and the volume's
+/// label and ID. `ENODEV` for an index past the last device (so a caller counts devices by asking until it does),
+/// `EFAULT` for a bad `out`. **Not a Linux syscall** -- Linux reports this through `/sys` and `ioctl`s on a device node
+/// (`lsblk` reads `/sys/block`) -- so its number is outside the range Linux uses (its aarch64 table ends near 450).
+pub const SYS_BLKINFO: usize = 1000;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +117,10 @@ mod tests {
     #[test]
     fn step16_number_is_linuxs_number() {
         assert_eq!(SYS_BRK, 214);
+    }
+
+    #[test]
+    fn blkinfo_is_outside_linuxs_range() {
+        assert_eq!(SYS_BLKINFO, 1000);
     }
 }

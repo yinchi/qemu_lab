@@ -110,7 +110,7 @@ What it does not do: characters above the Basic Multilingual Plane (emoji includ
 
 ## Block Device
 
-We wrap the underlying `VirtIOBlk` driver and provide two functions (`drivers/virtio/blk.rs`):
+We wrap the underlying `VirtIOBlk` driver and provide two functions (`drivers/virtio/blk.rs`). **From Stage 19 there can be several block devices**: `Blk::find_all` returns every virtio-blk device among the `virtio,mmio` slots (up to `MAX_BLK`, four), each with its own interrupt line, held in the `BLK` and `BLK_SPI` arrays; the interrupt handler acknowledges whichever device's line fired, and `blk::get(i)` reaches device `i`. (The GPU and the keyboard remain one each, found by `find_mmio_transport`.)
 
 - `read_blocks_irq()`: Read one or more 512-byte sectors from the device, starting at a block ID, into a specified buffer.
 - `write_blocks_irq()`: Write one or more 512-byte sectors to the device, starting at a block ID, from a specified buffer.

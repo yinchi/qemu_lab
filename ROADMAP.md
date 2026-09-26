@@ -1128,13 +1128,17 @@ there") is only honest with somewhere for the edit to live.
   that image, which the serial note says).
 - **A cross-volume `rename` is `EXDEV`** ("Invalid cross-device link"), as in Linux. `mv` (in a new tier, `progs_r19`, extending Stage 18's) falls
   back to copy-then-remove for a file, as GNU `mv` does; a directory across volumes is reported, not yet moved.
-- **`mount` and `umount` builtins**, small: `mount` alone lists the table (`HOME on /root type vfat`), `mount LABEL=X /dir` and `umount /dir` do what
-  an `fstab` line would (`umount` refuses with `EBUSY` while a file on the volume is open or the working directory is inside it). Builtins, not
-  programs, because the table lives in the kernel and a program has no syscall to read it -- adding one is not worth it for a listing.
+- **`lsblk`, `mount` and `umount`: programs over new syscalls,** as on Linux (util-linux tools over `mount(2)`/`umount2(2)`, not builtins). A
+  `blkinfo(index, &mut BlkInfo)` syscall reports each block device (size, label, volume ID, and once there is a mount table, where it is mounted), and
+  `lsblk` lists them (`NAME SIZE LABEL UUID MOUNTPOINT`, names `vda`, `vdb`, ... by device order). `mount(source, target, type)` and `umount(target)`
+  syscalls take a source in the `fstab` spellings (`LABEL=X`, `UUID=X`) and do what an `fstab` line would; `mount` alone lists the table, and
+  `umount` fails with `EBUSY` while a file on the volume is open or the working directory is inside it. The programs live in the new tier
+  `progs_r19` beside `mv`. The shell's own start-up mounts through the same kernel function the syscall calls.
 - **The host side.** The system image is labelled `SYSTEM` and rebuilt every run, as now. `just run` also attaches `home.img`, which `just disk` never
-  touches: a `just home-disk` recipe creates it **once, if missing**, formatted with the label `HOME` and its own volume ID, and seeded from a
-  `disk-home/` folder (`.profile` and `utf8-demo.txt`, which move there from the system image's `disk/root`, now an empty mount point);
-  `just home-reset` recreates it. The host may copy files in and out of `home.img` with `mtools` **only while QEMU is not running**: a host write to
+  touches: a `just home-disk` recipe creates it **once, if missing**, formatted with the label `HOME` and a random volume ID of its own, and
+  seeded from a `disk-home-seed/` folder (named so, because it is only a starting point: it is not kept in step with `home.img` and nothing
+  written to the disk goes back to it -- it holds `.profile` and `utf8-demo.txt`, which move there from the system image's `disk/root`, now an
+  empty mount point); `just home-reset` recreates it. The host may copy files in and out of `home.img` with `mtools` **only while QEMU is not running**: a host write to
   a FAT volume the guest has mounted can corrupt it.
 - **Tests.** A second image per test group (the harness copies both, as it copies `disk.img` today), an `FSTAB` module attribute writing
   `/etc/fstab` the way Stage 17's `ENVIRONMENT` writes the environment file, and `verify_disk` and `fsck.fat` on both after QEMU exits. Cases: a file

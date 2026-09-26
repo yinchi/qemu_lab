@@ -1,0 +1,22 @@
+# The programs Stage 19 adds: `lsblk` (and, in later steps, `mount`, `umount` and the `mv` that copes with two volumes). A tier of
+# its own, as the scheme in `../progs_r12/Cargo.toml` describes (a stage `rNN` builds the base tier and every `progs_rMM` with
+# MM <= NN, highest tier wins a name).
+[package]
+name = "progs_r19"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+abi = { path = "../abi" }
+userlib = { path = "../userlib", features = ["heap"] }
+progs = { path = "../progs" }
+progs_r12 = { path = "../progs_r12" }
+# `human_size`, the sizes `ls -h` prints.
+progs_r18 = { path = "../progs_r18" }
+getargs = { version = "0.5", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

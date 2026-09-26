@@ -1,7 +1,7 @@
 //! Adapts the block device's whole-sector I/O (`Blk::read_blocks_irq`/`write_blocks_irq`) to the
 //! byte-addressable `Read`/`Write`/`Seek` trait bundle `hadris-fat` needs for its backing store.
 //!
-//! Reaches the block device through the shared `BLK` static (see `platform/globals.rs`) rather than owning
+//! Reaches its block device through the shared `BLK` statics (see `platform/globals.rs`) rather than owning
 //! one directly: `Blk`'s IRQ completion path (`ack_interrupt`, called from `irq_handler`) has to
 //! stay paired with the same instance `read_blocks_irq`/`write_blocks_irq` block on, for this
 //! program's entire remaining lifetime.
@@ -16,8 +16,7 @@ use hadris_fat::sync::Error as FatError;
 use hadris_fat::sync::IoResult as FatResult;
 use hadris_fat::sync::{Read, Seek, SeekFrom, Write};
 
-use crate::platform::globals::BLK;
-use crate::static_mut_ref;
+use crate::drivers::virtio::blk;
 
 /// The mounted FAT filesystem -- kept alive for the program's entire remaining life, not just at
 /// boot, since a program name typed at the prompt (and every path a running program opens, see
@@ -65,6 +64,8 @@ impl embedded_io::Error for BlkIoError {
 /// clusters; it decides for itself which byte ranges are FAT tables, directory entries, or file
 /// data.
 pub struct BlkIo {
+    /// Which block device (an index into `BLK`).
+    dev: usize,
     /// Current position within the block device, in bytes.
     pos: u64,
     /// Total capacity of the block device, in bytes.
@@ -72,13 +73,14 @@ pub struct BlkIo {
 }
 
 impl BlkIo {
-    /// Creates a new `BlkIo` instance representing the whole block device.
+    /// Creates a new `BlkIo` instance representing the whole of block device `dev`.
     ///
-    /// SAFETY: BLK must already be populated, and its SPI already enabled at the GIC -- see
+    /// SAFETY: `dev` must be an index `BLK` is populated at, with its SPI already enabled at the GIC -- see
     /// `kernel_main`, same precondition `read_blocks_irq`/`write_blocks_irq` themselves rely on.
-    pub unsafe fn new() -> Self {
-        let total_bytes = unsafe { static_mut_ref!(BLK) }.capacity_bytes();
+    pub unsafe fn new(dev: usize) -> Self {
+        let total_bytes = unsafe { blk::get(dev) }.capacity_bytes();
         Self {
+            dev,
             pos: 0,
             total_bytes,
         }
@@ -102,7 +104,7 @@ impl Read for BlkIo {
         //
         // SAFETY: see `new`'s doc comment -- holds for this whole program, not just at
         // construction time.
-        unsafe { static_mut_ref!(BLK) }
+        unsafe { blk::get(self.dev) }
             .read_blocks_irq(sector, &mut sector_buf)
             .map_err(|e| FatError::from_source(BlkIoError::Blk(e)))?;
 
@@ -135,7 +137,7 @@ impl Write for BlkIo {
 
         // Read the current sector
         // SAFETY: see `Read::read`'s SAFETY comment -- identical reasoning.
-        unsafe { static_mut_ref!(BLK) }
+        unsafe { blk::get(self.dev) }
             .read_blocks_irq(sector, &mut sector_buf)
             .map_err(|e| FatError::from_source(BlkIoError::Blk(e)))?;
 
@@ -146,7 +148,7 @@ impl Write for BlkIo {
 
         // Write the modified sector buffer back to the block device.
         // SAFETY: see `Read::read`'s SAFETY comment -- identical reasoning.
-        unsafe { static_mut_ref!(BLK) }
+        unsafe { blk::get(self.dev) }
             .write_blocks_irq(sector, &sector_buf)
             .map_err(|e| FatError::from_source(BlkIoError::Blk(e)))?;
 

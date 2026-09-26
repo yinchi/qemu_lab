@@ -36,7 +36,7 @@ use crate::arch::{
     mmu,
 };
 use crate::console::{BG, Console};
-use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
+use crate::drivers::virtio::{blk::{Blk, MAX_BLK}, gpu::Gpu, input::Keyboard};
 use crate::exec::shell_state::{FRAMES, Frames};
 use crate::fs::{
     blkio::{BlkIo, VOL},
@@ -48,7 +48,7 @@ use crate::keyboard::{
 };
 use crate::platform::{
     base_addresses::{BASE_ADDRESSES, init_base_addresses},
-    globals::{BLK, BLK_SPI, CONSOLE, GPU, KEYBOARD, KEYBOARD_SPI},
+    globals::{BLK, BLK_COUNT, BLK_SPI, CONSOLE, GPU, KEYBOARD, KEYBOARD_SPI},
     uart::{UART0, UartWriter},
 };
 
@@ -103,32 +103,52 @@ extern "C" fn kernel_main(dtb_ptr: usize) -> ! {
 
     gic_setup();
 
-    // Find the VirtIO block device and hand it over to BLK, then enable its SPI -- from this
-    // point on, a real IRQ can call `static_mut_ref!(BLK)` inside `irq_handler`, so this write
-    // must (and does) happen before `gic_enable(blk_spi)`. Unlike Stage 6/7, BLK stays live (and
-    // its SPI enabled) for this program's entire remaining life: fs/blkio.rs's BlkIo reaches
-    // through it for every filesystem read, not just one early load.
-    let (blk, blk_spi) = Blk::find(BASE_ADDRESSES.virtio_mmio_slots())
-        .expect("no virtio-blk device found among the virtio-mmio slots");
-    // SAFETY: sole write to BLK, and it happens before BLK_SPI's GIC line is enabled below --
-    // irq_handler can't observe BLK until then.
-    unsafe {
-        BLK = Some(blk);
+    // Find the VirtIO block devices and hand them over to BLK, then enable their SPIs -- from this
+    // point on, a real IRQ can reach `blk::get(..)` inside `irq_handler`, so these writes
+    // must (and do) happen before `gic_enable`. Unlike Stage 6/7, BLK stays live (and
+    // its SPIs enabled) for this program's entire remaining life: fs/blkio.rs's BlkIo reaches
+    // through it for every filesystem read, not just one early load. Stage 19 drives every device found,
+    // not just one; which of them is the root is decided below, by what is on each.
+    let (found, skipped) = Blk::find_all(BASE_ADDRESSES.virtio_mmio_slots());
+    let mut blk_count = 0;
+    for entry in found {
+        let Some((blk, blk_spi)) = entry else { break };
+        // SAFETY: sole write to this BLK entry, and it happens before its SPI's GIC line is enabled below --
+        // irq_handler can't observe it until then (nor BLK_COUNT, which it reads to know how many to look at).
+        unsafe {
+            BLK[blk_count] = Some(blk);
+        }
+        BLK_SPI[blk_count].store(blk_spi, Ordering::Relaxed);
+        blk_count += 1;
     }
-
-    BLK_SPI.store(blk_spi, Ordering::Relaxed);
-    gic_enable(blk_spi);
+    assert!(blk_count > 0, "no virtio-blk device found among the virtio-mmio slots");
+    BLK_COUNT.store(blk_count, Ordering::Relaxed);
+    for spi in &BLK_SPI[..blk_count] {
+        gic_enable(spi.load(Ordering::Relaxed));
+    }
+    if skipped > 0 {
+        uart0_writer
+            .write_fmt(format_args!("Ignoring {skipped} block device(s) past the first {MAX_BLK}.\r\n"))
+            .unwrap_or(());
+    }
 
     // DAIF stays unmasked from here on (never re-masked) -- both Stage 2/3's precedent and this
     // stage's rest of kernel_main run with real IRQs enabled the whole time.
     DAIF.write(DAIF::I::CLEAR);
 
+    // Read every device's boot sector for its label and volume ID (log the table on the serial port) and pick the
+    // root: the volume labelled SYSTEM, else the first FAT volume. Only the root is opened as a filesystem here.
+    //
+    // SAFETY: BLK is populated for `blk_count` devices, their SPIs enabled and IRQs unmasked, above.
+    let root_dev = unsafe { crate::fs::devices::probe(&mut uart0_writer) }
+        .expect("no FAT volume found on any block device");
+
     // Mount the FAT filesystem built by `just disk` (see justfile) -- BlkIo presents the whole
     // block device as one byte-addressable stream, so hadris-fat can find its own boot sector,
     // FAT tables, and directory entries without this code needing to know their layout.
     //
-    // SAFETY: BLK is populated and its SPI enabled above.
-    let blk_io = unsafe { BlkIo::new() };
+    // SAFETY: `root_dev` is a populated BLK index with its SPI enabled, above.
+    let blk_io = unsafe { BlkIo::new(root_dev) };
     // The volume stamps new and changed entries from the real-time clock (UTC), not the FAT epoch.
     let vol = hadris_fat::sync::FatVolumeBuilder::new(blk_io)
         .time_provider(&crate::fs::rtc_time::RTC_TIME)
@@ -236,9 +256,11 @@ extern "C" fn irq_handler() {
     // what this QEMU config (no `secure=on`, no GIC Security Extensions) actually uses -- Group1
     // goes through the separate AIAR/AEOIR registers instead.
     if let Some(intid) = gic.get_and_acknowledge_interrupt(InterruptGroup::Group0) {
-        if intid == IntId::spi(BLK_SPI.load(Ordering::Relaxed)) {
-            // SAFETY: BLK is populated before BLK_SPI's GIC line is ever enabled (kernel_main).
-            unsafe { static_mut_ref!(BLK) }.ack_interrupt();
+        let blk_dev = (0..BLK_COUNT.load(Ordering::Relaxed))
+            .find(|&dev| intid == IntId::spi(BLK_SPI[dev].load(Ordering::Relaxed)));
+        if let Some(dev) = blk_dev {
+            // SAFETY: BLK[dev] is populated before its SPI's GIC line is ever enabled (kernel_main).
+            unsafe { drivers::virtio::blk::get(dev) }.ack_interrupt();
         } else if intid == IntId::spi(KEYBOARD_SPI.load(Ordering::Relaxed)) {
             // Only moves key presses from the device into the queue; the shell's loop does the rest.
             keyboard::queue::drain_keyboard();

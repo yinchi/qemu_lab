@@ -1,8 +1,11 @@
-//! The filesystem service, built on the block driver: `blkio` presents the device to `hadris-fat` as
+//! The filesystem service, built on the block driver: `devices` is the block devices found and what is on each
+//! (`bootsector` reads that from a device's first sector), `blkio` presents the device to `hadris-fat` as
 //! a byte stream, `files` is the open files and path handling behind `open`/`getdents`/`chmod`,
 //! and the helpers here look up directory entries and read whole files on the mounted volume.
 
 pub mod blkio;
+pub mod bootsector;
+pub mod devices;
 pub mod fattime;
 pub mod files;
 pub mod path;

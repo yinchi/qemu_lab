@@ -1,10 +1,11 @@
 //! Shared `no_std` runtime for every EL0 binary this roadmap builds from Stage 9 onward (the
-//! programs in `../progs`, and later the editor). Six modules, re-exported flat (all but `env`, kept
+//! programs in `../progs`, and later the editor). Seven modules, re-exported flat (all but `env`, kept
 //! as `userlib::env::var`) so programs write `userlib::write`, `userlib::exit`, `userlib::entry!`, ...:
 //!
 //! - `syscall`: the raw `svc` and the `syscall!` macro -- the mechanism, crate-private.
 //! - `io`: everything a program does with an fd or a path (`read`, `write`, `open`, `close`,
 //!   `getdents`, `chmod`).
+//! - `blk`: block devices (`blkinfo`, from Stage 19).
 //! - `time`: the clock (`clock_gettime`, `time`).
 //! - `memory`: the program break (`brk`); with the `heap` feature, `heap` is a global allocator on it.
 //! - `env`: the program's environment (`env::var`, `env::vars`), from `envp`.
@@ -17,6 +18,7 @@
 // modules that follow it.
 #[macro_use]
 mod syscall;
+mod blk;
 pub mod env;
 mod io;
 mod memory;
@@ -26,6 +28,7 @@ mod time;
 #[cfg(feature = "heap")]
 mod heap;
 
+pub use blk::*;
 pub use io::*;
 pub use memory::*;
 pub use process::*;
@@ -36,6 +39,6 @@ pub use time::*;
 // so `userlib::SYS_WRITE`, ... keep working.
 pub use abi::time::CLOCK_REALTIME;
 pub use abi::syscall::{
-    SYS_BRK, SYS_CHMOD, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_EXIT, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT,
+    SYS_BLKINFO, SYS_BRK, SYS_CHMOD, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_EXIT, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT,
     SYS_NEWFSTATAT, SYS_OPEN, SYS_READ, SYS_REBOOT, SYS_RENAMEAT, SYS_UNLINKAT, SYS_WRITE,
 };

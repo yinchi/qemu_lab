@@ -21,6 +21,8 @@ pub const EACCES: isize = -13;
 pub const EFAULT: isize = -14;
 /// File exists.
 pub const EEXIST: isize = -17;
+/// No such device -- here: `blkinfo` was asked about a device index past the last one.
+pub const ENODEV: isize = -19;
 /// Not a directory.
 pub const ENOTDIR: isize = -20;
 /// Is a directory.
@@ -54,6 +56,7 @@ pub fn errmsg(code: isize) -> &'static str {
         EACCES => "Permission denied",
         EFAULT => "Bad address",
         EEXIST => "File exists",
+        ENODEV => "No such device",
         ENOTDIR => "Not a directory",
         EISDIR => "Is a directory",
         EINVAL => "Invalid argument",
@@ -85,8 +88,8 @@ mod tests {
     #[test]
     fn new_values_are_linux_numbers() {
         assert_eq!(
-            [E2BIG, ENOEXEC, ENOMEM, EFAULT, EEXIST, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY],
-            [-7, -8, -12, -14, -17, -25, -28, -34, -36, -38, -39]
+            [E2BIG, ENOEXEC, ENOMEM, EFAULT, EEXIST, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY, ENODEV],
+            [-7, -8, -12, -14, -17, -25, -28, -34, -36, -38, -39, -19]
         );
     }
 
@@ -94,7 +97,7 @@ mod tests {
     fn every_error_has_a_message() {
         for code in [
             ENOENT, EIO, E2BIG, ENOEXEC, EBADF, ENOMEM, EACCES, EFAULT, EEXIST, ENOTDIR, EISDIR, EINVAL,
-            EMFILE, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY,
+            EMFILE, ENOTTY, ENOSPC, ERANGE, ENAMETOOLONG, ENOSYS, ENOTEMPTY, ENODEV,
         ] {
             assert_ne!(errmsg(code), "Unknown error", "{code}");
         }

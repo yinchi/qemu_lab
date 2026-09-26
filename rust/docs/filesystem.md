@@ -33,10 +33,36 @@ flowchart TD
   [`shell.md`](shell.md)). The kernel never names `/root` or `/home`; only the environment file's `HOME` does.
 - **Mounting.** `kernel_main` opens the volume once, over a `BlkIo` (below), into the static `VOL`, and it stays
   mounted for the kernel's whole life. Everything else re-derives directories and files from it on each lookup;
-  nothing else is cached. There is one volume: no mount points, no other filesystems.
+  nothing else is cached. There is one mounted volume: no mount points, no other filesystems. **From Stage 19** the kernel
+  finds every block device and reads each one's boot sector (below), and the root is chosen among them, but still only
+  the root is opened: the other devices are described, not mounted (mounting is what the rest of Stage 19 adds).
 - **The executable bit.** FAT has no execute permission, so this project claims one of the attribute byte's
   unused bits, `ATTR_EXEC` (`0x40`), alongside the real FAT ones. At boot the kernel sets it on every file in
   `/bin`; nothing else is executable until `chmod +x`. See [`launching_programs.md`](launching_programs.md).
+
+## Which disk is which: `fs/devices.rs`
+
+**From Stage 19** there may be several virtio-blk devices (up to four are driven, in the order the device tree lists
+their virtio-mmio slots; QEMU fills the slots in the reverse of the command-line order, so the order says nothing a
+person chose). A device is therefore identified by what is on it, never by its number. At boot, after the devices'
+interrupts are on, `devices::probe` reads sector 0 of each one and `fs/bootsector.rs` (pure, host-tested) parses it
+as a FAT boot sector: the **volume label** (up to 11 characters, `NO NAME` counting as none, as it does for `blkid`)
+and the **volume ID**, the 32-bit serial `mkfs.fat -i` and `mlabel -N` set, which Linux shows as the `UUID` of a vfat
+volume (`XXXX-XXXX`). Its offsets differ for FAT12/16 and FAT32 and are told apart as the specification says (a
+device that is blank, random, exFAT or NTFS parses as "not a FAT volume"). The table is logged on the serial port
+(`Block devices: 2`, then one line each) and reported to programs by the `blkinfo` syscall
+([`syscalls.md`](syscalls.md)), which `lsblk` prints.
+
+The **root** is the volume labelled `SYSTEM` -- the first, if several are -- and failing that the first FAT volume, so
+an image built before the label existed (`R12SH`) still boots on its own; a device that is not FAT is never the
+root. Only the root is opened as a filesystem (over a `BlkIo` on that device); nothing writes to the others.
+
+**The host side (Stage 19).** `just disk` labels the system image `SYSTEM` and rebuilds it on every run. The second
+disk, `home.img`, is the opposite: `just home-disk` creates it **once** (32 MiB FAT16, label `HOME`, a random volume ID)
+from the folder `disk-home-seed/` and never touches it again, `just run` attaches it beside the system image, and
+`just home-reset` throws it away and recreates it. The seed folder is only the starting content of a new disk, not
+something kept in step with `home.img`. The host must not read or write `home.img` (with `mtools`, say) while QEMU has it
+open: the guest can be part-way through an update.
 
 ## Getting bytes to the disk: `BlkIo`
 
@@ -45,7 +71,7 @@ the end of the disk (`Read + Write + Seek`); `hadris-fat` decides for itself whi
 tables, directory entries or file data. The device only does whole 512-byte sectors, so every read fetches the
 sector containing the position, and every write is a **read-modify-write** of a sector: read it, patch the
 bytes, write it back. Nothing is buffered, so every write has reached the device when it returns (`flush` has
-nothing to do). It goes through the shared `BLK` static, whose completion interrupt is handled in the IRQ
+nothing to do). It goes through the shared `BLK` statics (one entry per device; a `BlkIo` holds the index of its own, from Stage 19), whose completion interrupts are handled in the IRQ
 handler (see [`virtio.md`](virtio.md)).
 
 ## Paths
@@ -210,6 +236,7 @@ and case-insensitive names.
 | File | What it holds |
 |---|---|
 | `fs/blkio.rs` | `BlkIo`, and the `VOL` static (the mounted volume) |
+| `fs/devices.rs`, `fs/bootsector.rs` | The block devices found and each one's label and volume ID; choosing the root (Stage 19) |
 | `fs/files.rs` | Open files (`FileRef`) and every operation above |
 | `fs/path.rs` | `abspath` (pure, host-tested) |
 | `fs/mod.rs` | `find_entry_checked` (look up one name in a directory) and `read_file_checked` (read a whole file into a `Vec`) |

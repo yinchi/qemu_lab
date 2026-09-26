@@ -8,3 +8,5 @@
 /disk/tests/overflow
 /disk/tests/probe
 /disk/tests/spin
+# The persistent HOME disk (`just home-disk`): user data, made once and never rebuilt or committed.
+/home.img

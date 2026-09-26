@@ -49,6 +49,8 @@ pub mod path_search;
 pub mod prompt;
 #[path = "../../src/keyboard/line.rs"]
 pub mod line;
+#[path = "../../src/fs/bootsector.rs"]
+pub mod bootsector;
 #[path = "../../src/fs/fattime.rs"]
 pub mod fattime;
 #[path = "../../src/fs/path.rs"]
@@ -79,3 +81,5 @@ pub mod textutil;
 pub mod trset;
 #[path = "../../../user/progs_r18/src/countspec.rs"]
 pub mod countspec;
+#[path = "../../../user/progs_r19/src/table.rs"]
+pub mod table;

@@ -55,7 +55,10 @@ FATAL_MARKERS = ("Kernel Panic!", "Unexpected exception")
 
 
 class Session:
-    def __init__(self, elf, img, workdir):
+    def __init__(self, elf, img, workdir, extra_imgs=()):
+        """`extra_imgs` are `(path, before)` pairs: further disks attached with the system image, each before it
+        on the QEMU command line (`before` true) or after it. (QEMU gives the devices virtio-mmio slots in the
+        opposite order to the command line, which is why a test wants to choose.)"""
 
         self.serial_path = os.path.join(workdir, "serial.log")
         """Path to the serial log file."""
@@ -64,14 +67,18 @@ class Session:
         """Path to the QEMU monitor socket."""
 
         open(self.serial_path, "w").close()
+        disks = [(path, True) for path, before in extra_imgs if before] + [(img, True)]
+        disks += [(path, False) for path, before in extra_imgs if not before]
+        drives = []
+        for n, (path, _) in enumerate(disks):
+            drives += ["-drive", f"if=none,file={path},id=hd{n},format=raw", "-device", f"virtio-blk-device,drive=hd{n}"]
         self.qemu = subprocess.Popen(
             [
                 "qemu-system-aarch64", "-M", "virt", "-cpu", "max", "-nodefaults",
                 "-display", "none",
                 "-serial", f"file:{self.serial_path}",
                 "-monitor", f"unix:{self.sock_path},server,nowait",
-                "-drive", f"if=none,file={img},id=hd0,format=raw",
-                "-device", "virtio-blk-device,drive=hd0",
+                *drives,
                 "-device", "virtio-gpu-device",
                 "-device", "virtio-keyboard-device",
                 "-kernel", elf,
@@ -297,6 +304,57 @@ def set_profile(img_path, workdir, environment, content):
     subprocess.run(["mcopy", "-i", img_path, "-o", local, target], check=True)
 
 
+def relabel(img_path, label=None, volume_id=None):
+    """Gives the FAT volume in `img_path` a label and/or a volume ID (8 hex digits, as `XXXXXXXX`); `mlabel`
+    writes both the boot sector and the root directory's label entry. Only on a private copy, before boot."""
+    if volume_id is not None:
+        subprocess.run(["mlabel", "-i", img_path, "-N", volume_id, "::"], check=True)
+    if label is not None:
+        subprocess.run(["mlabel", "-i", img_path, f"::{label}"], check=True)
+
+
+def make_extra_disk(path, spec):
+    """Creates an extra disk image from a description: a dict with `kind` `"fat"` (the default; `label`,
+    `volume_id`, `size_kib`), `"blank"` (all zeros) or `"noise"` (deterministic random bytes, not a filesystem)."""
+    kind = spec.get("kind", "fat")
+    size_kib = spec.get("size_kib", 1024)
+    if kind == "fat":
+        cmd = ["mkfs.fat", "-C", "-n", spec.get("label", "NOLABEL"), "-i", spec.get("volume_id", "00000001")]
+        subprocess.run(cmd + [path, str(size_kib)], check=True, capture_output=True)
+    elif kind == "blank":
+        with open(path, "wb") as f:
+            f.truncate(size_kib * 1024)
+    elif kind == "noise":
+        import random
+        rng = random.Random(spec.get("seed", 1))
+        with open(path, "wb") as f:
+            f.write(rng.randbytes(size_kib * 1024))
+    else:
+        raise ValueError(f"unknown extra disk kind {kind!r}")
+
+
+def file_hash(path):
+    """SHA-256 of a file, for checking that an image was left untouched."""
+    import hashlib
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def lsblk_table(output):
+    """Parses what `s.run("lsblk")` returned (the echoed command line, then the table) into one dict per device,
+    keyed by the header's words. Columns are cut where the header's words start, so an empty cell reads as `""`."""
+    lines = output.split("\n")[1:]
+    lines = [line for line in lines if line != ""]
+    header = lines[0]
+    names = header.split()
+    starts = [header.index(name) for name in names]
+    rows = []
+    for line in lines[1:]:
+        ends = starts[1:] + [len(line) + 1]
+        rows.append({name: line[a:b].strip() for name, a, b in zip(names, starts, ends)})
+    return rows
+
+
 CELL_W, CELL_H = 8, 16  # a console cell on the display
 
 
@@ -316,7 +374,7 @@ class Context:
     """What a case module gets: the live `session`, a `check(name, got, want)` that records a
     PASS/FAIL, and the host-side paths it may need."""
 
-    def __init__(self, session, check, disk_dir, img, workdir):
+    def __init__(self, session, check, disk_dir, img, workdir, extra_imgs=(), extra_hashes=()):
         self.s = session
         self.check = check
         self.tests_dir = os.path.join(disk_dir, "tests")
@@ -329,6 +387,10 @@ class Context:
         self.img = img
         """The image QEMU is running against (a private copy; readable from the host once QEMU has exited)."""
         self.workdir = workdir
+        self.extra_imgs = list(extra_imgs)
+        """The paths of the group's extra disks (module attribute `EXTRA_DISKS`), in that order."""
+        self.extra_hashes = list(extra_hashes)
+        """Each extra disk's `file_hash` from before boot -- unequal afterwards means the guest wrote to it."""
 
     def fixture(self, name):
         """The text of a fixture under `disk/tests/`."""

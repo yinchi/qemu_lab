@@ -1,5 +1,5 @@
-//! Finds the VirtIO block device among the `virtio,mmio` slots `platform/base_addresses.rs`
-//! discovered.
+//! Finds the VirtIO block devices among the `virtio,mmio` slots `platform/base_addresses.rs`
+//! discovered -- every one, since Stage 19 (earlier stages had exactly one).
 //!
 //! Unlike Stage 6's copy of this file, this stage drives the block device through a real GIC
 //! interrupt rather than polling: `VirtIOBlk` exposes an async submit/complete pair
@@ -12,7 +12,25 @@ use virtio_drivers::device::blk::{BlkReq, BlkResp, VirtIOBlk};
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::transport::mmio::MmioTransport;
 
-use super::{find_mmio_transport, hal::VirtioHalImpl};
+use super::{hal::VirtioHalImpl, mmio_transports};
+use crate::platform::globals::BLK;
+
+/// The most block devices the kernel drives: `BLK` and `BLK_SPI` have this many entries. A device past the
+/// last is left alone (`Blk::find_all` reports how many it skipped).
+pub const MAX_BLK: usize = 4;
+
+/// Block device `dev` (an index into `BLK`).
+///
+/// # Safety
+/// `dev` must be below the count of devices `kernel_main` populated `BLK` with, and the caller must be the only
+/// user of `BLK` in the way `platform/globals.rs` describes (single core; `irq_handler` touches only
+/// `ack_interrupt`).
+pub unsafe fn get(dev: usize) -> &'static mut Blk {
+    #[allow(clippy::deref_addrof, reason = "`&raw mut` is what the 2024 edition's `static_mut_refs` lint asks for")]
+    unsafe {
+        (*(&raw mut BLK))[dev].as_mut().unwrap()
+    }
+}
 
 /// Wrapper around a VirtIO block device, providing IRQ-driven read and write operations.
 pub struct Blk {
@@ -20,15 +38,30 @@ pub struct Blk {
 }
 
 impl Blk {
-    /// Tries every discovered `virtio,mmio` slot in turn and returns a `Blk` (and its SPI
-    /// number) for the first one that turns out to be a block device.
-    pub fn find(mmio_slots: impl Iterator<Item = (usize, u32)>) -> Option<(Self, u32)> {
-        let (transport, irq) = find_mmio_transport(mmio_slots, DeviceType::Block)?;
-        let mut inner = VirtIOBlk::<VirtioHalImpl, _>::new(transport).ok()?;
-        // Enable interrupts for this block device (no-op since the HAL-provided DMA memory
-        // is already zeroed which enables interrupts by default).
-        inner.enable_interrupts();
-        Some((Self { inner }, irq))
+    /// Every discovered `virtio,mmio` slot that turns out to be a block device, in slot order, each with its
+    /// SPI number -- up to `MAX_BLK`, and the number left over (their SPIs are never enabled, so they stay silent).
+    /// A device whose driver fails to initialize is skipped like an empty slot.
+    pub fn find_all(
+        mmio_slots: impl Iterator<Item = (usize, u32)>,
+    ) -> ([Option<(Self, u32)>; MAX_BLK], usize) {
+        let mut found = [const { None }; MAX_BLK];
+        let mut count = 0;
+        let mut skipped = 0;
+        for (transport, irq) in mmio_transports(mmio_slots, DeviceType::Block) {
+            if count == MAX_BLK {
+                skipped += 1;
+                continue;
+            }
+            let Ok(mut inner) = VirtIOBlk::<VirtioHalImpl, _>::new(transport) else {
+                continue;
+            };
+            // Enable interrupts for this block device (no-op since the HAL-provided DMA memory
+            // is already zeroed which enables interrupts by default).
+            inner.enable_interrupts();
+            found[count] = Some((Self { inner }, irq));
+            count += 1;
+        }
+        (found, skipped)
     }
 
     // Read/write flow: submit request, wait for interrupt, irq_handler calls `ack_interrupt` to

@@ -66,6 +66,7 @@ unbuffered.
 | 142 | `reboot` | `cmd` | Never returns on success. `LINUX_REBOOT_CMD_POWER_OFF` (`0x4321FEDC`) powers off, `LINUX_REBOOT_CMD_RESTART` (`0x01234567`) restarts, both through PSCI. Any other `cmd` is `EINVAL`. No `magic1`/`magic2`/`arg`. |
 | 113 | `clock_gettime` | `clock, out` | `0`, after writing a 16-byte `timespec` to `out` (`TIMESPEC_SIZE`): `tv_sec: i64` then `tv_nsec: i64`, little-endian. Only `CLOCK_REALTIME` (0) exists: the PL031 real-time clock, seconds since 1970-01-01 00:00:00 UTC, so `tv_nsec` is always 0; any other clock is `EINVAL`, a bad `out` is `EFAULT`. Reads a hardware register on every call (there is no cached time), which is why it works in an interrupt-free syscall. |
 | 214 | `brk` | `addr` | The new **program break**, or the old one if it could not move -- **not an errno**: Linux's convention, kept. The break is the end of the heap, which starts right after the program's image (`.bss` included), page-aligned; `brk(0)` returns it. Everything between the start and the break is zeroed, writable and never executable; growing maps and zeroes pages, shrinking unmaps the pages above the new break and zeroes the rest of the page it lands in. A request below the start, or above `USER_IMAGE_END` (the stack's guard), is refused: the break is returned unchanged, so a caller checks `brk(want) == want`. `userlib`'s heap (the `heap` feature) is a `#[global_allocator]` on top of this. |
+| 1000 | `blkinfo` | `index, out` | `0`, after writing a 32-byte record (`abi::blk`, `BLKINFO_SIZE`) describing block device `index` to `out`: `capacity: u64` in bytes, `flags: u32` (`BLK_FAT`: the device's first sector is a FAT boot sector, so the next two fields mean something; `BLK_ROOT`: it is the root of the file tree), `volume_id: u32` (the FAT volume ID), `label_len: u8` and the 11-byte `label`, little-endian. Devices are numbered from 0 in the order the kernel found them. `ENODEV` for an index past the last device (so a caller counts them by asking until it gets that), `EFAULT` for a bad `out`. **From Stage 19. Not a Linux syscall** (Linux reports this through `/sys` and device nodes, which this kernel has neither of), so its number, 1000, lies outside the range Linux uses. `lsblk` is the program over it. |
 | 49 | `chdir` | | **Reserved, not implemented** (`ENOSYS`). Its number is held so a later stage doesn't have to pick one; see below. |
 
 `chdir` is deliberately missing: with one global shell state, a program's `chdir` would change the *shell's*
@@ -92,6 +93,7 @@ kernel-level unexpected exception.
 | `EACCES` | -13 | Permission denied |
 | `EFAULT` | -14 | Bad address |
 | `EEXIST` | -17 | File exists |
+| `ENODEV` | -19 | No such device (`blkinfo` past the last device; from Stage 19) |
 | `ENOTDIR` | -20 | Not a directory |
 | `EISDIR` | -21 | Is a directory |
 | `EINVAL` | -22 | Invalid argument |

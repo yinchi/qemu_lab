@@ -41,8 +41,8 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools, flags, filters, textflags
-from harness import DEFAULT_ENVIRONMENT, Context, Session, set_environment, set_profile
+from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools, flags, filters, textflags, disks, disks_first, disks_odd, disks_many
+from harness import DEFAULT_ENVIRONMENT, Context, Session, file_hash, make_extra_disk, relabel, set_environment, set_profile
 
 GROUPS = [
     [core_utils],
@@ -84,6 +84,10 @@ GROUPS = [
     [flags],
     [filters],
     [textflags],
+    [disks],
+    [disks_first],
+    [disks_odd],
+    [disks_many],
 ]
 
 
@@ -129,13 +133,31 @@ def run_group(elf, orig_img, disk_dir, modules):
             break
     set_profile(img, workdir, environment, profile)
 
+    # A module may attach more disks with an `EXTRA_DISKS` attribute (a list of descriptions, see
+    # `harness.make_extra_disk`; a description's `before` says whether it goes before the system image on the QEMU
+    # command line), and relabel the system image with `SYSTEM_LABEL` / `SYSTEM_ID` (8 hex digits).
+    extra_specs = []
+    system_label = system_id = None
+    for m in modules:
+        extra_specs += getattr(m, "EXTRA_DISKS", [])
+        system_label = getattr(m, "SYSTEM_LABEL", system_label)
+        system_id = getattr(m, "SYSTEM_ID", system_id)
+    if system_label or system_id:
+        relabel(img, system_label, system_id)
+    extra_imgs = []
+    for n, spec in enumerate(extra_specs):
+        path = os.path.join(workdir, f"extra{n}.img")
+        make_extra_disk(path, spec)
+        extra_imgs.append((path, spec.get("before", False)))
+    extra_hashes = [file_hash(path) for path, _ in extra_imgs]
+
     results = []
 
     def check(name, got, want):
         results.append((name, got, want))
 
-    s = Session(elf, img, workdir)
-    ctx = Context(s, check, disk_dir, img, workdir)
+    s = Session(elf, img, workdir, extra_imgs)
+    ctx = Context(s, check, disk_dir, img, workdir, [path for path, _ in extra_imgs], extra_hashes)
     try:
         for case in modules:
             case.run(ctx)

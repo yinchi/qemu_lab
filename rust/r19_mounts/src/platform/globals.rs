@@ -13,12 +13,16 @@
 //! of `Gpu::framebuffer()` (see `drivers/virtio/gpu.rs`, `console/mod.rs`). `IdMap` is `arch/mmu.rs`'s
 //! page table, written once there and read again by `exec/elf.rs` on every program load.
 
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU32, AtomicUsize};
 
 use aarch64_paging::{idmap::IdMap, paging::El1And0};
 
 use crate::console::Console;
-use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
+use crate::drivers::virtio::{
+    blk::{Blk, MAX_BLK},
+    gpu::Gpu,
+    input::Keyboard,
+};
 
 // Every piece of state `irq_handler` needs to reach, handed over from `kernel_main` exactly
 // once each, before that device's SPI is ever enabled at the GIC -- see `kernel_main`'s comments
@@ -30,7 +34,9 @@ use crate::drivers::virtio::{blk::Blk, gpu::Gpu, input::Keyboard};
 // any time -- which is why the keyboard's handler touches only the device and the token queue
 // (`keyboard/queue.rs`), never the console, the display, the line discipline or anything else the
 // shell uses.
-pub static mut BLK: Option<Blk> = None;
+// The block devices, in the order they were found (`drivers/virtio/blk.rs`'s `get` reaches one); the first
+// `BLK_COUNT` entries are populated.
+pub static mut BLK: [Option<Blk>; MAX_BLK] = [const { None }; MAX_BLK];
 pub static mut GPU: Option<Gpu> = None;
 pub static mut CONSOLE: Option<Console> = None;
 pub static mut KEYBOARD: Option<Keyboard> = None;
@@ -42,7 +48,9 @@ pub static mut KEYBOARD: Option<Keyboard> = None;
 // program load.
 pub static mut IDMAP: Option<IdMap<El1And0>> = None;
 
-// SPI numbers for the two interrupt-driven devices, filled in once each right before that
+// SPI numbers for the interrupt-driven devices, filled in once each right before that
 // device's GIC line is enabled. `irq_handler` reads these to route an acknowledged interrupt.
-pub static BLK_SPI: AtomicU32 = AtomicU32::new(0);
+pub static BLK_SPI: [AtomicU32; MAX_BLK] = [const { AtomicU32::new(0) }; MAX_BLK];
+/// How many of `BLK`/`BLK_SPI` are in use; written once, before the first of their SPIs is enabled.
+pub static BLK_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static KEYBOARD_SPI: AtomicU32 = AtomicU32::new(0);
