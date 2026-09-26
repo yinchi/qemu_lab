@@ -7,7 +7,7 @@
 |---|---|---|
 | R | Insert the stage in the roadmap (Stage 18; the storage stage becomes 19, the editor 20, job control 21-26) | done |
 | 0 | Plain copy of `r17_env` as `r18_utils` | done |
-| 1 | The tier `progs_r18`; `rmdir`, `touch`, `seq`, `cmp` | planned |
+| 1 | The tier `progs_r18`; `rmdir`, `touch`, `seq`, `cmp` | done |
 | 2 | Flag catch-up: `mkdir -p -v`, `cp -r -n -v`, `mv -n -v -f`, `rm -v -d`, `ls -a -d -R -r -t -S -h` (dotfiles hidden by default) | planned |
 | 3 | Filters: `sort`, `uniq`, `cut`, `tr`, `find`, `fgrep`; pure helpers host-tested | planned |
 | 4 | Text-tool flags: `cat -n -E -T -s`, `head`/`tail` several files and `-n -N`/`-n +N`, `wc -m`, `echo -e -E` | planned |
@@ -39,6 +39,21 @@ New crate `user/progs_r18` (copy of `progs_r17`'s `Cargo.toml`, `build.rs`, `.ca
 - `touch [-c] FILE...`: `open(O_WRONLY|O_APPEND)` + `close`; `-c` does not create; a directory is `cannot touch 'd': Is a directory`. Test first (modify time before < after on a non-empty file; data and size unchanged).
 - `seq [-s SEP] [-w] [FIRST [INCR]] LAST` (i64, INCR 0 refused); `cmp [-s] FILE1 FILE2` (`-` is stdin; status 0/1/2; `f1 f2 differ: byte N, line M`, `cmp: EOF on f1 after byte N`).
 - Tests: group `tools`. Docs: four rows in `docs/progs.md`, `tests.md`.
+
+**As built (Step 1).** As planned, with these specifics:
+- **`touch` works** -- the conditional in the plan is settled: an append-mode open and close of a file that already has data moves its modify time to now and changes nothing else (size, creation time, data and the exec bit are checked). The test
+  waits 3.2 s of real time between the two `stat`s (FAT time has a 2-second tick; the guest's clock follows the host's) and runs with `TZ=UTC` so the stamps compare as text.
+- `seq` reads its arguments by hand (not `getargs`): `-5` is a number there, not an option. Integers only (i64, stops at the end of the range instead of wrapping); `-w` counts the sign in the width. `cmp` exits 2 for every kind of trouble,
+  usage errors included (GNU's convention), and its EOF message is the short form (`cmp: EOF on f1 after byte N`, no line). `rmdir` and `touch` take their wording from `progs::diag` (`failed to remove`, `cannot touch`).
+- New crate `user/progs_r18` (empty `lib.rs` for now; the filters' pure helpers land there in Step 3) and the tier added to `r18_utils/justfile`. Tests: group `tools` (79 checks); rows for the four programs in `docs/progs.md` (`just check-docs`: 29 programs).
+  `just test` = 1162 checks.
+- **The flake, and what was done about it.** `token_queue`'s "typing during a large copy" check (real key presses racing a 3 MiB `cp`) lost a key in two of three full runs at 6 and 8 parallel workers (`intct` for `intact`); at
+  `QEMU_TEST_WORKERS=4` the suite passed. `run_tests.py` now has an **`EXCLUSIVE`** module attribute: such a group (today `token_queue`) is taken out of the pool and run by itself after every other group has finished, so the rest keep
+  the full parallelism (default: CPUs minus one) and this check no longer competes with other sessions. **That does not cure it:** run alone on a quiet machine the check still fails about one time in ten (6 runs: 1 failure; then, typing
+  at 60 ms per key instead of 25 ms, 12 runs: 1 failure; one full default-parallelism run passed and one failed). A different key goes missing each time and the Enter that follows survives, so it is not queue overflow at the end of the burst.
+  Contention makes it worse, but the loss is in the guest's input path (the virtio-input event ring, or the keyboard IRQ racing the block-device IRQs during the copy) -- a kernel matter, outside this stage, which changes no kernel code.
+  A failing run of just that check is worth one retry. **Decision (the user's): the input-path bug is deferred to the scheduling stage** (ROADMAP Stage 26, preemptive multitasking, where the console's input queue gets a kernel-side task of its own and stops depending on
+  the interrupt landing while a program runs), not fixed here.
 
 ## Step 2 -- flag catch-up (overrides in `progs_r18`, reusing `progs_r16::{join, read_dir}`)
 `mkdir -p -v`; `cp -r/-R -n -v`; `mv -n -v -f` (`-f` accepted: nothing prompts); `rm -v -d`; `ls -a -d -R -r -t -S -h` plus hiding dot-names. Fallout: `pipes.py`'s `ls /tmp` and any listing of a dot-name gain `-a`;

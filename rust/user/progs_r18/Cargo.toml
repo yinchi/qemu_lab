@@ -1,0 +1,20 @@
+# The programs Stage 18 adds and the flags it extends: `rmdir`, `touch`, `seq`, `cmp`, then the flag catch-up and the
+# filters. A tier of its own, as the scheme in `../progs_r12/Cargo.toml` describes (a stage `rNN` builds the base tier
+# and every `progs_rMM` with MM <= NN, highest tier wins a name); the kernel and the shell do not change in this stage.
+[package]
+name = "progs_r18"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+abi = { path = "../abi" }
+userlib = { path = "../userlib", features = ["heap"] }
+progs = { path = "../progs" }
+progs_r12 = { path = "../progs_r12" }
+getargs = { version = "0.5", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

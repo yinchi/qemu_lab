@@ -1483,6 +1483,16 @@ regular enough interrupt to make switching invisible.
   round-robin rather than force-resumed early: forced preemption only ever applies to a slot that's
   actually running and would otherwise keep the CPU indefinitely.
 
+- **A carried-over bug for the scheduling stage to retire: the console input path.** While a program is busy in a long syscall or a
+  busy-wait (`spin`, a big `cp`), the keyboard is serviced only when the CPU takes its interrupt, and typed keys are
+  occasionally lost -- a different one each time, the Enter after it surviving, about one run in ten of `token_queue`'s
+  "typing during a large copy" check (which now runs alone, `EXCLUSIVE`, and still flakes; see `Stage18.md`). A real
+  user typing at human speed will not see it, but it means the console can stall while a program runs. Once something schedules, **the console's input queue is owned by a kernel-side task of its own, not by whichever interrupt
+  happens to arrive while something else runs**, so keys are drained and queued regardless of what the resident programs
+  are doing -- including through Stage 23's `sleep`. Deferred to here on purpose: before there is a scheduler, fixing it would mean reworking
+  the interrupt path that this stage builds on anyway.
+
+
 **Demo:** the one thing nothing earlier in this block could demonstrate, made quantifiable rather
 than eyeballed. Two CPU-bound test programs, neither ever calling `sleep`, blocking on I/O, or
 otherwise voluntarily yielding -- one writes an endless stream of `'a'`, the other an endless stream

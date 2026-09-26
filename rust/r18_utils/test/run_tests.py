@@ -24,6 +24,11 @@ being genuinely slower or just queued behind another -- can't interleave its out
 `main` prints every group's list only once every group has finished, in `GROUPS`' own order, so the
 transcript always reads the same regardless of which group actually finished first or how many ran at once.
 
+A module whose checks depend on the guest not being starved of CPU (real key presses racing a long copy, as
+`token_queue`'s "typing during a large copy") sets `EXCLUSIVE = True`: its group is not run in the pool but by itself,
+once every other group has finished, so the rest keep the full parallelism and the timing-sensitive checks
+get a quiet machine. The transcript is still printed in `GROUPS`' order.
+
 A case module exposes `run(ctx)` (drives the shell) and optionally `verify_disk(ctx)` (runs after QEMU
 has exited). Later Steps of `Stage12.md` add modules here, one per area -- each in its own new group,
 unless it genuinely needs an earlier module's leftover state, per the paragraph above.
@@ -36,7 +41,7 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big
+from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools
 from harness import DEFAULT_ENVIRONMENT, Context, Session, set_environment, set_profile
 
 GROUPS = [
@@ -75,6 +80,7 @@ GROUPS = [
     [profile],
     [profile_bad],
     [profile_big],
+    [tools],
 ]
 
 
@@ -153,14 +159,20 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     disk_dir = os.path.join(os.path.dirname(here), "disk")
 
-    workers = min(len(GROUPS), worker_count())
-    print(f"running {len(GROUPS)} groups, {workers} at a time")
+    exclusive = [g for g in GROUPS if any(getattr(m, "EXCLUSIVE", False) for m in g)]
+    shared = [g for g in GROUPS if g not in exclusive]
+    workers = max(1, min(len(shared), worker_count()))
+    print(f"running {len(shared)} groups, {workers} at a time, then {len(exclusive)} on their own")
+    results_of = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(run_group, elf, orig_img, disk_dir, modules) for modules in GROUPS]
-        # `.result()` on each future in turn: this blocks on group 0 even if group 1 finishes first,
-        # so the two groups' results are gathered -- and about to be printed -- in `GROUPS`' own
-        # order every time, never in whichever order the sessions happened to finish.
-        all_results = [f.result() for f in futures]
+        futures = [(g, pool.submit(run_group, elf, orig_img, disk_dir, g)) for g in shared]
+        for g, f in futures:
+            results_of[id(g)] = f.result()
+    # Once nothing else is running: the timing-sensitive groups, one at a time.
+    for g in exclusive:
+        results_of[id(g)] = run_group(elf, orig_img, disk_dir, g)
+    # Printed in `GROUPS`' own order every time, never in whichever order the sessions happened to finish.
+    all_results = [results_of[id(g)] for g in GROUPS]
 
     failures = []
     for results in all_results:

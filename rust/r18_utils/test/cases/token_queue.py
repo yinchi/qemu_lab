@@ -3,6 +3,10 @@
 Keys are queued by the keyboard interrupt and read later, so a program runs with interrupts on and
 keys pressed while it runs are kept, in order, for the next reader.
 
+This module is `EXCLUSIVE` (see `run_tests.py`): its "typing during a large copy" check races real key presses against a
+3 MiB copy in the guest and can lose a key when other QEMU sessions are starving the machine, so it runs on its own
+once the parallel groups have finished.
+
 `spin N` (a test program) busy-waits N seconds without reading anything -- long enough to type during. This
 kernel build (`testhooks`) has a 16-key queue so the overflow path can be reached by typing a few dozen keys.
 """
@@ -11,6 +15,8 @@ import filecmp
 import os
 
 from harness import mcopy_out
+
+EXCLUSIVE = True  # run alone, after the parallel groups: timing-sensitive under CPU load
 
 NOTE = "[keyboard: input queue full, further keys dropped]\n"
 
