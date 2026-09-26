@@ -1058,7 +1058,7 @@ wins a name, so overrides touch no older stage). Stage 11's `r11_busybox` is the
   `-i -v -n -c -l -q -e`). There is no `grep` until a `no_std` regex crate has been checked. The pure parts (glob matching, `cut`
   lists, `tr` sets) live in the tier's library and are host-tested like the kernel's pure modules.
 
-**Deliberately not here:** `yes` (with temp-file pipes `yes | head` never ends and fills the disk, and there is no Ctrl+C: it
+**Deliberately not here:** `column` and `ls` in columns (they need the screen width, which programs cannot see until Stage 20 adds a console `ioctl` for it); `yes` (with temp-file pipes `yes | head` never ends and fills the disk, and there is no Ctrl+C: it
 waits for Stage 22's signals and Stage 25's streaming pipes); `whoami`, `uname`, `hostname`, `id` (constants on a one-user
 machine with no network); `basename`, `dirname`, `realpath` (only useful when a script can capture their output, which needs
 `$(...)`); `nl`, `tac`, `rev`, `cksum`; `sed`, `awk`, `diff`, `printf`, `dd`; `sort -k`; `ls -l` with a time column; `cp -p`
@@ -1067,6 +1067,23 @@ and `touch -d` (no set-time syscall); and everything that needs to start or sign
 **Demo:** build a small tree with `mkdir -p`, fill it with `seq` and `echo`, copy it with `cp -r`, check the copy with `cmp`,
 list it with `ls -R` (dotfiles hidden, then shown with `-a`), find files in it with `find -name`, and run a pipeline such as
 `seq 1 100 | sort -n -r | head -n 5` and `find . -type f | fgrep -c .txt`. `just test` automates the same.
+
+**As built.** `r18_utils` is `r17_env` plus a new program tier and nothing else: **no kernel or shell change**. `Stage18.md` holds the plan, the steps as they were
+committed, and a per-step "As built" note.
+- **The tier `user/progs_r18`** (highest tier wins a name): new programs `rmdir`, `touch`, `seq`, `cmp`, `sort`, `uniq`, `cut`, `tr`, `find`, `fgrep`; overrides `mkdir -p -v`,
+  `cp -r -n -v`, `mv -n -v -f`, `rm -v -d`, `ls -a -d -R -r -S -t -h`, `cat -n -E -T -s`, `echo -e -E`, `wc -m`, and `head`/`tail` with several files (headers, `-q`, `-v`), `head -n -N` and
+  `tail -n +N`. `touch` works as planned: an append-mode open and close moves an existing file's modify time to now and changes nothing else.
+- **Behaviour changes from earlier stages** (their tests were rewritten, not kept): `ls` **hides names starting with `.`** unless `-a`, lists a **file operand as itself**, and sorts directory
+  operands by name; `tail -n -N` is the last N lines (a minus is no sign, as in GNU). `-l` is unchanged (no time column).
+- **Pure, host-tested helpers** in the tier's library (`glob`, `cutlist`, `trset`, `sortkey`, `textutil`, `countspec`, `human`): 43 new host tests, 260 in all. Output details were taken from the
+  host's coreutils rather than assumed (`cp -n` silent and 0, `mv -n` complains and 1, `ls -R` headers, `rm -rv` order).
+- **Two lessons kept in the code:** the shared `cli::operands` walk takes an option's *value* for an operand, so programs with value-taking options (`cut`, `head`, `tail`, `fgrep`, `find`) gather operands
+  in their single option pass; and a program that holds a whole input uses `try_reserve` so a heap that cannot hold it is `Cannot allocate memory`, not a panic.
+- **Tests:** `just test` is 1468 checks (was 1083 at the start of the stage). New groups `tools`, `flags`, `filters` and `textflags`. The runner learned an `EXCLUSIVE` module attribute: a group that is
+  timing-sensitive under load (`token_queue`) runs alone after the parallel ones finish, so the rest keep full parallelism. That check still loses a key about one run in ten even alone -- an input-path
+  bug in the guest, **deferred to Stage 26** (below) by decision.
+- **Left for later, by decision:** `column` and `ls` in columns (they need the screen size, which Stage 20's console `ioctl` provides), `grep` with regular expressions, `yes`, and everything that needs
+  a program to start another or to wait.
 
 ---
 
@@ -1195,6 +1212,15 @@ either direction).
   IRQ context, and programs run with interrupts enabled. Raw mode is then purely a routing switch on
   that queue -- who consumes each `Token`, the shell's line discipline or this editor directly -- and
   keystrokes typed while a program isn't reading wait in the queue instead of being lost.
+
+- **The screen size becomes visible to programs: a console `ioctl`.** The editor needs the display's dimensions, and today only the kernel knows
+  them. The console's `ioctl` (the one `clear` already uses, whose `ENOTTY` already means "not the console") gains Linux's `TIOCGWINSZ` -- the same
+  request number and `struct winsize` (rows, columns, and two pixel fields left 0) -- answered for fd 0, 1 and 2 whenever they are still the console
+  and `ENOTTY` when redirected. The source of truth is then the fd itself, as on Linux, so a program learns both that it is on a terminal and how big
+  it is with one call and no help from the shell; `COLUMNS` and `LINES` in the environment stay an optional convenience for scripts and prompts
+  (the shell's start-up may export them), never something a program has to depend on. The same call unblocks two things Stage 18 deliberately left
+  out: **`column`** (`-t` to align a table, and filling columns to the width) and **`ls` in columns when its output is a terminal** (as GNU's does),
+  which needs display widths for wide characters and rewrites the `ls` expectations of the test suite in one pass.
 
 **Demo:** launch the editor from Stage 12's shell against a file already
 present on the disk image, edit its text on Stage 6's display using

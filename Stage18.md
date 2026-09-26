@@ -11,7 +11,7 @@
 | 2 | Flag catch-up: `mkdir -p -v`, `cp -r -n -v`, `mv -n -v -f`, `rm -v -d`, `ls -a -d -R -r -t -S -h` (dotfiles hidden by default) | done |
 | 3 | Filters: `sort`, `uniq`, `cut`, `tr`, `find`, `fgrep`; pure helpers host-tested | done |
 | 4 | Text-tool flags: `cat -n -E -T -s`, `head`/`tail` several files and `-n -N`/`-n +N`, `wc -m`, `echo -e -E` | done |
-| 5 | Docs, roadmap "As built", regression sweep | planned |
+| 5 | Docs, roadmap "As built", regression sweep | done |
 
 ## Decisions (settled)
 - **Its own stage, before persistent storage.** Programs and a tier are a stage (`r11_busybox` is the precedent). Storage (now Stage 19) then extends the `mv` this stage puts in the tier with a cross-volume fallback.
@@ -22,7 +22,7 @@
 - **Documentation stays stage-agnostic** (`<stage>` for what changes per stage; name the stage for a change attributable to one): new rows say "From Stage 18".
 
 ## Not doing
-`yes` (until Ctrl+C, Stage 22, and streaming pipes, Stage 25), `whoami`/`uname`/`hostname`/`id`, `basename`/`dirname`/`realpath` (need `$(...)`), `cksum`/`nl`/`tac`/`rev`, `grep` with regexes, `sed`/`awk`/`diff`/`printf`/`dd`,
+`column` and `ls` in columns by default -- **deferred to the editor stage (ROADMAP Stage 20), which will add a `TIOCGWINSZ`-style console `ioctl` for the screen size (an `ioctl` rather than `COLUMNS`/`LINES`: the fd is the source of truth, and it doubles as the is-a-terminal test)** (the user's decision); `ls` stays one entry per line and there is no `ls -C` either. `yes` (until Ctrl+C, Stage 22, and streaming pipes, Stage 25), `whoami`/`uname`/`hostname`/`id`, `basename`/`dirname`/`realpath` (need `$(...)`), `cksum`/`nl`/`tac`/`rev`, `grep` with regexes, `sed`/`awk`/`diff`/`printf`/`dd`,
 `sort -k`, `find -exec`, `ls -l` with a time column, `cp -p`, `touch -d/-t/-r`, `sleep`/`xargs`/`time`/`env CMD`/`kill`.
 
 ## Step 0 -- plain copy `rust/r18_utils`
@@ -97,3 +97,10 @@ Pure helpers in `progs_r18/src/{glob,cutlist,trset}.rs` (`no_std` + `alloc`, inc
 ## Step 5 -- docs, roadmap, sweep
 `docs/progs.md`, `docs/tests.md`, `ROADMAP.md` Stage 18 "As built", `just check-docs`, `just lint`; regression: `r17_env` and the older stages' suites (only the new `progs_r18` crate is added to the shared tree), restoring any tracked build
 artifacts with `git checkout`.
+
+**As built (Step 5).**
+- Docs: `progs.md`'s intro names the new tier and its library; the rows for every new program and every extended flag were written with their steps. `ROADMAP.md` has Stage 18's "As built"; the screen-size note for Stage 20 now says a
+  `TIOCGWINSZ`-style console `ioctl` (the fd is the source of truth and doubles as the is-a-terminal test) rather than `COLUMNS`/`LINES`. `just check-docs` (35 programs) and `just lint` are clean; `just test` is 1468 checks and 260 host tests.
+- Regression, each stage's own suite against the shared tree with the new `progs_r18` crate added (no shared crate changed in this stage): `r17_env`, `r16_brk`, `r15_large_binaries`, `r14_file_times`, `r13_rtc`, `r12_shell` and `r11_busybox` all pass;
+  `r10_repl` and `r09_userspace` (no test recipe) still build. `r16_brk` tripped the known `token_queue` flake in the sweep (`intct` for `intact`) and passed on its rerun. The rebuilds rewrote three tracked artifacts (`r10_repl/disk.img`,
+  `r10_repl/disk/bin/echo`, `r11_busybox/disk.img`), restored with `git checkout`.

@@ -10,7 +10,7 @@ launcher looks a name up exactly as typed (`cat` is `bin/cat`). Stages 9-16 inst
 tried `name.exe` after the bare name, Cygwin's way; the extension was only a convention for a host looking at the
 image, and Stage 17 dropped it. This table documents
 observable behavior per stage, not which package a program's source happens to live in. (`userlib`,
-`user/userlib/`, is the runtime underneath them: entry point, syscall wrappers, `Args`, and from Stage 17 `env::var`/`env::vars` for a program started with `entry_with_env!`.) From Stage 17, `user/progs_r17/` holds `env` and `printenv`. Programs are started by the
+`user/userlib/`, is the runtime underneath them: entry point, syscall wrappers, `Args`, and from Stage 17 `env::var`/`env::vars` for a program started with `entry_with_env!`.) From Stage 17, `user/progs_r17/` holds `env`, `printenv` and the `$TZ`-aware `date` and `stat`. From Stage 18, `user/progs_r18/` holds the new utilities (`rmdir`, `touch`, `seq`, `cmp`, `sort`, `uniq`, `cut`, `tr`, `find`, `fgrep`) and the extended flags of `mkdir`, `cp`, `mv`, `rm`, `ls`, `cat`, `echo`, `wc`, `head` and `tail`; its `lib.rs` holds the helpers (directory walking, `read_all`) and the pure, host-tested parts (`glob`, `cutlist`, `trset`, `sortkey`, `textutil`, `countspec`, `human`). Programs are started by the
 shell: [`shell.md`](shell.md) describes how a command line (redirections, pipes, scripts) reaches them, and
 [`launching_programs.md`](launching_programs.md) how one is loaded and started. What a program can ask the kernel for is in [`syscalls.md`](syscalls.md).
 
