@@ -1,0 +1,17 @@
+[package]
+name = "testprogs"
+version = "0.1.0"
+edition = "2024"
+
+# Test-only EL0 programs for `just test` -- see ../README.md. Deliberately not part of
+# `user/progs`, which holds only the core utilities every stage shares.
+[dependencies]
+abi = { path = "../../../user/abi" }
+userlib = { path = "../../../user/userlib", features = ["heap"] }  # `heapuse` allocates
+progs = { path = "../../../user/progs" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

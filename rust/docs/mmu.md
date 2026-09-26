@@ -244,7 +244,7 @@ allocator, no free list of physical pages): it holds because of the layout. The 
 program is resident at a time, so a `brk` up to `USER_IMAGE_END` can always be granted: it writes page-table entries and
 zeroes pages, and nothing has to check that a page is free. That is why the heap never negotiates for memory, and it is
 the price of the design: **up to about 31 MiB of RAM (the window less the stack, the guard and the image) sits unused but
-unavailable while a small program runs** -- not to the kernel, not to anything else. It stays that way until Stage 20,
+unavailable while a small program runs** -- not to the kernel, not to anything else. It stays that way until Stage 21,
 when two programs can be resident at once and each can no longer be given the whole window: then the physical memory
 behind each must be split or tracked (two fixed windows, or per-process page tables and a frame allocator), and a `brk`
 can genuinely fail for lack of memory. The layout also assumes the RAM is there: with less than about 96 MiB

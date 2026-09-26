@@ -42,7 +42,7 @@ flowchart TD
   `read(0)` (`keyboard/stdin.rs`, which fetches from the device itself, since IRQs are masked inside a
   syscall).
 - **Signal keys never get this far.** `Ctrl+C` and `Ctrl+Z` are meant to be recognized by the queue's
-  producer, before a token is queued (Stages 21&ndash;23), so the line discipline never sees them in either
+  producer, before a token is queued (Stages 22&ndash;24), so the line discipline never sees them in either
   mode. `Ctrl+D` is different: end-of-file is a property of reading a line, so it is handled here.
 
 ## The line discipline
@@ -76,7 +76,7 @@ Its parts (each one file under `keyboard/`):
 
 > [!NOTE]
 > Neither mode is "raw mode". That term is reserved for a full-screen editor that reads tokens directly and
-> bypasses the line discipline entirely (Stage 19). Both modes here stay inside the same model: keys edit a
+> bypasses the line discipline entirely (Stage 20). Both modes here stay inside the same model: keys edit a
 > line, and Enter finishes it. `Mode::Prompt` just recognizes more keys.
 
 ## Prompt vs Canonical mode

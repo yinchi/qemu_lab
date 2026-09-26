@@ -38,7 +38,7 @@ struct State {
 /// The allocator. A program is one thread with no signal handlers, so nothing re-enters it: no lock.
 struct UserHeap(UnsafeCell<State>);
 
-// SAFETY: there is one thread of execution in EL0 (no threads, no asynchronous signals until Stage 21, and
+// SAFETY: there is one thread of execution in EL0 (no threads, no asynchronous signals until Stage 22, and
 // those will not allocate), so the state is never accessed concurrently.
 unsafe impl Sync for UserHeap {}
 

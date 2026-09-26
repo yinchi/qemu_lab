@@ -5,7 +5,7 @@
 //! both little-endian, as on Linux aarch64. The PL031 counts whole seconds, so `tv_nsec` is always 0.
 
 /// `CLOCK_REALTIME`: wall-clock time, seconds since 1970-01-01 00:00:00 UTC. The only clock there is;
-/// any other id is `EINVAL`. (`CLOCK_MONOTONIC` would want the generic timer, Stage 22's business.)
+/// any other id is `EINVAL`. (`CLOCK_MONOTONIC` would want the generic timer, Stage 23's business.)
 pub const CLOCK_REALTIME: usize = 0;
 
 /// Size of the `timespec` `clock_gettime` fills in.

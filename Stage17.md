@@ -175,14 +175,14 @@ inherits everything.
   and `A=1 | cat` leave nothing; `source` in a stage is confined to it; an unexported variable is still readable in a later stage (`X=1` then `echo $X | cat`); a redirect and `$?` are as before;
   a single command still changes the shell (`cd`, `export`, `A=1`). Whatever `pipes.py`'s existing checks assumed about leaking (if any) is corrected, not preserved.
 - Docs: `shell.md` (Pipelines: each stage is a subshell; the `A=1 | cat` note in "Variables and assignments" goes; the frame-stack section names the third operation) and the "As built" note.
-  The roadmap's Stage 24 keeps its own line: it replaces the temp-file *pipes* with streaming ones between real processes; the isolation of stages is already here.
+  The roadmap's Stage 25 keeps its own line: it replaces the temp-file *pipes* with streaming ones between real processes; the isolation of stages is already here.
 
 **As built (Step 6).** As planned, with these specifics:
 - `FrameStack::push_subshell` / `with_subshell` (a plain clone of the top frame; three host tests: the copy is complete, nothing inside survives, and it nests with `with_scope`/`with_stdio`).
   `run_pipeline` wraps each stage's `run_segment_with` in it; the temp-file opens stay outside, in the shell's frame.
 - Tests: a subshell section in `pipes.py` (`echo $FOO | unset FOO` leaves `FOO` and the stage still read the unexported `FOO`; unset first/last stage; `cd`, `export`, `A=1`, `source` confined; the lone forms,
   a lone command with a redirect included, still change the shell; an earlier stage's assignment does not reach a later stage). 911 checks in all.
-- Docs: `shell.md` (Pipelines, Variables and assignments' scope note, the frame-stack section now lists three operations). No roadmap change yet; Step 12's Stage 17 "As built" records it, and Stage 24 is
+- Docs: `shell.md` (Pipelines, Variables and assignments' scope note, the frame-stack section now lists three operations). No roadmap change yet; Step 12's Stage 17 "As built" records it, and Stage 25 is
   unchanged (it replaces the temp-file pipes, not the isolation).
 
 ## Step 7 -- `$HOME` and `$TZ`
@@ -315,7 +315,7 @@ only additive changes allowed).
 
 **As built (Step 12).**
 - Docs: every `r16_brk` in `rust/docs` became `<stage>` (a placeholder for the newest stage's `rust/rNN_*/` directory, defined once in `docs/README.md`), so a later stage does not have to repoint them; `filesystem.md` describes `/etc/environment`, `/root` and `/root/.profile`; `README.md` rows updated for `$PATH`, the environment and start-up. `shell.md`, `progs.md`,
-  `launching_programs.md` and `tests.md` had been kept current step by step. `ROADMAP.md`: an "As built" section under Stage 17 (and Stage 18, persistent storage, was inserted before the editor, which moved every later stage up one).
+  `launching_programs.md` and `tests.md` had been kept current step by step. `ROADMAP.md`: an "As built" section under Stage 17 (and Stage 19, persistent storage, was inserted before the editor, which moved every later stage up one).
 - `just check-docs` and `just lint` are clean; `just test` is 1083 checks and 217 host tests.
 - Regression, each stage's own suite run against the shared `userlib`/`progs` as changed by this stage (`env` module, `entry_with_env!`, comment-only edits in `start.s`, `heap.rs` and `abi/time.rs`): **all pass**: `r16_brk`, `r15_large_binaries`, `r14_file_times`, `r13_rtc`, `r12_shell` and `r11_busybox` run their own `just test` unchanged, and `r10_repl` and `r09_userspace` (no test
   recipe) still build (`just build disk`). The rebuilds rewrote three tracked artifacts (`r10_repl/disk.img`, `r10_repl/disk/bin/echo`, `r11_busybox/disk.img`), which were restored with `git checkout`.
