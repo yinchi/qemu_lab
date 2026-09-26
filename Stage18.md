@@ -9,7 +9,7 @@
 | 0 | Plain copy of `r17_env` as `r18_utils` | done |
 | 1 | The tier `progs_r18`; `rmdir`, `touch`, `seq`, `cmp` | done |
 | 2 | Flag catch-up: `mkdir -p -v`, `cp -r -n -v`, `mv -n -v -f`, `rm -v -d`, `ls -a -d -R -r -t -S -h` (dotfiles hidden by default) | done |
-| 3 | Filters: `sort`, `uniq`, `cut`, `tr`, `find`, `fgrep`; pure helpers host-tested | planned |
+| 3 | Filters: `sort`, `uniq`, `cut`, `tr`, `find`, `fgrep`; pure helpers host-tested | done |
 | 4 | Text-tool flags: `cat -n -E -T -s`, `head`/`tail` several files and `-n -N`/`-n +N`, `wc -m`, `echo -e -E` | planned |
 | 5 | Docs, roadmap "As built", regression sweep | planned |
 
@@ -72,6 +72,16 @@ New crate `user/progs_r18` (copy of `progs_r17`'s `Cargo.toml`, `build.rs`, `.ca
 ## Step 3 -- filters
 Pure helpers in `progs_r18/src/{glob,cutlist,trset}.rs` (`no_std` + `alloc`, included into `hosttests` by `#[path]`): glob matcher (`* ? [a-z] [!..]`), `cut` list parser, `tr` set expander, `sort -n` key. Programs: `sort`, `uniq`, `cut`,
 `tr`, `find` (children in name order for determinism), `fgrep` (`name:` prefix with several files; status 0/1/2). Whole input in the user heap; `ENOMEM` reported as `tail` does. Tests: group `filters` (`seq` for input).
+
+**As built (Step 3).** As planned, with these specifics:
+- Pure helpers in `progs_r18/src/`, all `no_std` + `alloc` and pulled into `r18_utils/hosttests` by `#[path]`: `glob.rs` (`* ? [a-z] [!x] \`, on characters, no special leading dot), `cutlist.rs` (parse and merge `N`, `N-M`, `N-`, `-M`), `trset.rs`
+  (set expansion with ranges, escapes, octal and classes, and the compiled `Tr` for translate, delete and squeeze), `sortkey.rs` (bytewise and exact numeric comparison, with GNU's last-resort tiebreak), `textutil.rs` (`split_lines`, ASCII-folded
+  `contains`). 36 new host tests: 258 in all. `progs_r18::read_all` reads a whole input with `try_reserve`, so a heap that cannot hold it is `Cannot allocate memory`, not a panic.
+- `sort` puts all files' lines together; `-u` drops the last-resort tiebreak (equal keys are duplicates) and keeps the first of a set. `cut -c` counts UTF-8 characters (a line that is not UTF-8 is cut by bytes). `tr` sets are ASCII bytes and every other byte
+  passes through. `find` visits entries in name order and starts a `.`-less argument list at `.`. `fgrep` is GNU's `fgrep` (fixed strings), statuses 0/1/2.
+- A bug caught by the first run: `cut` used `cli::operands` for its files, but that second walk treats an option's *value* (`-d :`, `-f 2`) as an operand -- it is only for programs with no value-taking options (`head`/`tail` parse once for the same reason). `cut`
+  now collects operands in its single pass.
+- Tests: group `filters` (125 checks); rows for the six programs in `docs/progs.md` (`check-docs`: 35 programs). The harness cannot type non-ASCII, so multi-byte input comes from the existing `cjk.txt` fixture. `just test` = 1388 checks and 258 host tests, lint clean.
 
 ## Step 4 -- text-tool flags
 `cat -n -E -T -s`; `head`/`tail` with several files (`==> f <==`, `-q`), `head -n -N`, `tail -n +N`; `wc -m`; `echo -e -E`. Tests: group `textflags`.

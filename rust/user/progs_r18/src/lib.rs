@@ -7,13 +7,20 @@
 
 extern crate alloc;
 
+pub mod cutlist;
+pub mod glob;
 pub mod human;
+pub mod sortkey;
+pub mod textutil;
+pub mod trset;
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use userlib::{DIRENT_SIZE, DirEnt, O_RDONLY, close, getdents, open};
+use abi::errno::ENOMEM;
+use progs::CHUNK;
+use userlib::{DIRENT_SIZE, DirEnt, O_RDONLY, close, getdents, open, read};
 
 /// `dir/name`, trimming one trailing `/` from `dir` first so joining under the root does not double it. There
 /// is no length limit here (the kernel still refuses a path over `PATH_MAX`, when the program uses it).
@@ -71,4 +78,22 @@ pub fn read_dir(path: &str) -> Result<Vec<Entry>, ReadDirError> {
     };
     close(fd);
     result.map(|()| entries)
+}
+
+/// Everything readable from `fd`, until end of file: the filters hold whole inputs in the user heap. `Err` is the negative
+/// error from `read`, or `ENOMEM` if the heap cannot grow to hold it (reported, not a panic).
+pub fn read_all(fd: usize) -> Result<Vec<u8>, isize> {
+    let mut data = Vec::new();
+    let mut chunk = [0u8; CHUNK];
+    loop {
+        let n = read(fd, &mut chunk);
+        if n < 0 {
+            return Err(n);
+        }
+        if n == 0 {
+            return Ok(data);
+        }
+        data.try_reserve(n as usize).map_err(|_| ENOMEM)?;
+        data.extend_from_slice(&chunk[..n as usize]);
+    }
 }

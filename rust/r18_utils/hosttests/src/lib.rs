@@ -67,3 +67,13 @@ pub mod utf8;
 pub mod util;
 #[path = "../../../user/progs_r18/src/human.rs"]
 pub mod human;
+#[path = "../../../user/progs_r18/src/cutlist.rs"]
+pub mod cutlist;
+#[path = "../../../user/progs_r18/src/glob.rs"]
+pub mod glob;
+#[path = "../../../user/progs_r18/src/sortkey.rs"]
+pub mod sortkey;
+#[path = "../../../user/progs_r18/src/textutil.rs"]
+pub mod textutil;
+#[path = "../../../user/progs_r18/src/trset.rs"]
+pub mod trset;
