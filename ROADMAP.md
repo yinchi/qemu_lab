@@ -1098,54 +1098,58 @@ disposable. It also lands before Capstone 1 on purpose: the editor's demo ("rest
 there") is only honest with somewhere for the edit to live.
 
 **Features:**
-- **More than one block device.** `Blk::find` finds the first virtio-blk device; the driver learns to find them all
-  (each with its own interrupt line and queue), and `BlkIo` becomes one per device, so each volume is its own
-  `hadris-fat` `FatVolume`. Devices are told apart by **FAT volume label**, not by their order: QEMU hands out
-  virtio-mmio slots in an order that is a property of the machine, not of the command line.
-- **A mount table, and path resolution through it.** A kernel-owned list of `(mount point, volume)`. Paths are
-  already normalized to absolute strings before anything touches a disk; resolution then picks the mount with the
-  longest matching prefix and hands the rest of the path to that volume, so `..` from a mount's root lands in the
-  parent volume's directory with no special case. Everything that opens, lists, stats, creates, removes or renames goes
-  through it (`fs/files.rs` today assumes the one volume); an open file remembers its volume. The root is the volume
-  labelled `ROOT` (or, with none so labelled -- every earlier image -- the first device, so old images keep booting).
-  A mount point must be an existing directory on the volume it is mounted over, and what was in it is hidden while
-  mounted, as on Linux.
-- **`/etc/fstab`, read by the init shell.** The kernel mounts only the root; the shell's own start-up (Stage 17's
-  `start_up`) reads `/etc/fstab` and mounts the rest -- Linux's split between `root=` and `mount -a`. A pure, host-tested
-  parser (the same shape as Stage 17's `/etc/environment` one): `LABEL=DATA  /root  fat` per line, `#` comments, extra
-  fields ignored for now. A missing file, a bad line, a label no device carries, or a mount point that is not a directory
-  is one note on the serial log and never fatal. Start-up order becomes `/etc/fstab`, `/etc/environment`, `$HOME`,
-  `~/.profile`, the first prompt: the mounts must exist before `enter_home` looks for `$HOME`. With no data disk attached
-  `/root` is an empty directory on the system volume, so the shell still starts there (writes to it are then as
-  throwaway as the rest of that image, which the serial note says).
-- **A cross-volume `rename` is `EXDEV`** ("Invalid cross-device link"), as in Linux. `mv` (in a new tier, `progs_r19`, extending Stage 18's)
-  falls back to copy-then-remove for a file, as GNU `mv` does; a directory across volumes is reported, not yet moved.
-- **`mount` and `umount` builtins**, small: `mount` alone lists the table (`DATA on /root type fat`), `mount LABEL=X
-  /dir` and `umount /dir` do what an `fstab` line would (`umount` refuses with `EBUSY` while a file on the volume is
-  open or the working directory is inside it). Builtins, not programs, because the table lives in the kernel and a
-  program has no syscall to read it -- adding one is not worth it for a listing.
-- **The host side.** `just run` attaches two drives: the system image, rebuilt every time as now, and `data.img`, which
-  `just disk` never touches. A `just data-disk` recipe creates it **once, if missing**, formatted with the label `DATA`
-  and seeded from a `disk-data/` folder (`root/.profile` and `root/utf8-demo.txt`, which move there from the system
-  image's `disk/root`, now an empty mount point); `just data-reset` recreates it. The system image's `etc/fstab` is
-  what says to mount it. The host may copy files in and out of `data.img` with `mtools` **only while QEMU is not
-  running**: a host write to a FAT volume the guest has mounted can corrupt it.
-- **Tests.** A second image per test group (the harness copies both, as it copies `disk.img` today), and an `FSTAB`
-  module attribute writing `/etc/fstab` the way Stage 17's `ENVIRONMENT` writes the environment file; `verify_disk`
-  and `fsck.fat` on both after QEMU exits. Cases: a file written under the mount is on the data image and not the
-  system one, and the reverse; `..` out of a mount and `cd` into it; the same path from two working directories; `ls
-  /` shows the mount point and `ls /root` the data volume's contents; `mv` and `cp` across the mount; an unlabelled or
-  missing data disk (the note, and `/root` on the system volume); a bad `fstab`; a mount point that is a file; `umount`
-  with an open file (`EBUSY`) and with the working directory inside; the file cap and open handles counted across
-  volumes; and that a rebuilt system image with the same `data.img` still has the earlier files (the property the
-  stage exists for).
+- **More than one block device, each identified by what is on it.** `Blk::find` finds the first virtio-blk device; the driver learns to find them
+  all (each with its own interrupt line and queue), and `BlkIo` becomes one per device, so each volume is its own `hadris-fat` `FatVolume`. Devices
+  are told apart by what their FAT boot sector says -- the **volume label** (11 characters) and the **volume ID** (32 bits, the `XXXX-XXXX` Linux
+  calls the UUID of a vfat volume) -- never by their order, which QEMU decides by virtio-mmio slot, not by the command line. Each device is probed
+  once at boot into a small table (device, label, ID); a device that is blank or not FAT is skipped with a serial note. There is no partition
+  table, so there is no `PARTUUID`.
+- **A mount table, and path resolution through it.** A kernel-owned list of `(mount point, volume)`. Paths are already normalized to absolute
+  strings before anything touches a disk; resolution then picks the mount with the longest matching prefix and hands the rest of the path to that
+  volume, so `..` from a mount's root lands in the parent volume's directory with no special case. Everything that opens, lists, stats, creates,
+  removes or renames goes through it (`fs/files.rs` today assumes the one volume); an open file remembers its volume. **The root is the volume
+  labelled `SYSTEM`** (or, with none so labelled -- every earlier image -- the first device, so old images keep booting). A mount point must be an
+  existing directory on the volume it is mounted over, and what was in it is hidden while mounted, as on Linux.
+- **`/etc/fstab`, read by the init shell.** The kernel mounts only the root; the shell's own start-up (Stage 17's `start_up`) reads `/etc/fstab` and
+  mounts the rest -- Linux's split between `root=` and `mount -a`. The file has Linux's shape, one entry per line, `#` comments:
+  ```
+  # <source>        <mount point>  <type>  <options>
+  LABEL=HOME        /root          vfat    defaults
+  ```
+  The source is `LABEL=name` or `UUID=XXXX-XXXX` (the volume ID); the type `vfat` or `fat`; the options `defaults`, `noauto` (skip the line),
+  `nofail` and `noatime` (accepted, no effect), while `ro` is refused with a note rather than silently ignored (read-only mounts are not enforced);
+  trailing `dump`/`pass` fields are ignored. Lines mount in file order, so a mount may be nested in an earlier one. A pure, host-tested parser (the
+  shape of Stage 17's `/etc/environment` one) returns the entries and the line-numbered problems. A missing file, a bad line, a source no device
+  matches, two devices with the same label (the first is used), or a mount point that is not a directory is one note on the serial log and never
+  fatal. A line for `/` is accepted but informational: the root is chosen before the file can be read, so it is only checked against the volume that
+  is the root (a mismatch is a note). The general image's file has just the one `/root` line. Start-up order becomes `/etc/fstab`,
+  `/etc/environment`, `$HOME`, `~/.profile`, the first prompt: the mounts must exist before `enter_home` looks for `$HOME`. With no home disk
+  attached `/root` is an empty directory on the system volume, so the shell still starts there (writes to it are then as throwaway as the rest of
+  that image, which the serial note says).
+- **A cross-volume `rename` is `EXDEV`** ("Invalid cross-device link"), as in Linux. `mv` (in a new tier, `progs_r19`, extending Stage 18's) falls
+  back to copy-then-remove for a file, as GNU `mv` does; a directory across volumes is reported, not yet moved.
+- **`mount` and `umount` builtins**, small: `mount` alone lists the table (`HOME on /root type vfat`), `mount LABEL=X /dir` and `umount /dir` do what
+  an `fstab` line would (`umount` refuses with `EBUSY` while a file on the volume is open or the working directory is inside it). Builtins, not
+  programs, because the table lives in the kernel and a program has no syscall to read it -- adding one is not worth it for a listing.
+- **The host side.** The system image is labelled `SYSTEM` and rebuilt every run, as now. `just run` also attaches `home.img`, which `just disk` never
+  touches: a `just home-disk` recipe creates it **once, if missing**, formatted with the label `HOME` and its own volume ID, and seeded from a
+  `disk-home/` folder (`.profile` and `utf8-demo.txt`, which move there from the system image's `disk/root`, now an empty mount point);
+  `just home-reset` recreates it. The host may copy files in and out of `home.img` with `mtools` **only while QEMU is not running**: a host write to
+  a FAT volume the guest has mounted can corrupt it.
+- **Tests.** A second image per test group (the harness copies both, as it copies `disk.img` today), an `FSTAB` module attribute writing
+  `/etc/fstab` the way Stage 17's `ENVIRONMENT` writes the environment file, and `verify_disk` and `fsck.fat` on both after QEMU exits. Cases: a file
+  written under the mount is on the home image and not the system one, and the reverse; `..` out of a mount and `cd` into it; the same path from two
+  working directories; `ls /` shows the mount point and `ls /root` the home volume's contents; `mv` and `cp` across the mount; a missing, blank or
+  non-FAT home disk (the note, and `/root` on the system volume); `UUID=` and `LABEL=` sources, an ambiguous label, a bad `fstab`, a `/` line, `noauto`,
+  a mount point that is a file; `umount` with an open file (`EBUSY`) and with the working directory inside; the file cap and open handles counted
+  across volumes; and that a rebuilt system image with the same `home.img` still has the earlier files (the property the stage exists for).
 
-**Not in this stage:** more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but
-its label, mount options beyond the label and mount point (`ro`, `noatime`, ...), bind mounts, a mount of one volume
-inside another that is itself a mount (allowed, but untested beyond one level), and moving a directory across volumes.
+**Not in this stage:** more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but its label or volume ID (the
+virtio serial is not used), read-only mounts and the other mount options, bind mounts, `root=` on a kernel command line (the root is found by label),
+a mount of one volume inside another that is itself a mount (allowed, but untested beyond one level), and moving a directory across volumes.
 
 **Demo:** write a file under `/root`, power off, rebuild the system image (`just disk`), boot again with the same
-`data.img`, and the file is there -- and the same sequence without the data disk attached boots into an empty `/root`
+`home.img`, and the file is there -- and the same sequence without the home disk attached boots into an empty `/root`
 with a serial note instead of failing.
 
 ---
@@ -1225,7 +1229,7 @@ either direction).
 **Demo:** launch the editor from Stage 12's shell against a file already
 present on the disk image, edit its text on Stage 6's display using
 Stage 7's keyboard, save it, then -- to prove persistence, not just an
-in-memory illusion -- restart QEMU against the same `data.img` (Stage 19's persistent
+in-memory illusion -- restart QEMU against the same `home.img` (Stage 19's persistent
 disk, mounted at `/root`, where the file lives) with a *rebuilt* system image, and confirm
 the edit is still there.
 
