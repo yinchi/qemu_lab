@@ -65,3 +65,5 @@ pub mod usermem;
 pub mod utf8;
 #[path = "../../src/util.rs"]
 pub mod util;
+#[path = "../../../user/progs_r18/src/human.rs"]
+pub mod human;

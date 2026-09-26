@@ -62,7 +62,7 @@ def run(ctx):
 
     # ================================================================= no leftover temp files
     check("no leftover pipe temp files -- only the manually-created one from the collision test",
-          s.run("ls /tmp"), "ls /tmp\n.pipe0\n")
+          s.run("ls -a /tmp"), "ls -a /tmp\n.pipe0\n")
     s.run("rm /tmp/.pipe0")
 
     # ================================================================= each stage is a subshell (Stage 17)

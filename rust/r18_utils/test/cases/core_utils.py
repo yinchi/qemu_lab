@@ -47,7 +47,7 @@ def run(ctx):
     # sort-then-copy order, which is what ends up as the FAT on-disk order `ls` reports.
     bin_names = sorted(os.listdir(ctx.bin_dir))
     check("ls -F bin", s.run("ls -F bin"), "ls -F bin\n" + "".join(f"{n}*\n" for n in bin_names))
-    check("ls file", s.run_status("ls tests/hello.txt"), ("ls tests/hello.txt\nls: cannot open directory 'tests/hello.txt': Not a directory\n", 1))
+    check("ls file: a file operand is listed as itself (Stage 18; before it, `cannot open directory`)", s.run_status("ls tests/hello.txt"), ("ls tests/hello.txt\ntests/hello.txt\n", 0))
     check("ls bad option", s.run_status("ls -x"), ("ls -x\nls: invalid option -- 'x'\nTry 'ls --help' for more information.\n", 1))
 
     # --- cp ---

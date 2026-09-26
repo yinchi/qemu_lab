@@ -230,8 +230,9 @@ def run(ctx):
           f"{h_lines + n_lines} {h_words + n_words} {h_bytes + n_bytes} total\n")
 
     bin_names = sorted(os.listdir(ctx.bin_dir))
+    # Directory operands are listed in name order (Stage 18; before it, in the order given), each under its own header.
     check("ls with several directory operands", s.run("ls tests/docs bin"),
-          "ls tests/docs bin\ntests/docs:\nexample.txt\n\nbin:\n" + "".join(f"{n}\n" for n in bin_names))
+          "ls tests/docs bin\nbin:\n" + "".join(f"{n}\n" for n in bin_names) + "\ntests/docs:\nexample.txt\n")
 
     ex_size = len(example_txt)
     grouped = s.run("ls -lF tests/docs").split("\n", 1)[1]
@@ -251,18 +252,8 @@ def run(ctx):
     check("head -c and -n together is a usage error", s.run_status("head -n 1 -c 1 tests/hello.txt"), ("head -n 1 -c 1 tests/hello.txt\nhead: options '-n' and '-c' are mutually exclusive\nTry 'head --help' for more information.\n", 1))
 
     # ================================================================= --help
-    check("mkdir --help", s.run("mkdir --help"), "mkdir --help\nusage: mkdir DIR...\n")
-    check("rm --help", s.run("rm --help"), "rm --help\n"
-          "usage: rm [-r] [-f] PATH...\n"
-          "  -r  remove directories and their contents recursively\n"
-          "  -f  ignore nonexistent operands, never prompt\n")
-    check("mv --help", s.run("mv --help"), "mv --help\nusage: mv SRC... DST\n")
+    # (mkdir, rm, mv, cp and ls have more flags since Stage 18: their `--help` is checked in `flags.py`.)
     check("stat --help", s.run("stat --help"), "stat --help\nusage: stat FILE...\n")
-    check("cp --help", s.run("cp --help"), "cp --help\nusage: cp SRC... DST\n")
-    check("ls --help", s.run("ls --help"), "ls --help\n"
-          "usage: ls [-F] [-l] [dir...]\n"
-          "  -F  append / to directories and * to executable files\n"
-          "  -l  long format: d/w/x flags, size, name\n")
     check("wc --help", s.run("wc --help"), "wc --help\n"
           "usage: wc [-l] [-w] [-c] [-L] [file...]\n"
           "  -l  count lines\n"

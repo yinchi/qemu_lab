@@ -8,7 +8,7 @@
 | R | Insert the stage in the roadmap (Stage 18; the storage stage becomes 19, the editor 20, job control 21-26) | done |
 | 0 | Plain copy of `r17_env` as `r18_utils` | done |
 | 1 | The tier `progs_r18`; `rmdir`, `touch`, `seq`, `cmp` | done |
-| 2 | Flag catch-up: `mkdir -p -v`, `cp -r -n -v`, `mv -n -v -f`, `rm -v -d`, `ls -a -d -R -r -t -S -h` (dotfiles hidden by default) | planned |
+| 2 | Flag catch-up: `mkdir -p -v`, `cp -r -n -v`, `mv -n -v -f`, `rm -v -d`, `ls -a -d -R -r -t -S -h` (dotfiles hidden by default) | done |
 | 3 | Filters: `sort`, `uniq`, `cut`, `tr`, `find`, `fgrep`; pure helpers host-tested | planned |
 | 4 | Text-tool flags: `cat -n -E -T -s`, `head`/`tail` several files and `-n -N`/`-n +N`, `wc -m`, `echo -e -E` | planned |
 | 5 | Docs, roadmap "As built", regression sweep | planned |
@@ -58,6 +58,16 @@ New crate `user/progs_r18` (copy of `progs_r17`'s `Cargo.toml`, `build.rs`, `.ca
 ## Step 2 -- flag catch-up (overrides in `progs_r18`, reusing `progs_r16::{join, read_dir}`)
 `mkdir -p -v`; `cp -r/-R -n -v`; `mv -n -v -f` (`-f` accepted: nothing prompts); `rm -v -d`; `ls -a -d -R -r -t -S -h` plus hiding dot-names. Fallout: `pipes.py`'s `ls /tmp` and any listing of a dot-name gain `-a`;
 `core_utils`/`user_progs` derive `ls` output from the host directory, so they filter names starting `.`. Tests: group `flags`; docs rows say `From Stage 18:`.
+
+**As built (Step 2).** As planned, with these specifics:
+- Overrides `mkdir`, `cp`, `mv`, `rm`, `ls` in `progs_r18`, whose `lib.rs` now carries `join`, `read_dir`, `Entry` and `ReadDirError` (copied from `progs_r16`, not depended on: that crate pulls the time-zone database into the build) and the
+  pure `human.rs` (`ls -h`'s sizes, host-tested: 5 tests, 222 in all).
+- Behaviours taken from the host's coreutils rather than assumed: `cp -n` skips silently with status 0, `mv -n` says `mv: not replacing 'x'` and exits 1, `mkdir -p` reports a file in the way as `Not a directory` (middle) or `File exists` (last),
+  `ls -R` prints `dir:` headers with a blank line between and `.:` for no operand, `rm -rv` lists each entry then its directory. `cp -r` and `rm -r` walk entries in name order (GNU's is unspecified) so output is deterministic.
+- `ls`: hiding dot-names, listing a file operand as itself and sorting directory operands are **behaviour changes** (the old expectations were rewritten, not kept): `core_utils`' "ls file", `user_progs`' several-operand order, `pipes`' `ls /tmp` (now
+  `ls -a`), and the five `--help` texts (moved into `flags.py`). `-a` shows no `.`/`..` (the kernel never returns them). `-l` is unchanged (flags and size; no time column).
+- `cp -r tests/ct tests/ct` reports "into itself, 'tests/ct/ct'" because the destination is a directory (as GNU does); the same-file check only fires for a non-directory destination.
+- Tests: group `flags` (88 checks; `ls -t` waits 2 x 2.4 s of real time between three files). `just test` = 1250 checks.
 
 ## Step 3 -- filters
 Pure helpers in `progs_r18/src/{glob,cutlist,trset}.rs` (`no_std` + `alloc`, included into `hosttests` by `#[path]`): glob matcher (`* ? [a-z] [!..]`), `cut` list parser, `tr` set expander, `sort -n` key. Programs: `sort`, `uniq`, `cut`,
