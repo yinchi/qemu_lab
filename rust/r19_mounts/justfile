@@ -72,6 +72,12 @@ disk:
     # so the bundled files' fixed stamp must not depend on the build host's zone.
     TZ=UTC ../folder_to_img.sh disk.img 64M SYSTEM {{VOLUME_SERIAL}} disk
 
+# The repository's root, found with git, and the persistent HOME disk in it: one `home.img` for every stage from 19 on, so what
+# the user keeps on it survives moving from one stage to the next (each stage's `just run` attaches it beside its own, rebuilt,
+# system disk). It is gitignored, and no stage's `just disk` or tests touch it.
+repo_root := `git rev-parse --show-toplevel`
+HOME_IMG := repo_root / "home.img"
+
 # Creates home.img -- the persistent HOME disk -- if there is none, and leaves an existing one alone: it holds what the user
 # wrote, and `just disk` never rebuilds it. It is formatted FAT16 (32 MiB, sparse) with the label HOME and a random
 # volume ID of its own (the ID the kernel and `lsblk` tell it apart by), and seeded once from disk-home-seed/. That
@@ -83,19 +89,19 @@ home-disk:
     #!/usr/bin/env bash
     set -euo pipefail
     cd {{justfile_directory()}}
-    if [ -e home.img ]; then
-        echo "home.img exists, left alone (just home-reset recreates it, empty)"
+    if [ -e "{{HOME_IMG}}" ]; then
+        echo "{{HOME_IMG}} exists, left alone (just home-reset recreates it, empty)"
         exit 0
     fi
     id=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
-    TZ=UTC ../folder_to_img.sh home.img 32M HOME "$id" disk-home-seed
-    echo "created home.img: label HOME, volume ID ${id^^}"
+    TZ=UTC ../folder_to_img.sh "{{HOME_IMG}}" 32M HOME "$id" disk-home-seed
+    echo "created {{HOME_IMG}}: label HOME, volume ID ${id^^}"
 
 # Throws home.img away and makes a fresh one from disk-home-seed/.
 
 # Recreate home.img from the seed folder (destroys what is on it).
 home-reset:
-    rm -f {{justfile_directory()}}/home.img
+    rm -f {{HOME_IMG}}
     cd {{justfile_directory()}} && just home-disk
 
 # Run with serial connected to the terminal (stdio), the system disk (rebuilt by `just disk`) and the home disk
@@ -105,7 +111,7 @@ home-reset:
 # Run in QEMU.
 run: build disk home-disk
     qemu-system-aarch64 -M virt -cpu max -nodefaults -serial mon:stdio \
-        -drive if=none,file=home.img,id=hd1,format=raw -device virtio-blk-device,drive=hd1 \
+        -drive if=none,file={{HOME_IMG}},id=hd1,format=raw -device virtio-blk-device,drive=hd1 \
         -drive if=none,file=disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \

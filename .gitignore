@@ -17,3 +17,6 @@ rust/**/disk.img
 !rust/r10_repl/disk.img
 !rust/r11_busybox/disk.img
 __pycache__/
+# The persistent HOME disk (`just home-disk`, from Stage 19 on): user data at the repository root, shared by every stage's
+# `just run`, made once and never rebuilt or committed.
+/home.img

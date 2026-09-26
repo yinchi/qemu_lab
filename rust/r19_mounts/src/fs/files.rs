@@ -458,12 +458,20 @@ pub fn unlink(path: &str, remove_dir: bool) -> isize {
     }
 }
 
-/// Renames or moves the entry at `old` to `new`, within the same volume: two volumes are `EXDEV` (nothing is copied
-/// here; a program copies and removes), and so is a mount point on either side, `EBUSY`. Thin, literal wrapper
-/// over `hadris-fat`'s `rename`: refuses if `new` already names something (`EEXIST`), regardless of
-/// its type, and refuses moving a directory into its own descendant (`EINVAL`, from `InvalidPath`).
-/// Deliberately does not implement "move into an existing directory" or "replace an existing file"
-/// -- those are `mv`(1) behaviors, layered in userspace on top of `stat` + this + `unlink`.
+/// Renames or moves the entry at `old` to `new`, within the same volume, replacing what is at `new` as POSIX's
+/// `rename` does (from Stage 19; before it, an existing destination was `EEXIST` and `mv` unlinked it first, which
+/// across two volumes deleted it and then failed):
+///
+/// - a file replaces a file; a directory replaces an **empty** directory (`ENOTEMPTY` if it has anything in it);
+/// - a file onto a directory is `EISDIR`, a directory onto a file `ENOTDIR`;
+/// - the same path for both does nothing (`0`); a directory into its own subtree is `EINVAL`, checked before anything is
+///   removed;
+/// - two volumes are `EXDEV` (nothing is copied here; a program copies and removes), and a mount point on either side is
+///   `EBUSY`.
+///
+/// On FAT the replacement is not atomic: the old destination is removed and the source then renamed, so a failure or a
+/// crash between the two costs only the file that was to be replaced -- the source is still where it was.
+/// Deliberately does not implement "move into an existing directory": that is `mv`(1), layered in userspace.
 pub fn rename(old: &str, new: &str) -> isize {
     let table = mounts::table();
     if (old != "/" && table.is_mount_point(old)) || (new != "/" && table.is_mount_point(new)) {
@@ -483,6 +491,27 @@ pub fn rename(old: &str, new: &str) -> isize {
     };
     if old_entry.dev != dev {
         return EXDEV;
+    }
+    if old == new {
+        return 0;
+    }
+    // Into its own subtree: refused before anything is removed. (Paths are normalized, so this is a prefix test.)
+    if old_entry.is_directory() && new.strip_prefix(old).is_some_and(|rest| rest.starts_with('/')) {
+        return EINVAL;
+    }
+    let existing = match find_entry_checked(&new_parent, new_leaf) {
+        Ok(existing) => existing,
+        Err(e) => return e,
+    };
+    if let Some(existing) = existing {
+        match (old_entry.is_directory(), existing.is_directory()) {
+            (false, true) => return EISDIR,
+            (true, false) => return ENOTDIR,
+            _ => {}
+        }
+        if let Err(e) = vol(dev).delete(&existing) {
+            return map_fat_err(e); // a directory with contents: `ENOTEMPTY`
+        }
     }
     match vol(dev).rename(&old_entry.entry, &new_parent, new_leaf) {
         Ok(_) => 0,

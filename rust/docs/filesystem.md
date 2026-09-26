@@ -60,7 +60,7 @@ an image built before the label existed (`R12SH`) still boots on its own; a devi
 root. Only the root is opened as a filesystem (over a `BlkIo` on that device); nothing writes to the others.
 
 **The host side (Stage 19).** `just disk` labels the system image `SYSTEM` and rebuilds it on every run. The second
-disk, `home.img`, is the opposite: `just home-disk` creates it **once** (32 MiB FAT16, label `HOME`, a random volume ID)
+disk, `home.img`, is the opposite. It lives at the **repository root** (found with `git rev-parse --show-toplevel`), one file for every stage from 19 on, so what the user keeps on it survives moving to a later stage; `just home-disk` creates it **once** (32 MiB FAT16, label `HOME`, a random volume ID)
 from the folder `disk-home-seed/` and never touches it again, `just run` attaches it beside the system image, and
 `just home-reset` throws it away and recreates it. The seed folder is only the starting content of a new disk, not
 something kept in step with `home.img`. The host must not read or write `home.img` (with `mtools`, say) while QEMU has it
@@ -243,7 +243,7 @@ by the containing directory alone, as for a privileged process on Unix.
 |---|---|
 | `mkdir` | The parent must exist (`ENOENT`, or `ENOTDIR` if a component is a file) and the path must not (`EEXIST`); an invalid name is `EINVAL`. |
 | `unlink` | Removes a file, or with `AT_REMOVEDIR` an empty directory (`EISDIR`/`ENOTDIR` if the kind doesn't match, `ENOTEMPTY` if it isn't empty). Paths are normalized first, so `.` and `..` name the current and parent directory; a path that normalizes to `/` is `EINVAL`. |
-| `rename` | A literal rename or move within the volume: refuses if the destination already exists (`EEXIST`), and refuses moving a directory into itself or a descendant (`EINVAL`). `/` as either path is `EISDIR`. "Move into an existing directory" and "replace a file" are `mv`'s job, built in userspace on `stat` + `rename` + `unlink`. |
+| `rename` | A rename or move within the volume. Until Stage 19 it refused an existing destination (`EEXIST`); from Stage 19 it **replaces** one as POSIX's does (a file a file, a directory an empty directory; `EISDIR`/`ENOTDIR`/`ENOTEMPTY` for the rest, the same path a no-op), and always refuses moving a directory into itself or a descendant (`EINVAL`, before anything is removed). `/` as either path is `EISDIR`. "Move *into* an existing directory" is `mv`'s job, in userspace. |
 | `stat` | Every field a FAT entry stores: size, attributes, created/modified date-time, accessed date. Dates are FAT's packed encoding, not calendar values; the root has no entry of its own and reports size 0, directory, and the FAT epoch. |
 | `chmod` | As above. |
 

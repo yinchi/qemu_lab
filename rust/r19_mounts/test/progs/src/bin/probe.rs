@@ -32,6 +32,8 @@
 //!                      (0 is the keyboard, 3 is not open, 1 is the console, whose CLEAR would clear the screen)
 //!   probe getcwd N     the `getcwd` syscall with an N-byte buffer (N <= 4096): prints its return value and,
 //!                      if it succeeded, the path
+//!   probe rename OLD NEW  the `rename` syscall itself, with no `mv` rules on top: prints its return value (0 or the negative
+//!                      errno) -- for what it replaces and what it refuses
 //!   probe sp            prints the stack pointer `main` runs with
 //!   probe stack KIB     legitimately uses KIB KiB of stack (recursion, one KiB per frame) and prints a checksum
 //!   probe bs-wide       a wide glyph, backspace, then `X`: `X` must land on the glyph's left cell
@@ -198,6 +200,13 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
                 0
             }
             _ => usage_exit("probe getcwd N (N <= 4096)"),
+        },
+        Some("rename") => match (args.next(), args.next()) {
+            (Some(old), Some(new)) => {
+                let _ = writeln!(out, "rename: {}", userlib::rename(old, new));
+                0
+            }
+            _ => usage_exit("probe rename OLD NEW"),
         },
         Some("sp") => {
             let sp: usize;

@@ -1126,15 +1126,22 @@ there") is only honest with somewhere for the edit to live.
   `/etc/environment`, `$HOME`, `~/.profile`, the first prompt: the mounts must exist before `enter_home` looks for `$HOME`. With no home disk
   attached `/root` is an empty directory on the system volume, so the shell still starts there (writes to it are then as throwaway as the rest of
   that image, which the serial note says).
-- **A cross-volume `rename` is `EXDEV`** ("Invalid cross-device link"), as in Linux. `mv` (in a new tier, `progs_r19`, extending Stage 18's) falls
-  back to copy-then-remove for a file, as GNU `mv` does; a directory across volumes is reported, not yet moved.
+- **Moving between volumes, and the timestamps that make it honest.** A cross-volume `rename` is `EXDEV` ("Invalid cross-device link"), as in Linux,
+  and the kernel `rename` now **replaces** an existing destination (a file, or an empty directory) as POSIX's does, instead of `mv` unlinking it
+  first. A new **`utimensat` syscall** (Linux's number and `timespec` pair, `UTIME_NOW`/`UTIME_OMIT`, FAT's 2-second and 1980-2107 limits) sets a
+  file's or directory's modify and access times -- the one thing the earlier stages could not do -- so that **`mv`** (a new copy in `progs_r19`) can
+  fall back across volumes to a copy and a removal that keeps the times, for a file or a whole directory tree: the copy is made under a hidden
+  temporary name in the destination directory (`.mv-partial`), checked, renamed into place and only then is the source removed, so a failure leaves
+  the source whole and nothing half-copied under the real name. **`cp -p`** (times and the read-only/exec bits) and **`touch -d`, `-t`, `-r`** (in
+  the local time zone, as `date` shows it) come from the same syscall.
 - **`lsblk`, `mount` and `umount`: programs over new syscalls,** as on Linux (util-linux tools over `mount(2)`/`umount2(2)`, not builtins). A
   `blkinfo(index, &mut BlkInfo)` syscall reports each block device (size, label, volume ID, and once there is a mount table, where it is mounted), and
   `lsblk` lists them (`SIZE LABEL UUID MOUNTPOINT`, in device order -- no `vda`-style names, since there is no `/dev` to use one with). `mount(source, target, type)` and `umount(target)`
   syscalls take a source in the `fstab` spellings (`LABEL=X`, `UUID=X`) and do what an `fstab` line would; `mount` alone lists the table, and
   `umount` fails with `EBUSY` while a file on the volume is open or the working directory is inside it. The programs live in the new tier
   `progs_r19` beside `mv`. The shell's own start-up mounts through the same kernel function the syscall calls.
-- **The host side.** The system image is labelled `SYSTEM` and rebuilt every run, as now. `just run` also attaches `home.img`, which `just disk` never
+- **The host side.** The system image is labelled `SYSTEM` and rebuilt every run, as now. `just run` also attaches `home.img` -- **one file at the repository root, shared by every stage from this one on** (found with
+  `git rev-parse --show-toplevel`), so what the user keeps on it outlives the stage -- which `just disk` never
   touches: a `just home-disk` recipe creates it **once, if missing**, formatted with the label `HOME` and a random volume ID of its own, and
   seeded from a `disk-home-seed/` folder (named so, because it is only a starting point: it is not kept in step with `home.img` and nothing
   written to the disk goes back to it -- it holds `.profile` and `utf8-demo.txt`, which move there from the system image's `disk/root`, now an
@@ -1150,7 +1157,7 @@ there") is only honest with somewhere for the edit to live.
 
 **Not in this stage:** `mount` reading `/etc/fstab` (it takes both operands; a `noauto` line is only syntax-checked), stacked mounts on one point, mounting over a parent of a mount and one device at several points (each mount point holds one mount, none covers another, a volume is mounted once -- stricter than Linux on purpose; the rules are in `rust/docs/filesystem.md`), more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but its label or volume ID (the
 virtio serial is not used), read-only mounts and the other mount options, bind mounts, `root=` on a kernel command line (the root is found by label),
-a mount of one volume inside another that is itself a mount (allowed, but untested beyond one level), and moving a directory across volumes.
+a mount of one volume inside another that is itself a mount (allowed, but untested beyond one level), `touch -a`/`-m` (FAT stores an access *date* only and nothing shows it), preserving anything but times and the two attribute bits, and `mv -i`/`-u`/`-b`/`-t`/`-T`.
 
 **Demo:** write a file under `/root`, power off, rebuild the system image (`just disk`), boot again with the same
 `home.img`, and the file is there -- and the same sequence without the home disk attached boots into an empty `/root`
