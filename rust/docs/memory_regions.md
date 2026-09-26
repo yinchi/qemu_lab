@@ -98,7 +98,7 @@ This gives us 32 VirtIO device slots, each occupying `0x200` (512) bytes of memo
 - `0x004`: Version of the VirtIO specification implemented by the device.
 - `0x008`: Device ID to identify the type of VirtIO device.
 
-The `virtio_drivers` crate provides abstractions for interacting with VirtIO devices. See `drivers/virtio/gpu.rs` or `drivers/virtio/blk.rs` in `r16_brk/src/` (first written in `r06_virtio/`) for examples of how to instantiate drivers for specific VirtIO devices. The drivers themselves, and the HAL they share, are described in [`virtio.md`](virtio.md).
+The `virtio_drivers` crate provides abstractions for interacting with VirtIO devices. See `drivers/virtio/gpu.rs` or `drivers/virtio/blk.rs` in `<stage>/src/` (first written in `r06_virtio/`) for examples of how to instantiate drivers for specific VirtIO devices. The drivers themselves, and the HAL they share, are described in [`virtio.md`](virtio.md).
 
 The VirtIO device memory regions typically contain control and status registers for device interaction, but do not generally store persistent data; a register in the 512-byte VirtIO slot points to the actual location of the device's data in RAM (MMIO = memory-mapped I/O).  This might include the framebuffer for a GPU, or a data buffer for a block device (itself pointing to the actual data blocks loaded from the device to RAM).
 

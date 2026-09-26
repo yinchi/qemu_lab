@@ -994,6 +994,44 @@ Two things Stage 12 leaves for this stage, beyond `$VAR` and `$?` themselves: th
 retired (its 50-odd expectations across the `r12_shell` tests become explicit `echo $?` checks, or simply
 disappear), and `cd` with no operand goes to `$HOME`.
 
+**As built.** `r17_env` is `r16_brk` plus the following; `Stage17.md` holds the plan, the eleven working steps in the order they were
+committed, and a per-step "As built" note with the details this summary leaves out. The plan grew as it went: `$PATH`, `$PS1`, a
+per-user profile, subshell pipelines and dropping `.exe` were not in the list above.
+- **The environment reaches programs.** `envp` is a `NULL`-terminated array in `x2`, laid out right after `argv`'s `NULL` in one 16-byte-aligned
+  block (`exec/argplan.rs`); arguments and environment share the one 128 KiB `ARG_MAX` (`E2BIG` when they do not fit, before anything is
+  loaded). `userlib::env` (`env::var`, `env::vars`, opt in with `entry_with_env!`; the older entry macros are untouched, so every earlier
+  stage's binaries are unchanged) and a new program tier, `user/progs_r17`: `env`, `printenv`, and `date` and `stat` reading `$TZ`.
+- **POSIX-shaped variables.** A frame holds `Var { name, value, exported }`. `NAME=value` sets a shell variable (an existing one keeps its exported
+  flag; a new one is not exported); `export`/`unset` change the flag or remove; only exported variables are a program's `envp`.
+  `NAME=value command` gives that one command the variable (an overlay, put back afterwards, seen by a builtin too), and a command whose words all
+  expand to nothing makes its assignments the shell's own, as in bash. `export A=$X` is expanded as an assignment (not split), bash's rule for
+  its declaration commands. Scopes: `./script` and `sh` are a child (only the exported variables, all exported); `source` shares the frame; **each
+  stage of a pipeline is a subshell** (a full copy, discarded afterwards), so `cd`, `export`, `unset` and assignments in a stage do not touch the
+  shell, and the same alone do.
+- **Expansion.** `$NAME`, `${NAME}`, `$?` in unquoted and double-quoted words (single quotes and a backslash stop it; a `$` that names nothing
+  is text; `${` not followed by `NAME}` is a syntax error). Unquoted results are split at blanks, an unquoted empty one vanishes, `"$X"` is one
+  argument; a redirect target must come out as exactly one word (`ambiguous redirect`). The lexer's words became lists of parts (`lexer.rs`,
+  still `peg`) and `shell/expand.rs` (pure) does the rest; there is no globbing, tilde or command substitution.
+- **`$?` and the retired line.** One global status: a program's, 139 for a fault, 127 not found, 126 found but not runnable, 2 a syntax error,
+  1 for a failing builtin or redirect, a script's last line's. The automatic `exit N` line is gone; 86 test expectations became
+  `run_status(cmd) -> (transcript, status)` checks so each still verifies its status.
+- **The initial environment and start-up.** `/etc/environment` (plain `NAME=VALUE` lines, read once at boot; `/home` became `/root`; the general
+  image sets `HOME=/root`, `TZ=America/Toronto`, `PATH=/bin`, `PS1=\w> `) and, once `kernel_main` has brought the machine up, the shell's
+  own `start_up`: load the environment, `chdir` to `$HOME` (there is no login program, so the shell does it), run `~/.profile` (a script, in
+  the shell itself, as `source` would; the file's `$?` is left as it set it, as in bash and dash), then draw the first prompt. Every note goes on
+  the serial log before the prompt's `> `.
+- **`$PATH`** (unset means `/bin`, empty means nowhere, empty entries skipped, relative entries against the working directory) and `source`/`.`
+  searching it before the working directory. **The `.exe` naming is dropped**: programs are `bin/cat` and a name is looked up exactly as typed
+  (Stages 9-16 keep theirs).
+- **`$PS1`, limited:** `\w`, `\W`, `\$`, `\\` filled in each time a prompt is drawn (`shell/prompt.rs`, pure); no `$` expansion and no `\n`; unset or
+  empty is `> `. The line editor's prompt prefix became an owned string.
+- **Tests.** `just test` is 1083 checks over 35 groups (was 643 at the start of the stage), plus 217 host tests. New groups: `environment`, `env_bad`,
+  `env_missing`, `env`, `expansion`, `assignment`, `home`, `home_bad`, `path`, `prompt`, `prompt_env`, `profile`, `profile_bad`, `profile_big`. A module
+  sets its initial environment with `ENVIRONMENT` and its profile with `PROFILE`; the runner's parallelism can be capped with `QEMU_TEST_WORKERS`
+  (under CPU contention a timing check, typing during a large copy, can lose a key).
+- **Deliberately not done:** `set`/`declare` (`env` prints the exported variables only, as bash's does), positional parameters, `export -p`,
+  `~` expansion, control flow, `$OLDPWD`.
+
 ---
 
 ## Stage 18: persistent storage -- a second disk, mounts, `/etc/fstab` -- `r18_mounts`

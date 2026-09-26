@@ -27,8 +27,8 @@ graph TD;
     style main.rs fill:#373
     link.ld@{shape: doc}
     style link.ld fill:#373
-    r16_brk@{shape: doc}
-    style r16_brk fill:#a93
+    kernel@{shape: doc, label: "the stage's .elf"}
+    style kernel fill:#a93
 
     build.rs -- "invokes" --> cc -- "on" --> boot.s
     cc -- "on" --> other.S
@@ -43,13 +43,13 @@ graph TD;
     libboot_asm.a --> rust-lld
     link.ld --> rust-lld
 
-    rust-lld --> r16_brk
+    rust-lld --> kernel
 ```
 
 
 ## How it is wired together
 
-For the kernel (`rust/r16_brk/`):
+For the kernel (`rust/<stage>/`):
 
 - **The target and linker arguments** are in `.cargo/config.toml`: the build target is
   `aarch64-unknown-none-softfloat`, and `-C link-arg=-Tlink.ld` is how the linker script reaches `rust-lld`.
@@ -60,9 +60,9 @@ For the kernel (`rust/r16_brk/`):
 - **`build.rs`** finds every `.s`/`.S` file under `src/` (they live in `src/arch/`: `boot.s`, `context.s` and
   `vectors.s`), assembles them with the `cc` crate, and archives them as `libboot_asm.a`, which Cargo links
   into the kernel. It also tells Cargo to rebuild when `link.ld` or anything under `src/` changes.
-- **`just build`** runs `cargo build --release` and copies the result out of `target/` as `r16_brk.elf`, the
+- **`just build`** runs `cargo build --release` and copies the result out of `target/` as `<stage>.elf`, the
   file QEMU's `-kernel` loads. `just build-test` does the same with the `testhooks` feature, as
-  `r16_brk-test.elf` (see [`tests.md`](tests.md)).
+  `<stage>-test.elf` (see [`tests.md`](tests.md)).
 
 ## Linking and QEMU ELF file handling
 
@@ -105,7 +105,7 @@ SECTIONS
 build):
 
 ```
-> readelf -SW r16_brk.elf
+> readelf -SW <stage>.elf
 There are 11 section headers, starting at offset 0x2507a8:
 
 Section Headers:

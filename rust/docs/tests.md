@@ -2,8 +2,8 @@
 
 See also: [`shell.md`](shell.md) and [`console.md`](console.md) for the behavior most of the QEMU tests exercise, and [`progs.md`](progs.md) for the programs they run.
 
-The kernel is bare-metal AArch64 `no_std` code, so it cannot run `cargo test` on itself. `r16_brk` is
-tested in two layers, both run by `just test` (in `rust/r16_brk/`), which first runs a third, cheaper check that the
+The kernel is bare-metal AArch64 `no_std` code, so it cannot run `cargo test` on itself. The current stage (`<stage>`) is
+tested in two layers, both run by `just test` (in `rust/<stage>/`), which first runs a third, cheaper check that the
 docs are complete (below):
 
 | Layer | Recipe | Runs | Good for |
@@ -27,7 +27,7 @@ lexer's grammar is host-tested, and `pipes.py` checks that a pipeline actually r
 
 ## Host tests
 
-`rust/r16_brk/hosttests/` is a separate small Cargo crate (its own workspace, so it does not inherit
+`rust/<stage>/hosttests/` is a separate small Cargo crate (its own workspace, so it does not inherit
 the kernel's dependencies). Its `src/lib.rs` contains no logic of its own: it pulls chosen kernel source
 files in *by path*,
 
@@ -126,7 +126,7 @@ at once, at the point it happened, not at the next timeout.
 
 ### What is where
 
-Everything test-only lives under `rust/r16_brk/test/` or `disk/tests/`, never in `user/`, which holds only
+Everything test-only lives under `rust/<stage>/test/` or `disk/tests/`, never in `user/`, which holds only
 the core utilities every stage shares.
 
 | Path | What it is |
@@ -181,13 +181,13 @@ to prove a refactor changed nothing; it was retired afterwards for that reason).
 There is no command-line filter; to run a single module, call `run_group` on it from `test/`:
 
 ```console
-> cd rust/r16_brk && just build-test disk
+> cd rust/<stage> && just build-test disk
 > python3 -c "
 import sys, os
 sys.path.insert(0, 'test'); os.chdir('test')
 from run_tests import run_group
 from cases import line_editing
-for name, got, want in run_group(os.path.abspath('../r16_brk-test.elf'),
+for name, got, want in run_group(os.path.abspath('../<stage>-test.elf'),
         os.path.abspath('../disk.img'), os.path.abspath('../disk'), [line_editing]):
     print('PASS' if got == want else 'FAIL', name)
 "

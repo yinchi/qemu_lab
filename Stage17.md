@@ -17,7 +17,7 @@ updated as each Step lands (an "As built" note per Step, as `Stage12.md` does).
 | 9 | Drop the `.exe` naming: programs are `bin/cat`, not `bin/cat.exe` | done |
 | 10 | `$PS1`: a limited prompt string (working directory) | done |
 | 11 | `~/.profile`, and `source` searching `$PATH` | done |
-| 12 | Docs, roadmap, regression sweep | planned |
+| 12 | Docs, roadmap, regression sweep | done |
 
 ## Context
 Stage 17 (renumbered from old 16; see `ROADMAP.md`, "Before Capstone 1") gives the shell POSIX-shaped variables and gives programs a real
@@ -312,6 +312,13 @@ second environment file adds nothing over `export A=b` lines in one), following 
 and `x2`), `docs/filesystem.md` (`/etc/environment`, `/root`), `docs/tests.md` (environment-file injection, `ENVIRONMENT`), repoint `docs/*` from `r16_brk` to `r17_env`, `ROADMAP.md` Stage 17
 "As built" (and the `/etc/environment` + `/root` + `.profile` decisions; a persistent `/root` mount is *not* part of this stage and is raised separately), `just check-docs`, `just lint`. Regression: `r16_brk`, `r15_large_binaries`, ... `r11_busybox` (userlib and `progs` are shared:
 only additive changes allowed).
+
+**As built (Step 12).**
+- Docs: every `r16_brk` in `rust/docs` became `<stage>` (a placeholder for the newest stage's `rust/rNN_*/` directory, defined once in `docs/README.md`), so a later stage does not have to repoint them; `filesystem.md` describes `/etc/environment`, `/root` and `/root/.profile`; `README.md` rows updated for `$PATH`, the environment and start-up. `shell.md`, `progs.md`,
+  `launching_programs.md` and `tests.md` had been kept current step by step. `ROADMAP.md`: an "As built" section under Stage 17 (and Stage 18, persistent storage, was inserted before the editor, which moved every later stage up one).
+- `just check-docs` and `just lint` are clean; `just test` is 1083 checks and 217 host tests.
+- Regression, each stage's own suite run against the shared `userlib`/`progs` as changed by this stage (`env` module, `entry_with_env!`, comment-only edits in `start.s`, `heap.rs` and `abi/time.rs`): **all pass**: `r16_brk`, `r15_large_binaries`, `r14_file_times`, `r13_rtc`, `r12_shell` and `r11_busybox` run their own `just test` unchanged, and `r10_repl` and `r09_userspace` (no test
+  recipe) still build (`just build disk`). The rebuilds rewrote three tracked artifacts (`r10_repl/disk.img`, `r10_repl/disk/bin/echo`, `r11_busybox/disk.img`), which were restored with `git checkout`.
 
 ## Critical files
 `rust/r17_env/src/{exec/frame_stack.rs, exec/argplan.rs, exec/process.rs, shell/{lexer,syntax,builtins,launch,mod}.rs, shell/{environment,expand}.rs (new), main.rs}`,

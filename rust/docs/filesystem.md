@@ -1,7 +1,7 @@
 # The filesystem
 
 Programs see a single FAT16 volume mounted at `/`. The kernel does not implement FAT itself: the
-[`hadris-fat`](https://crates.io/crates/hadris-fat) crate does, and `rust/r16_brk/src/fs/` is the glue
+[`hadris-fat`](https://crates.io/crates/hadris-fat) crate does, and `rust/<stage>/src/fs/` is the glue
 between it, the block device below and the syscalls above.
 
 ```mermaid
@@ -26,7 +26,11 @@ flowchart TD
   (`folder_to_img.sh`: `mkfs.fat` plus `mtools`), so `disk/bin/cat` lands at `/bin/cat` (`cat.exe` before Stage 17). The volume
   serial and file timestamps are pinned, so the same inputs give a byte-identical image. The layout the shell
   relies on is `/bin` (programs) and `/tmp` (pipeline temp files; the shell needs it to exist); the image also
-  carries `/tests` (test programs and fixtures) and whatever else is in `disk/`.
+  carries `/tests` (test programs and fixtures), `/fonts` and whatever else is in `disk/`. From Stage 17 it also
+  carries **`/etc/environment`** (the shell's initial environment, `NAME=VALUE` lines read once at boot: `HOME=/root`,
+  `TZ`, `PATH=/bin`, `PS1`) and **`/root`**, the home directory (it was `/home` before Stage 17, renamed for the single
+  root user Linux would also give one): a demo text file and `/root/.profile`, the start-up script (see
+  [`shell.md`](shell.md)). The kernel never names `/root` or `/home`; only the environment file's `HOME` does.
 - **Mounting.** `kernel_main` opens the volume once, over a `BlkIo` (below), into the static `VOL`, and it stays
   mounted for the kernel's whole life. Everything else re-derives directories and files from it on each lookup;
   nothing else is cached. There is one volume: no mount points, no other filesystems.
