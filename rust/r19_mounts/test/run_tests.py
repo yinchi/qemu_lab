@@ -41,7 +41,7 @@ import subprocess
 import sys
 import tempfile
 
-from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools, flags, filters, textflags, disks, disks_first, disks_odd, disks_many, mounts, fstab, fstab_nodisk, fstab_bad, fstab_missing, rename, times, mv_volumes
+from cases import core_utils, launch, console, unicode, stack, line_discipline, wrapped_input, token_queue, cwd, syntax, redirection, scripts, user_progs, pipes, power, line_editing, stack_guard, clock, large, heap, audit, environment, env, env_bad, env_missing, expansion, assignment, home, home_bad, path, prompt, prompt_env, profile, profile_bad, profile_big, tools, flags, filters, textflags, disks, disks_first, disks_odd, disks_many, mounts, fstab, fstab_nodisk, fstab_bad, fstab_missing, rename, times, mv_volumes, mv_options, persist, mounts_deep
 from harness import DEFAULT_ENVIRONMENT, DEFAULT_FSTAB, Context, Session, file_hash, make_extra_disk, relabel, set_environment, set_fstab, set_profile
 
 GROUPS = [
@@ -96,6 +96,9 @@ GROUPS = [
     [rename],
     [times],
     [mv_volumes],
+    [mv_options],
+    [persist],
+    [mounts_deep],
 ]
 
 
@@ -173,7 +176,7 @@ def run_group(elf, orig_img, disk_dir, modules):
         results.append((name, got, want))
 
     s = Session(elf, img, workdir, extra_imgs)
-    ctx = Context(s, check, disk_dir, img, workdir, [path for path, _ in extra_imgs], extra_hashes)
+    ctx = Context(s, check, disk_dir, img, workdir, [path for path, _ in extra_imgs], extra_hashes, elf, orig_img)
     try:
         for case in modules:
             case.run(ctx)

@@ -472,7 +472,7 @@ pub fn unlink(path: &str, remove_dir: bool) -> isize {
 ///
 /// On FAT the replacement is not atomic: the old destination is removed and the source then renamed, so a failure or a
 /// crash between the two costs only the file that was to be replaced -- the source is still where it was. A rename keeps
-/// the entry's modify and access times (`hadris` would stamp it with the clock; POSIX leaves them alone).
+/// the entry's modify time (`hadris` would stamp it with the clock; POSIX leaves it alone).
 /// Deliberately does not implement "move into an existing directory": that is `mv`(1), layered in userspace.
 pub fn rename(old: &str, new: &str) -> isize {
     let table = mounts::table();
@@ -517,34 +517,29 @@ pub fn rename(old: &str, new: &str) -> isize {
     }
     match vol(dev).rename(&old_entry.entry, &new_parent, new_leaf) {
         Ok(moved) => {
-            // `hadris` stamps a renamed entry with the clock; a move is not a modification (POSIX leaves the times
-            // alone), so put the old ones back. Failing to is not failing the rename, which has happened.
-            let _ = vol(dev).set_times(&moved, Some(old_entry.entry.modified()), Some(old_entry.entry.accessed_date()), None);
+            // `hadris` stamps a renamed entry with the clock; a move is not a modification (POSIX leaves the time
+            // alone), so put the old one back. Failing to is not failing the rename, which has happened.
+            let _ = vol(dev).set_times(&moved, Some(old_entry.entry.modified()), None, None);
             0
         }
         Err(e) => map_fat_err(e),
     }
 }
 
-/// Sets the modify and access times of the file or directory at `path` (`utimensat`): each is the current time, left
-/// alone, or a Unix time in UTC that FAT can hold (1980-2107, else `EINVAL`). FAT keeps the modify time to 2 seconds and
-/// the access time as a date only, so the access time is the date of what was asked for; the creation time is not touched.
-/// A volume's root has no directory entry to hold times (`EINVAL`).
-pub fn set_times(path: &str, atime: TimeChoice, mtime: TimeChoice) -> isize {
+/// Sets the modify time of the file or directory at `path` (`utimensat`): the current time, left alone, or a Unix time in
+/// UTC that FAT can hold (1980-2107, else `EINVAL`), to 2 seconds. **The access time is accepted and ignored**: FAT stores an access
+/// *date* only, nothing here reads it or sets it (a file's is its modify date from when it was created or written), and a
+/// timestamp that coarse is not worth a behavior. The creation time is not touched. A volume's root has no directory entry
+/// to hold a time (`EINVAL`).
+pub fn set_times(path: &str, _atime: TimeChoice, mtime: TimeChoice) -> isize {
     use hadris_fat::time::TimeProvider;
-    let stamp = |choice: TimeChoice| -> Result<Option<FatDateTime>, isize> {
-        match choice {
-            TimeChoice::Omit => Ok(None),
-            TimeChoice::Now => Ok(Some(super::rtc_time::RTC_TIME.now())),
-            TimeChoice::At(unix) => {
-                let f = checked_fields(unix).ok_or(EINVAL)?;
-                Ok(Some(FatDateTime::new(f.year, f.month, f.day, f.hour, f.minute, f.second)))
-            }
-        }
-    };
-    let (modified, accessed) = match (stamp(mtime), stamp(atime)) {
-        (Ok(modified), Ok(accessed)) => (modified, accessed),
-        (Err(e), _) | (_, Err(e)) => return e,
+    let modified = match mtime {
+        TimeChoice::Omit => None,
+        TimeChoice::Now => Some(super::rtc_time::RTC_TIME.now()),
+        TimeChoice::At(unix) => match checked_fields(unix) {
+            Some(f) => Some(FatDateTime::new(f.year, f.month, f.day, f.hour, f.minute, f.second)),
+            None => return EINVAL,
+        },
     };
     if locate(path).1.is_empty() {
         return EINVAL;
@@ -553,7 +548,7 @@ pub fn set_times(path: &str, atime: TimeChoice, mtime: TimeChoice) -> isize {
         Ok(found) => found,
         Err(e) => return e,
     };
-    match vol(found.dev).set_times(&found.entry, modified, accessed.map(|t| t.date), None) {
+    match vol(found.dev).set_times(&found.entry, modified, None, None) {
         Ok(()) => 0,
         Err(_) => EIO,
     }

@@ -5,7 +5,7 @@
 //! A directory is copied by creating the destination directory and copying its entries into it, in name order; an
 //! existing destination directory is merged into. Every file's size is checked once it is closed: a copy that came up short
 //! (a full disk) is an error, not a quiet truncation. With `preserve`, a copied file keeps its executable and read-only bits
-//! and every copy keeps its modify time and access date -- a directory's after its contents are in, since putting entries in
+//! and every copy keeps its modify time -- a directory's after its contents are in, since putting entries in
 //! may touch it -- through `utimens` (Stage 19).
 
 extern crate alloc;
@@ -32,7 +32,7 @@ pub struct Copier {
     pub recursive: bool,
     pub no_clobber: bool,
     pub verbose: bool,
-    /// Keep the executable and read-only bits, and the modify time and access date.
+    /// Keep the executable and read-only bits, and the modify time.
     pub preserve: bool,
 }
 
@@ -58,12 +58,8 @@ impl Copier {
                 result = Err(Reported);
             }
         }
-        let time = |seconds: Option<i64>| seconds.map_or(TimeSet::Omit, TimeSet::At);
-        let r = utimens(
-            dst,
-            time(fat_to_unix(info.accessed_date, 0)),
-            time(fat_to_unix(info.modified_date, info.modified_time)),
-        );
+        let mtime = fat_to_unix(info.modified_date, info.modified_time).map_or(TimeSet::Omit, TimeSet::At);
+        let r = utimens(dst, TimeSet::Omit, mtime);
         if r < 0 {
             diag::report(self.prog, "failed to preserve timestamps for", dst, r);
             result = Err(Reported);

@@ -4,7 +4,8 @@ Setting times: the `utimensat` syscall (through `probe utimens`), `touch -d`/`-t
 `America/Toronto` (so a summer time shows `EDT` and a winter one `EST`, and `TZ=UTC` in front of a command changes how it
 reads a wall-clock time); the kernel stores UTC and `stat` converts for display.
 
-FAT keeps the modify time to 2 seconds and the access time as a date only, holds 1980 to 2107, and cannot set a creation time:
+FAT keeps the modify time to 2 seconds, holds 1980 to 2107, and cannot set a creation time (nor is the access time set: FAT has only
+an access *date*, so the syscall accepts an access time for Linux's shape and ignores it):
 each of those is a check below, as are the ways a time can be given (`@N`, a date, a date and clock, `T`, `Z`, POSIX's `-t`), the
 ones GNU accepts that this refuses, a daylight-saving gap and an ambiguous hour, `-r`, that `-d`, `-t` and `-r` exclude one
 another, a directory, and that nothing about a file's contents changes. `cp -p` keeps the modify time and the executable and
@@ -114,6 +115,7 @@ def run(ctx):
     s.run("touch -d 2000-01-01 p")
     old = modify("p")
     check("both omitted: a success that changes nothing", (probe("utimens p 0 omit 0 omit"), modify("p")), ("utimens: 0", old))
+    check("an access time is ignored, even one FAT could not hold", (probe("utimens p 0 0 0 omit"), modify("p")), ("utimens: 0", old))
     check("modify only (access omitted)", (probe("utimens p 0 omit 946684800 0"), modify("p")), ("utimens: 0", "1999-12-31 19:00:00 EST"))
     check("modify omitted: nothing moves", (probe("utimens p 946684800 0 0 omit"), modify("p")), ("utimens: 0", "1999-12-31 19:00:00 EST"))
     check("a fraction of a second is accepted and dropped", (probe("utimens p 0 omit 978307200 999999999"), modify("p")), ("utimens: 0", "2000-12-31 19:00:00 EST"))

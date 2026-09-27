@@ -71,7 +71,8 @@ pub const SYS_MOUNT: usize = 40;
 /// point, `EBUSY` for the root, for a mount with another mounted inside it, and for a volume with open files or a working
 /// directory inside it. Linux's number for `umount2`, minus its flags argument.
 pub const SYS_UMOUNT2: usize = 39;
-/// `utimensat(path, path_len, times)`: sets a file's or directory's access and modify times. `times` points to two
+/// `utimensat(path, path_len, times)`: sets a file's or directory's modify time (and, on Linux, its access time: **here the
+/// access time is accepted and ignored**, as FAT keeps only an access *date* and nothing reads or sets it). `times` points to two
 /// `timespec`s (`abi::time::UTIMES_SIZE`), access then modify; a `tv_nsec` of `UTIME_NOW` takes the current time for that one
 /// and `UTIME_OMIT` leaves it, and a null `times` is both `UTIME_NOW`. Linux's number and `timespec` pair, the rest simplified as
 /// for every path syscall (no dirfd, no flags). FAT keeps the modify time to 2 seconds and the access time as a date only, so

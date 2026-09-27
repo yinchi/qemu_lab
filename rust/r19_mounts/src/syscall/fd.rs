@@ -403,8 +403,8 @@ pub fn rename(old_ptr: usize, old_len: usize, new_ptr: usize, new_len: usize) ->
     files::rename(&old, &new)
 }
 
-/// Sets the access and modify times of the user-space path `ptr`/`len` from the two `timespec`s at `times_ptr` (a null
-/// pointer is both `UTIME_NOW`) -- see `files::set_times` and `abi::syscall::SYS_UTIMENSAT`.
+/// Sets the modify time of the user-space path `ptr`/`len` from the second of the two `timespec`s at `times_ptr` (the first, the
+/// access time, is checked and ignored; a null pointer is both `UTIME_NOW`) -- see `files::set_times` and `abi::syscall::SYS_UTIMENSAT`.
 pub fn utimensat(ptr: usize, len: usize, times_ptr: usize) -> isize {
     let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
     let path = match user_path(ptr, len).and_then(shell_state::absolute) {

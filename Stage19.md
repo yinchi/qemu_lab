@@ -12,7 +12,9 @@
 | 4a | Kernel `rename` replaces an existing destination (a file, or an empty directory), with POSIX's type checks | done |
 | 4b | The `utimensat` syscall (`abi`, `userlib`, kernel), `touch -d`/`-t`/`-r` and `cp -p` in `progs_r19` | done |
 | 4c | `mv` across volumes in `progs_r19`: copy, verify, rename into place, remove the source; files and directory trees, times and attribute bits kept | done |
-| 5 | Docs, roadmap "As built", regression sweep | |
+| 4d | The rest of `mv`'s options (`-i`, `-u`, `-b`, `-t`, `-T`); the access time dropped from the syscall and every program | done |
+| 5 | Docs, roadmap "As built", regression sweep | done |
+| C | Cleanup: the last test gaps (persistence across boots, `umount` with an open file, three-deep mounts, the open-file limit across volumes) | done |
 
 Steps were re-cut once Step 2 was designed: the `mount`/`umount` syscalls and programs (once Step 5) moved up into Step 2 so that mounting can be done and tested by hand before any `fstab` reads (as on Linux, `mount` came before `mount -a`); the kernel's `EXDEV` moved there too, because a `rename` across two volumes would otherwise corrupt both; the old Step 6 (host side) went into Step 1; and tests go with the step that adds the behavior instead of a step of their own.
 
@@ -116,5 +118,18 @@ Open point for the step: the virtio-mmio slot order QEMU produces for two `-devi
 - **A copy's modify time can be older than its creation time** (`stat` shows both): the creation time is the copy's own, as in a Windows copy; only the modify time and access date are set (`cp -p`, `mv` between volumes, `touch -d`).
 - **Docs.** `progs.md` (`mv`, `cp`), `syscalls.md` (`rename` keeps times, `write` gives `ENOSPC`), `tests.md`.
 
-## Step 5
-Left: docs and the roadmap's "As built", the regression sweep of the earlier stages (`abi` and `userlib` gained additive items), and a look at the leftovers list.
+## Step 4d -- `mv`'s options, and no access times
+- **`mv -i -u -b -t -T`** in `progs_r19` (the option set was taken from the host's coreutils, including its messages and exit statuses: a declined `-i` is status 1, a skipped `-u` is 0 and silent, `-b` keeps `NAME~` and `-v` says so). `-i` asks on standard error and reads the answer from standard input; the last of `-f`/`-i`/`-n` wins; `-t` values are gathered in the single option pass (the second-walk pitfall again). Group `mv_options` (65 checks). `-S`, `--backup=CONTROL` and `--update=...` are not there.
+- **Access times dropped, on the user's decision ("FAT doesn't store a fine enough resolution"):** `utimensat` still takes Linux's two `timespec`s but the **access time is accepted and ignored** (its `tv_nsec` is still validated); `rename` restores only the modify time; `touch` and `cp -p` and `mv` set only the modify time (`touch -r` reads only the reference's modify time); the access date FAT stores is left as the volume wrote it. `touch -a`/`-m` stay out for the same reason. `stat` never showed it.
+- **Left as they are, by decision:** `/etc/profile` (a `.profile` can simply be deleted, and would be restricted to what `/etc/profile` does not set if one is ever added), `vda`-style names, read-only mounts (a possible future step), `stat` of a mount point (the FAT epoch: Linux's FAT root shows an arbitrary time too), and the input flake's kernel fix (Stage 26).
+
+## Step 5 -- docs, roadmap, regression sweep
+- **Roadmap.** The Stage 19 section gained its "As built" (blocks, mounts, `fstab`, moving and times, behaviour changes, tests, lessons, what is left); the features text was kept as the plan it was, updated where the design moved (no `vda` names, the option list, `home.img` at the repository root, the timestamp syscall).
+- **Docs** (all stage-agnostic, "From Stage 19" where a change belongs to it): `syscalls.md`, `progs.md`, `filesystem.md` ("Which disk is which", "Mounts" with the rules and the Linux differences), `shell.md` ("`/etc/fstab`"), `virtio.md`, `tests.md`, `test/README.md`. `just check-docs`: 38 programs, 21 syscalls.
+- **Regression sweep** (each stage's own suite, newest first, one at a time): `r18_utils` passes; `r17_env` failed once on the input flake (`token_queue`'s typed-during-copy check, which the older stages still have) and passed on the retry; `r16_brk` down to `r11_busybox` pass; `r10_repl` and `r09_userspace` build. The tracked build products of `r09`-`r11` that the sweep rewrites were restored with `git checkout`.
+- **Final state:** `just test` in `r19_mounts` is 1955 checks (after the cleanup) and 316 kernel-crate host tests (21 more in `abi`); `just lint` clean.
+
+## Cleanup -- the last test gaps
+- **`persist`** boots four times in one group (the harness `Context` gained `elf` and `orig_img` so a module can start later boots on a **fresh copy of the freshly built system image**, as `just run` does after `just disk`): what was written to `HOME` survives -- same volume ID, a directory and files, appends -- what was written to the system volume does not, no home disk gives the note and an empty `/root`, and the disk is `fsck`-clean with the host reading the file. This is the demo's property, tested directly.
+- **`mounts_deep`**: three mounts deep (`/a`, `/a/b`, `/a/b/c`; four devices), lookups and `..` across all boundaries, the order they come off, and **`umount` with an open file** through `probe umount-open` (a program opens a file, or a directory, on the volume and asks to unmount it itself: `EBUSY` while open, allowed after -- and the mount inside an outer volume still blocks). Also **the open-file limit is one for all volumes** (`probe fds` now takes paths, opened in turn: four volumes give the same count as one). The roadmap's "untested beyond one level" is gone.
+- Counts: 1955 checks (+49); the earlier stages are unaffected (test-side only).

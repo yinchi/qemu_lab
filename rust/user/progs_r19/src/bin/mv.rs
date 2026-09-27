@@ -1,5 +1,7 @@
-//! `mv [-f] [-n] [-v] SRC... DST` -- see `docs/progs.md`. Stage 19's tier makes `mv` work **between two volumes**, where
-//! the kernel's `rename` says `EXDEV`: it then copies and removes.
+//! `mv [-f | -i | -n] [-u] [-b] [-v] [-T | -t DIR] SRC... DST` -- see `docs/progs.md`. Stage 19's tier makes `mv` work **between two
+//! volumes**, where the kernel's `rename` says `EXDEV`: it then copies and removes; and adds `-i` (ask before replacing), `-u` (only
+//! replace an older file), `-b` (keep the replaced file as `NAME~`), `-t DIR` (move into `DIR`) and `-T` (`DST` is never a directory
+//! to move into).
 //!
 //! On one volume nothing changed: `DST` is probed with `stat`, `rename` does the move, and it replaces an existing file
 //! itself (Stage 18 removed the target first, which across volumes lost it when the rename then failed). When `rename`
@@ -21,6 +23,7 @@
 extern crate alloc;
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write;
 
 use abi::errno::{EEXIST, EINVAL, ENOENT, ENOSPC, ENOTDIR, EXDEV};
@@ -29,20 +32,53 @@ use progs::{Fd, basename, diag, errmsg, help};
 use progs_r12::cli;
 use progs_r18::join;
 use progs_r19::copy::{Copier, remove_tree};
-use userlib::{ATTR_DIRECTORY, ExitCode, rename, stat, unlink};
+use progs_r19::stamp::fat_to_unix;
+use userlib::{ATTR_DIRECTORY, ExitCode, read, rename, stat, unlink};
 
 userlib::entry_with_args!(run);
 
-const USAGE: &str = "mv [-f] [-n] [-v] SRC... DST";
+const USAGE: &str = "mv [-f | -i | -n] [-u] [-b] [-v] [-T | -t DIR] SRC... DST";
 const FLAGS: &[(&str, &str)] = &[
-    ("-f", "accepted and ignored: nothing here prompts"),
+    ("-f", "replace without asking (the default; the last of -f, -i and -n wins)"),
+    ("-i", "ask before replacing an existing target (y to go on)"),
     ("-n", "do not replace an existing target"),
+    ("-u", "replace only a target that is older than the source"),
+    ("-b", "keep a replaced file as NAME~"),
+    ("-t DIR", "move every SRC into the directory DIR"),
+    ("-T", "treat DST as a file, never as a directory to move into"),
     ("-v", "print what is being moved"),
 ];
 
+/// What to do when the target already exists.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overwrite {
+    Force,
+    Interactive,
+    NoClobber,
+}
+
 struct Options {
-    no_clobber: bool,
+    overwrite: Overwrite,
+    update: bool,
+    backup: bool,
     verbose: bool,
+}
+
+/// Asks whether to replace `target`, on standard error, and reads the answer from standard input: yes if it starts with `y`.
+fn confirm(target: &str) -> bool {
+    let _ = write!(Fd(2), "mv: overwrite '{target}'? ");
+    let mut line = [0u8; 64];
+    let n = read(0, &mut line);
+    n > 0 && line[..n as usize].iter().find(|b| !b.is_ascii_whitespace()).is_some_and(|b| b.eq_ignore_ascii_case(&b'y'))
+}
+
+/// Whether `src` was modified after `target` (FAT's 2-second steps: the same stamp is not newer).
+fn newer(src: &str, target: &str) -> bool {
+    let (Ok(s), Ok(t)) = (stat(src), stat(target)) else { return true };
+    match (fat_to_unix(s.modified_date, s.modified_time), fat_to_unix(t.modified_date, t.modified_time)) {
+        (Some(s), Some(t)) => s > t,
+        _ => true,
+    }
 }
 
 /// Why a move failed: the kernel's error, for `move_one` to word, or something already reported.
@@ -133,16 +169,45 @@ fn move_one(src: &str, dst: &str, dst_is_dir: bool, o: &Options) -> Result<(), (
         let _ = writeln!(Fd(2), "mv: '{src}' and '{target}' are the same file");
         return Err(());
     }
-    if o.no_clobber && stat(target).is_ok() {
-        // As GNU's `mv -n` does: say so, and count it as a failure.
-        let _ = writeln!(Fd(2), "mv: not replacing '{target}'");
-        return Err(());
+    // What is there already decides whether, and how, to go on -- for a file; a directory in the way is `try_move`'s to refuse.
+    let mut backup: Option<String> = None;
+    if let Ok(existing) = stat(target)
+        && existing.attrs & ATTR_DIRECTORY == 0
+    {
+        if o.update && !newer(src, target) {
+            return Ok(()); // as GNU's `mv -u`: nothing to do is not a failure, and not worth a word
+        }
+        match o.overwrite {
+            // As GNU's `mv -n` does: say so, and count it as a failure.
+            Overwrite::NoClobber => {
+                let _ = writeln!(Fd(2), "mv: not replacing '{target}'");
+                return Err(());
+            }
+            Overwrite::Interactive if !confirm(target) => return Err(()),
+            _ => {}
+        }
+        if o.backup {
+            let kept = alloc::format!("{target}~");
+            let r = rename(target, &kept);
+            if r < 0 {
+                diag::cannot("mv", "backup", target, r);
+                return Err(());
+            }
+            backup = Some(kept);
+        }
     }
 
     match try_move(src, target) {
         Ok(()) => {
             if o.verbose {
-                let _ = writeln!(Fd(1), "renamed '{src}' -> '{target}'");
+                match backup {
+                    Some(kept) => {
+                        let _ = writeln!(Fd(1), "renamed '{src}' -> '{target}' (backup: '{kept}')");
+                    }
+                    None => {
+                        let _ = writeln!(Fd(1), "renamed '{src}' -> '{target}'");
+                    }
+                }
             }
             Ok(())
         }
@@ -184,58 +249,88 @@ fn run(args: userlib::Args) -> ExitCode {
 }
 
 fn mv(args: userlib::Args) -> Result<ExitCode, ExitCode> {
-    let mut o = Options { no_clobber: false, verbose: false };
-    let (mut count, mut first, mut last) = (0usize, None, None);
+    let mut o = Options { overwrite: Overwrite::Force, update: false, backup: false, verbose: false };
+    let mut target_dir: Option<&str> = None;
+    let mut no_target = false;
+    let mut operands: Vec<&str> = Vec::new();
     let mut opts = cli::opts(args);
     while let Some(arg) = cli::next("mv", &mut opts)? {
         match arg {
             Arg::Long("help") => return Ok(help(USAGE, FLAGS)),
-            Arg::Short('f') | Arg::Long("force") => {}
-            Arg::Short('n') | Arg::Long("no-clobber") => o.no_clobber = true,
+            Arg::Short('f') | Arg::Long("force") => o.overwrite = Overwrite::Force,
+            Arg::Short('i') | Arg::Long("interactive") => o.overwrite = Overwrite::Interactive,
+            Arg::Short('n') | Arg::Long("no-clobber") => o.overwrite = Overwrite::NoClobber,
+            Arg::Short('u') | Arg::Long("update") => o.update = true,
+            Arg::Short('b') | Arg::Long("backup") => o.backup = true,
             Arg::Short('v') | Arg::Long("verbose") => o.verbose = true,
-            Arg::Positional(operand) => {
-                count += 1;
-                first.get_or_insert(operand);
-                last = Some(operand);
-            }
+            Arg::Short('T') | Arg::Long("no-target-directory") => no_target = true,
+            Arg::Short('t') | Arg::Long("target-directory") => target_dir = Some(cli::value("mv", &mut opts)?),
+            Arg::Positional(operand) => operands.push(operand),
             other => return Err(cli::invalid("mv", other)),
         }
     }
-    let Some(dst) = last.filter(|_| count >= 2) else {
-        return Err(match first {
-            Some(src) => diag::missing_destination_operand("mv", src),
-            None => diag::missing_file_operand("mv"),
-        });
-    };
+    if target_dir.is_some() && no_target {
+        let _ = writeln!(Fd(2), "mv: cannot combine --target-directory (-t) and --no-target-directory (-T)");
+        return Err(ExitCode(1));
+    }
 
-    let dst_is_dir = match stat(dst) {
-        Ok(info) => info.attrs & ATTR_DIRECTORY != 0,
-        Err(ENOENT) => false,
-        Err(e) => {
-            diag::cannot("mv", "stat", dst, e);
-            return Ok(ExitCode(1));
+    // Where they go, and which operands are the things to move.
+    let (dst, sources): (&str, &[&str]) = match target_dir {
+        Some(dir) => {
+            if operands.is_empty() {
+                return Err(diag::missing_file_operand("mv"));
+            }
+            match stat(dir) {
+                Ok(info) if info.attrs & ATTR_DIRECTORY != 0 => {}
+                Ok(_) => {
+                    let _ = writeln!(Fd(2), "mv: target directory '{dir}': {}", errmsg(ENOTDIR));
+                    return Ok(ExitCode(1));
+                }
+                Err(e) => {
+                    let _ = writeln!(Fd(2), "mv: target directory '{dir}': {}", errmsg(e));
+                    return Ok(ExitCode(1));
+                }
+            }
+            (dir, &operands[..])
+        }
+        None => {
+            let Some((&dst, sources)) = operands.split_last().filter(|(_, sources)| !sources.is_empty()) else {
+                return Err(match operands.first() {
+                    Some(src) => diag::missing_destination_operand("mv", src),
+                    None => diag::missing_file_operand("mv"),
+                });
+            };
+            if no_target && sources.len() > 1 {
+                return Err(diag::extra_operand("mv", sources[1]));
+            }
+            (dst, sources)
         }
     };
 
-    let n_src = count - 1;
-    if n_src > 1 && !dst_is_dir {
+    let dst_is_dir = target_dir.is_some()
+        || (!no_target
+            && match stat(dst) {
+                Ok(info) => info.attrs & ATTR_DIRECTORY != 0,
+                Err(ENOENT) => false,
+                Err(e) => {
+                    diag::cannot("mv", "stat", dst, e);
+                    return Ok(ExitCode(1));
+                }
+            });
+
+    if sources.len() > 1 && !dst_is_dir {
         return Err(diag::target_not_directory("mv", dst));
     }
-    if dst.ends_with('/') && !dst_is_dir {
-        let src = first.unwrap_or(dst);
-        let _ = writeln!(Fd(2), "mv: cannot move '{src}' to '{dst}': {}", errmsg(ENOTDIR));
+    if !no_target && dst.ends_with('/') && !dst_is_dir {
+        let _ = writeln!(Fd(2), "mv: cannot move '{}' to '{dst}': {}", sources[0], errmsg(ENOTDIR));
         return Ok(ExitCode(1));
     }
 
     let mut status = 0;
-    for (i, src) in cli::operands(args).enumerate() {
-        if i == count - 1 {
-            break; // this operand is dst itself
-        }
+    for src in sources {
         if move_one(src, dst, dst_is_dir, &o).is_err() {
             status = 1;
         }
     }
-
     Ok(ExitCode(status))
 }

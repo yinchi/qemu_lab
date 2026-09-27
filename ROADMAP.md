@@ -1129,7 +1129,7 @@ there") is only honest with somewhere for the edit to live.
 - **Moving between volumes, and the timestamps that make it honest.** A cross-volume `rename` is `EXDEV` ("Invalid cross-device link"), as in Linux,
   and the kernel `rename` now **replaces** an existing destination (a file, or an empty directory) as POSIX's does, instead of `mv` unlinking it
   first. A new **`utimensat` syscall** (Linux's number and `timespec` pair, `UTIME_NOW`/`UTIME_OMIT`, FAT's 2-second and 1980-2107 limits) sets a
-  file's or directory's modify and access times -- the one thing the earlier stages could not do -- so that **`mv`** (a new copy in `progs_r19`) can
+  file's or directory's modify time (the access time is accepted and ignored: FAT has only an access date) -- the one thing the earlier stages could not do -- so that **`mv`** (a new copy in `progs_r19`) can
   fall back across volumes to a copy and a removal that keeps the times, for a file or a whole directory tree: the copy is made under a hidden
   temporary name in the destination directory (`.mv-partial`), checked, renamed into place and only then is the source removed, so a failure leaves
   the source whole and nothing half-copied under the real name. **`cp -p`** (times and the read-only/exec bits) and **`touch -d`, `-t`, `-r`** (in
@@ -1157,11 +1157,38 @@ there") is only honest with somewhere for the edit to live.
 
 **Not in this stage:** `mount` reading `/etc/fstab` (it takes both operands; a `noauto` line is only syntax-checked), stacked mounts on one point, mounting over a parent of a mount and one device at several points (each mount point holds one mount, none covers another, a volume is mounted once -- stricter than Linux on purpose; the rules are in `rust/docs/filesystem.md`), more than one filesystem type, hot-plug, device nodes (`/dev`) or naming a disk by anything but its label or volume ID (the
 virtio serial is not used), read-only mounts and the other mount options, bind mounts, `root=` on a kernel command line (the root is found by label),
-a mount of one volume inside another that is itself a mount (allowed, but untested beyond one level), `touch -a`/`-m` (FAT stores an access *date* only and nothing shows it), preserving anything but times and the two attribute bits, and `mv -i`/`-u`/`-b`/`-t`/`-T`.
+`touch -a`/`-m` (FAT has only an access date, which nothing reads, so there is no access-time behavior anywhere), preserving anything but the modify time and the two attribute bits, and `mv -S`.
 
 **Demo:** write a file under `/root`, power off, rebuild the system image (`just disk`), boot again with the same
 `home.img`, and the file is there -- and the same sequence without the home disk attached boots into an empty `/root`
 with a serial note instead of failing.
+
+**As built.** `r19_mounts` is `r18_utils` plus kernel, shell and program changes; `Stage19.md` holds the plan, the steps as they were committed and a per-step "As built" note. The steps were re-cut as the
+design settled (mounting by hand came before `fstab`; the host side folded into Step 1; the timestamp syscall and `mv` split into three commits).
+- **Block devices (Step 1).** Every virtio-blk device is found (up to four; `BLK`/`BLK_SPI` are arrays, one `BlkIo` and one interrupt each) and each one's first sector is parsed by the pure `fs/bootsector.rs`
+  into a label and a volume ID. The root is the volume labelled `SYSTEM`, else the first FAT volume, so images from earlier stages boot. QEMU numbers the slots against the command line, which is why nothing
+  goes by order. A `blkinfo` syscall (1000, not a Linux number) and `lsblk` (`SIZE LABEL UUID MOUNTPOINT`, in device order) show them: **no `vda` names**, since there is no `/dev` and no stage gives a program
+  raw disk access.
+- **Mounts (Step 2).** A pure mount table (`fs/mounttable.rs`), one open volume per device (`VOL` is gone; `Located` carries the device), every path resolved through the table, open files counted per device.
+  `mount SOURCE TARGET` and `umount TARGET` are programs over syscalls 40 and 39. The rules are recorded in `rust/docs/filesystem.md`: longest point wins; a mount goes on a directory of whatever volume its
+  path resolves to; a point holds one mount, none covers another, a volume is mounted once (stricter than Linux on purpose); `umount` is `EBUSY` for the root, a mount with another inside, an open file or a
+  working directory; a mount point cannot be removed or renamed.
+- **`/etc/fstab` (Step 3).** Parsed by the pure `shell/fstab.rs` and applied first in the shell's start-up (fstab, environment, `$HOME`, profile, prompt). Options are `defaults` (= `auto,fail`),
+  `auto`/`noauto`, `fail`/`nofail` and nothing else; every problem is a serial note. `/root` is the mount point of `HOME`; the image's `/root` is an empty directory, and the demo files and `.profile` come from
+  `disk-home-seed/` when `just home-disk` first creates `home.img` -- **one file at the repository root shared by every stage from here on**.
+- **Moving and timestamps (Step 4).** The kernel `rename` **replaces** (file over file, directory over an empty directory), keeps the entry's times (`hadris` had been stamping renamed entries with the clock
+  since Stage 12) and is `EXDEV` across volumes; a full volume is `ENOSPC` instead of `EIO`. A new `utimensat` (88) sets the modify time (the access time is accepted and ignored: FAT has only an access date), so `touch -d`/`-t`/`-r`, `cp -p` and `mv -u` exist, and `mv` gained `-i`, `-u`, `-b`, `-t` and `-T`; `mv` copies across
+  volumes, files and trees, under a hidden `.mv-partial` name, checked, renamed into place, and only then removes the source. All of it lives in the tier `progs_r19`, which also holds the shared copy engine.
+- **Behaviour changes from earlier stages** (their tests were rewritten): `touch` can touch a directory and a read-only file; `rename` keeps modify times and replaces; `cp --help`/`touch --help` grew; a
+  cross-volume replace no longer deletes the target first. The ABI grew only additively (`EBUSY`, `EXDEV`, `ENODEV`, syscalls 88, 40, 39, 1000).
+- **Pure, host-tested:** `bootsector`, `mounttable`, `fstab`, `fattime` (choose/checked), `frame_stack::cwds`, and in the tier `table`, `spell`, `stamp`: 316 kernel-crate tests (was 260) plus 21 in `abi`.
+- **Tests:** `just test` is **1955 checks** (was 1468). New groups `disks` (four), `mounts`, `mounts_deep`, `fstab` (four), `persist` (the stage's own property: four boots on rebuilt system images and one home disk), `rename`, `times`, `mv_volumes` and `mv_options`; the harness learned `EXTRA_DISKS` (FAT, blank or noise disks, before or
+  after the system image, with `files`), `SYSTEM_LABEL`/`SYSTEM_ID`, and `FSTAB` (an **empty** file by default, so no group's disks are mounted by the image's own line); `probe` gained `rename`, `utimens*`, `umount-open` and `fds PATH...`. Every extra image is `fsck.fat`-checked after its group. The regression sweep passes: `r18_utils` down to `r11_busybox` run their own suites (`r17_env` needed one retry for the old input flake, which older stages still have), `r10_repl` and `r09_userspace` build; the shared `abi` and `userlib` changes are additive.
+- **Lessons kept:** the deferred input flake (Stage 26) turned out to be a **window of about half a second after a program starts** in which the guest's 32-buffer virtio-input queue overflows while interrupts are
+  masked (type-ahead there is really lost); the test that races it now types a second late instead of retrying. `rm -r` on a mount point empties the volume and then fails on the point, as GNU does. `hadris`' `rename`
+  and full-disk errors needed the kernel to translate them. A copy's modify time can precede its creation time; that is normal.
+- **Left for later, by decision:** `mount` reading `/etc/fstab`, stacked or covering mounts, `/etc/profile` (a `.profile` can be deleted instead), `touch -a`/`-m`, `mv -S`, `vda`-style names and `/dev` (with raw disk access),
+  read-only mounts (a possible future step), and the kernel-side fix for the input flake (Stage 26).
 
 ---
 

@@ -4,7 +4,10 @@
 //!
 //!   probe sys-unknown   an unassigned syscall number
 //!   probe bad-ptr       bad or wrapping pointers/lengths given to write/read/open/chmod
-//!   probe fds           opens files until the kernel says no, then closes them all
+//!   probe fds [PATH...] opens files (PATH..., taken in turn -- on different volumes if they are; `/tests/notes.txt` if none) until the
+//!                      kernel says no, then closes them all
+//!   probe umount-open TARGET FILE  opens FILE (which is on the volume mounted at TARGET), asks to `umount` TARGET -- refused, the file
+//!                      is open -- then closes the file and asks again: prints both results
 //!   probe close-out     closes fd 1, tries to write to it, and reports both results on fd 2 -- run as
 //!                      `> f 2>&1` to show that closing one fd leaves the file the other fd shares open
 //!   probe brk           the program break: where the heap starts, growing by a page and a byte, zero and writable
@@ -93,9 +96,22 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
             0
         }
         Some("fds") => {
-            fds(&mut out);
+            fds(&mut out, args);
             0
         }
+        Some("umount-open") => match (args.next(), args.next()) {
+            (Some(target), Some(file)) => {
+                let fd = userlib::open(file, userlib::O_RDONLY);
+                let while_open = userlib::umount(target);
+                if fd >= 0 {
+                    userlib::close(fd as usize);
+                }
+                let after = userlib::umount(target);
+                let _ = writeln!(out, "open {}, umount while open: {while_open}, umount after close: {after}", if fd >= 0 { "ok" } else { "failed" });
+                0
+            }
+            _ => usage_exit("probe umount-open TARGET FILE"),
+        },
         Some("close-out") => {
             let closed = userlib::close(1);
             let written = userlib::write(1, b"lost");
@@ -306,11 +322,21 @@ fn bad_ptr(out: &mut Fd) {
     }
 }
 
-fn fds(out: &mut Fd) {
+fn fds(out: &mut Fd, paths: userlib::Args) {
     let mut opened = 0usize;
     let mut fds = [0usize; 32];
+    let mut given = [""; 8];
+    let mut n_given = 0;
+    for path in paths.take(given.len()) {
+        given[n_given] = path;
+        n_given += 1;
+    }
+    if n_given == 0 {
+        given[0] = "/tests/notes.txt";
+        n_given = 1;
+    }
     let stopped_by = loop {
-        let fd = userlib::open("/tests/notes.txt", userlib::O_RDONLY);
+        let fd = userlib::open(given[opened % n_given], userlib::O_RDONLY);
         if fd < 0 || opened == fds.len() {
             break fd;
         }

@@ -397,7 +397,7 @@ class Context:
     """What a case module gets: the live `session`, a `check(name, got, want)` that records a
     PASS/FAIL, and the host-side paths it may need."""
 
-    def __init__(self, session, check, disk_dir, img, workdir, extra_imgs=(), extra_hashes=()):
+    def __init__(self, session, check, disk_dir, img, workdir, extra_imgs=(), extra_hashes=(), elf=None, orig_img=None):
         self.s = session
         self.check = check
         self.tests_dir = os.path.join(disk_dir, "tests")
@@ -412,6 +412,11 @@ class Context:
         self.workdir = workdir
         self.extra_imgs = list(extra_imgs)
         """The paths of the group's extra disks (module attribute `EXTRA_DISKS`), in that order."""
+        self.elf = elf
+        """The kernel the group boots (a module that boots again itself needs it)."""
+        self.orig_img = orig_img
+        """The freshly built system image the group's own copy was made from: a second boot on a *rebuilt* system image starts
+        from a copy of this, not of `img` (which the first boot has changed)."""
         self.extra_hashes = list(extra_hashes)
         """Each extra disk's `file_hash` from before boot -- unequal afterwards means the guest wrote to it."""
 

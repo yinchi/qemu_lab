@@ -85,8 +85,7 @@ pub fn parse_stamp(text: &str, year: i32) -> Option<NaiveDateTime> {
 
 /// A FAT directory entry's packed date and time (date: bits 0-4 day, 5-8 month, 9-15 year since 1980; time: bits 0-4
 /// seconds/2, 5-10 minutes, 11-15 hours) as seconds since 1970, the stamp being UTC (the kernel stores UTC, Stage 14).
-/// `None` for fields that are not a real date, which FAT will store all the same. A date alone (an *access* date) is
-/// this with a `time` of 0.
+/// `None` for fields that are not a real date, which FAT will store all the same.
 pub fn fat_to_unix(date: u16, time: u16) -> Option<i64> {
     let (year, month, day) = (1980 + u32::from(date >> 9), u32::from((date >> 5) & 0x0f), u32::from(date & 0x1f));
     let (hour, minute, second) = (u32::from(time >> 11), u32::from((time >> 5) & 0x3f), u32::from(time & 0x1f) * 2);

@@ -1,11 +1,11 @@
 //! `touch [-c] [-d STRING | -t STAMP | -r FILE] FILE...` -- see `docs/progs.md`. Creates a file that does not exist, and sets the
-//! modify and access times of each operand -- to now, or to the time `-d`, `-t` or `-r` names -- without changing what is
+//! modify time of each operand -- to now, or to the time `-d`, `-t` or `-r` names -- without changing what is
 //! in it. A directory can be touched too.
 //!
 //! Stage 18's `touch` could only make the time now (it opened the file for append and closed it, which stamps it); with
 //! the `utimensat` syscall (Stage 19) any time FAT can hold can be set. Times written as wall-clock (`-d 2024-05-01 12:00`,
 //! `-t 202405011200`) are in the local zone, `$TZ`, as `date` and `stat` show them; the kernel stores UTC. FAT keeps
-//! the modify time to 2 seconds and the access time as a date only.
+//! the modify time to 2 seconds, and its access time (a date only, which nothing reads) is not touched.
 
 #![no_std]
 #![no_main]
@@ -37,10 +37,10 @@ const FLAGS: &[(&str, &str)] = &[
 /// Where the time comes from.
 enum Source {
     Now,
-    /// `-d`/`-t`: one instant, for both times.
+    /// `-d`/`-t`: one instant.
     At(i64),
-    /// `-r`: the reference file's modify time and access date.
-    Reference(TimeSet, TimeSet),
+    /// `-r`: the reference file's modify time.
+    Reference(TimeSet),
 }
 
 fn invalid_date(text: &str) -> ExitCode {
@@ -96,10 +96,8 @@ fn touch(args: userlib::Args) -> Result<ExitCode, ExitCode> {
                 let reference = cli::value("touch", &mut opts)?;
                 match stat(reference) {
                     Ok(info) => {
-                        let time = |seconds: Option<i64>| seconds.map_or(TimeSet::Omit, TimeSet::At);
                         choose(Source::Reference(
-                            time(fat_to_unix(info.accessed_date, 0)),
-                            time(fat_to_unix(info.modified_date, info.modified_time)),
+                            fat_to_unix(info.modified_date, info.modified_time).map_or(TimeSet::Omit, TimeSet::At),
                         ))?;
                     }
                     Err(e) => {
@@ -115,10 +113,10 @@ fn touch(args: userlib::Args) -> Result<ExitCode, ExitCode> {
     if files.is_empty() {
         return Err(diag::missing_file_operand("touch"));
     }
-    let (atime, mtime) = match source.unwrap_or(Source::Now) {
-        Source::Now => (TimeSet::Now, TimeSet::Now),
-        Source::At(seconds) => (TimeSet::At(seconds), TimeSet::At(seconds)),
-        Source::Reference(atime, mtime) => (atime, mtime),
+    let mtime = match source.unwrap_or(Source::Now) {
+        Source::Now => TimeSet::Now,
+        Source::At(seconds) => TimeSet::At(seconds),
+        Source::Reference(mtime) => mtime,
     };
 
     let mut status = 0;
@@ -143,7 +141,7 @@ fn touch(args: userlib::Args) -> Result<ExitCode, ExitCode> {
                 continue;
             }
         }
-        let r = utimens(path, atime, mtime);
+        let r = utimens(path, TimeSet::Omit, mtime);
         if r < 0 {
             diag::report("touch", "setting times of", path, r);
             status = 1;

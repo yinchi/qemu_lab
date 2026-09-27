@@ -219,12 +219,12 @@ pub enum TimeSet {
     Now,
     /// Leave it as it is.
     Omit,
-    /// This many seconds since 1970-01-01 00:00:00 UTC (FAT drops odd seconds, and the access time keeps only its date).
+    /// This many seconds since 1970-01-01 00:00:00 UTC (FAT drops odd seconds).
     At(i64),
 }
 
-/// Sets the access and modify times of the file or directory at `path` -- see `abi::syscall::SYS_UTIMENSAT` for what
-/// FAT can hold. Returns `0`, or a negative error.
+/// Sets the modify time of the file or directory at `path` -- `atime` is only there for Linux's shape and is ignored (pass
+/// `TimeSet::Omit`); see `abi::syscall::SYS_UTIMENSAT` for what FAT can hold. Returns `0`, or a negative error.
 pub fn utimens(path: &str, atime: TimeSet, mtime: TimeSet) -> isize {
     let mut times = [0u8; abi::time::UTIMES_SIZE];
     for (i, set) in [atime, mtime].into_iter().enumerate() {
