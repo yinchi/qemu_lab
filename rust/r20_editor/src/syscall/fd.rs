@@ -22,7 +22,7 @@ use crate::platform::uart::{uart_clear_screen, uart_write};
 use crate::static_mut_ref;
 use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY, ERANGE};
 use abi::fs::{AT_REMOVEDIR, O_APPEND, O_RDONLY, O_WRONLY, STAT_SIZE};
-use abi::ioctl::CONSOLE_CLEAR;
+use abi::ioctl::{CONSOLE_CLEAR, TIOCGWINSZ, WINSIZE_SIZE, WinSize};
 use abi::time::UTIMES_SIZE;
 
 /// How many fds a program may have open at once, the three standard ones included: every fd above
@@ -286,12 +286,16 @@ pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
     }
 }
 
-/// Out-of-band control of what `fd` is open on (see `abi::ioctl` for the requests). Only the console
-/// understands any today -- `CONSOLE_CLEAR` clears it, and the terminal on the other end of the UART
-/// with it; any other request, or any other kind of fd, is `ENOTTY`; an fd that isn't open is `EBADF`.
-pub fn ioctl(fd: usize, request: usize, _arg: usize) -> isize {
+/// Out-of-band control of what `fd` is open on (see `abi::ioctl` for the requests). Only the terminal
+/// understands any today. `CONSOLE_CLEAR` clears the console (stdout/stderr), and the terminal on the
+/// other end of the UART with it. `TIOCGWINSZ` writes the console's size in cells to the user buffer
+/// `arg` and is answered for the keyboard (stdin) as well as the console, so a program learns from any
+/// of its three standard fds whether it is on a terminal and how big it is; `EFAULT` for a bad `arg`. Any
+/// other request, or any other kind of fd, is `ENOTTY`; an fd that isn't open is `EBADF`.
+pub fn ioctl(fd: usize, request: usize, arg: usize) -> isize {
     match (FileDescriptor::for_fd(fd), request) {
         (None, _) => EBADF,
+        (Some(FileDescriptor::Console | FileDescriptor::Keyboard), TIOCGWINSZ) => window_size(arg),
         (Some(FileDescriptor::Console), CONSOLE_CLEAR) => {
             // SAFETY: as `console_draw`.
             unsafe {
@@ -303,6 +307,25 @@ pub fn ioctl(fd: usize, request: usize, _arg: usize) -> isize {
         }
         _ => ENOTTY,
     }
+}
+
+/// `TIOCGWINSZ`: writes the console's rows and columns (`abi::ioctl::WinSize`, pixel fields 0) to the
+/// user buffer `ptr`; `EFAULT` if it is not writable user memory.
+fn window_size(ptr: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // writes a user buffer: clear PAN while it does
+    if !validate(ptr, WINSIZE_SIZE, true) {
+        return EFAULT;
+    }
+    // SAFETY: as `console_draw`.
+    let (rows, cols) = unsafe {
+        let console = static_mut_ref!(CONSOLE);
+        (console.rows, console.cols)
+    };
+    let size = WinSize::cells(rows as u16, cols as u16);
+    // SAFETY: validated above to lie entirely within writable user memory.
+    let out = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, WINSIZE_SIZE) };
+    out.copy_from_slice(&size.encode());
+    0
 }
 
 /// Copies the working directory's absolute path into the user buffer `ptr`/`len` (no terminating NUL) and

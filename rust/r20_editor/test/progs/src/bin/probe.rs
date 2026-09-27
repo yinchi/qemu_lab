@@ -33,6 +33,10 @@
 //!                      each must be refused (-14), none may fault the kernel
 //!   probe ioctl FD REQ  the `ioctl` syscall on FD with request REQ, no argument -- for the errors
 //!                      (0 is the keyboard, 3 is not open, 1 is the console, whose CLEAR would clear the screen)
+//!   probe winsize FD   `TIOCGWINSZ` on FD: prints `winsize(FD): ROWS COLS XPIXEL YPIXEL`, or `winsize(FD): ERRNO` (0 is the
+//!                      keyboard and 1 the console, both of which answer; a redirected fd is -25, one that isn't open -9)
+//!   probe winsize-ptr FD ADDR  `TIOCGWINSZ` on FD with ADDR (decimal) as the output pointer -- for the bad ones (0, the
+//!                      guard, read-only code, a wrapping address): each must be -14, never a kernel fault
 //!   probe getcwd N     the `getcwd` syscall with an N-byte buffer (N <= 4096): prints its return value and,
 //!                      if it succeeded, the path
 //!   probe utimens PATH ASEC ANSEC MSEC MNSEC  the `utimensat` syscall with those two `timespec`s (`nsec` may be `now` or `omit`
@@ -204,6 +208,40 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
                     0
                 }
                 _ => usage_exit("probe ioctl FD REQUEST"),
+            }
+        }
+        Some("winsize") => match args.next().and_then(progs::atoi) {
+            Some(fd) => {
+                match userlib::winsize(fd) {
+                    Ok(size) => {
+                        let _ = writeln!(
+                            out,
+                            "winsize({fd}): {} {} {} {}",
+                            size.rows, size.cols, size.xpixel, size.ypixel
+                        );
+                    }
+                    Err(e) => {
+                        let _ = writeln!(out, "winsize({fd}): {e}");
+                    }
+                }
+                0
+            }
+            None => usage_exit("probe winsize FD"),
+        },
+        Some("winsize-ptr") => {
+            match (
+                args.next().and_then(progs::atoi),
+                args.next().and_then(progs::atoi),
+            ) {
+                (Some(fd), Some(addr)) => {
+                    let _ = writeln!(
+                        out,
+                        "winsize-ptr({fd}, {addr}): {}",
+                        userlib::ioctl(fd, userlib::TIOCGWINSZ, addr)
+                    );
+                    0
+                }
+                _ => usage_exit("probe winsize-ptr FD ADDR"),
             }
         }
         Some("getcwd") => match args.next().and_then(progs::atoi) {

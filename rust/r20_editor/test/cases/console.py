@@ -1,8 +1,9 @@
-"""Last updated: Stage 12, Step 8.
+"""Last updated: Stage 20, Step 1.
 
 The console write path -- UTF-8 that is split across `write` calls or invalid is decoded, not
 blanked; stdout is buffered so a `write!` costs one display flush, not one per fragment; and a
-segmentation fault is shown on the display, not only on the serial log.
+segmentation fault is shown on the display, not only on the serial log. Since Stage 20, a program can
+also ask how big the console is (`TIOCGWINSZ`, through `probe winsize`).
 
 Uses the kernel built with `testhooks` (see the justfile's `build-test`), which reports how many display
 flushes each program's console writes caused; `Session.flush_counts` reads them.
@@ -58,3 +59,30 @@ def run(ctx):
         for _row, band in text_bands(s.screendump_settled())
     )
     check("crash: 'Segmentation' is on the display", shown, True)
+
+    # --- Stage 20, Step 1: TIOCGWINSZ -- the console's size in cells, from any of the three standard fds ---
+    # 640x480 pixels of 8x16-pixel cells: 30 rows, 80 columns; the pixel fields are left 0.
+    check("winsize: stdout is the console, 30 rows x 80 columns", s.run("tests/probe winsize 1"),
+          "tests/probe winsize 1\nwinsize(1): 30 80 0 0\n")
+    check("winsize: stdin (the keyboard) answers too", s.run("tests/probe winsize 0"),
+          "tests/probe winsize 0\nwinsize(0): 30 80 0 0\n")
+    check("winsize: stderr answers", s.run("tests/probe winsize 2"),
+          "tests/probe winsize 2\nwinsize(2): 30 80 0 0\n")
+    check("winsize: an fd that is not open is EBADF", s.run("tests/probe winsize 3"),
+          "tests/probe winsize 3\nwinsize(3): -9\n")
+    # Redirected, an fd is no longer the console: ENOTTY (how a program learns it is not on a terminal) -- while
+    # the standard fds that were not redirected still answer.
+    s.run("tests/probe winsize 1 > /tmp/ws")
+    check("winsize: redirected stdout is ENOTTY", s.run("cat /tmp/ws"), "cat /tmp/ws\nwinsize(1): -25\n")
+    s.run("tests/probe winsize 2 > /tmp/ws")
+    check("winsize: stderr still answers when only stdout is redirected", s.run("cat /tmp/ws"),
+          "cat /tmp/ws\nwinsize(2): 30 80 0 0\n")
+    check("winsize: redirected stdin is ENOTTY", s.run("tests/probe winsize 0 < /tmp/ws"),
+          "tests/probe winsize 0 < /tmp/ws\nwinsize(0): -25\n")
+    s.run("rm /tmp/ws")
+    # A bad output pointer is refused, never a kernel fault: null, below the window, read-only code (the program's
+    # first page), eight bytes that start inside the window but end past its top, the top itself, and a wrapping one.
+    for addr in (0, 1, 0x4400_0000, 0x4600_0000 - 4, 0x4600_0000, 2**64 - 4):
+        check(f"winsize: bad output pointer {addr:#x} is EFAULT", s.run(f"tests/probe winsize-ptr 1 {addr}"),
+              f"tests/probe winsize-ptr 1 {addr}\nwinsize-ptr(1, {addr}): -14\n")
+    check("winsize: shell alive after the bad pointers", s.run("echo alive"), "echo alive\nalive\n")

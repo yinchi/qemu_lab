@@ -19,7 +19,7 @@ pub use abi::fs::{
     AT_REMOVEDIR, ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, NAME_MAX, O_APPEND,
     O_RDONLY, O_WRONLY, PATH_MAX, STAT_SIZE,
 };
-pub use abi::ioctl::CONSOLE_CLEAR;
+pub use abi::ioctl::{CONSOLE_CLEAR, TIOCGWINSZ, WINSIZE_SIZE, WinSize};
 
 /// Writes `buf` to the file descriptor `fd`. Returns the number of bytes
 /// written, or a negative value on error (see the kernel's `syscall/fd.rs`
@@ -167,6 +167,19 @@ pub fn chmod(path: &str, set: u8, clear: u8) -> isize {
 /// error: `ENOTTY` if `fd` doesn't understand the request, `EBADF` if it isn't open.
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> isize {
     syscall!(SYS_IOCTL, fd, request, arg)
+}
+
+/// The size in character cells of the console `fd` is open on (Linux's `TIOCGWINSZ`): `Ok` for stdin,
+/// stdout and stderr while they are the console, `Err(ENOTTY)` when `fd` is redirected or is a file --
+/// so this is also how a program asks whether it is on a terminal -- or `Err(EBADF)` if it isn't open.
+pub fn winsize(fd: usize) -> Result<WinSize, isize> {
+    let mut bytes = [0u8; WINSIZE_SIZE];
+    let result = ioctl(fd, TIOCGWINSZ, bytes.as_mut_ptr() as usize);
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(WinSize::decode(bytes))
+    }
 }
 
 /// Copies the working directory's absolute path (no terminating NUL) into `buf`. Returns its length, or a
