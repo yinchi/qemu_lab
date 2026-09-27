@@ -1,38 +1,73 @@
-//! `edit FILE` -- Stage 20's editor. Step 5: open a file (a missing one is a new buffer), view it,
-//! scroll, quit; `.editrc` loaded. No typing yet (Step 6), so nothing can become modified and `^X`
-//! always just exits -- and no status bar or help footer either: the whole screen is the text area
-//! until Step 6 carves rows out of it for those.
+//! `edit FILE` -- Stage 20's editor. Step 6: typing and deleting, save (`^S`) and save-as (`^O`), the
+//! status bar, the message/prompt row, exiting with unsaved changes, and the `^G` help screen. Rows
+//! 0..R-2 are the text area; row R-2 is the inverse-video status bar; row R-1 is the help footer,
+//! or a transient message, or the one-line prompt widget, whichever is current.
 //!
 //! Reads keys with `CONSOLE_READ_KEY` and draws whole frames with `CONSOLE_DRAW` (see
 //! `abi::ioctl`); nothing here is a raw-mode toggle on `read(0)`; the two are independent readers
-//! of the same token queue (`keyboard/stdin.rs`'s doc comment).
+//! of the same token queue (`keyboard/stdin.rs`'s doc comment). Exiting restores whatever was on
+//! screen before this program's first frame (Step 5b's console "alternate screen").
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::Write;
 
 use abi::errno::ENOENT;
-use abi::ioctl::{CELL_SIZE, CONSOLE_DRAW_HEADER_SIZE, Cell, ConsoleDraw};
+use abi::ioctl::{ATTR_INVERSE, CELL_SIZE, CONSOLE_DRAW_HEADER_SIZE, Cell, ConsoleDraw};
 use abi::keys::{
-    KEY_BACKSLASH, KEY_DOWN, KEY_END, KEY_HOME, KEY_LEFT, KEY_PAGEDOWN, KEY_PAGEUP, KEY_RIGHT,
-    KEY_SLASH, KEY_UP, KEY_X,
+    KEY_BACKSLASH, KEY_BACKSPACE, KEY_C, KEY_DELETE, KEY_DOWN, KEY_END, KEY_ENTER, KEY_ESC, KEY_G,
+    KEY_HOME, KEY_LEFT, KEY_O, KEY_PAGEDOWN, KEY_PAGEUP, KEY_RIGHT, KEY_S, KEY_SLASH, KEY_UP,
+    KEY_X,
 };
-use progs::{Fd, fail};
+use progs::{Fd, fail, write_all};
 use progs_r20::buffer::Buffer;
 use progs_r20::editrc::{self, Config};
 use progs_r20::layout::{self, Row};
+use progs_r20::prompt::Prompt;
 use progs_r20::render::render_row;
 use progs_r20::scroll::{self, Top};
-use userlib::{ExitCode, O_RDONLY, close, console_draw, env, open, read, read_key, winsize};
+use userlib::{
+    ExitCode, O_RDONLY, O_WRONLY, close, console_draw, env, open, read, read_key, winsize,
+};
 
 userlib::entry_with_env!(run);
 
 const USAGE: &str = "usage: edit FILE";
+
+/// Rows reserved below the text area: the status bar, then the footer/message/prompt row.
+const RESERVED_ROWS: usize = 2;
+
+/// The screen's shape: `TIOCGWINSZ`'s rows and columns, plus the configured tab stop width -- the
+/// three unchanging inputs `draw` needs alongside the buffer and overlay state, bundled together
+/// only so `draw` doesn't take eight separate arguments.
+#[derive(Clone, Copy)]
+struct Screen {
+    rows: usize,
+    cols: usize,
+    tab_size: usize,
+}
+
+/// What the bottom row (and, for `Help`, the whole screen) currently shows instead of plain editing.
+enum Overlay {
+    /// The help footer, or a transient `message` if one is set.
+    None,
+    /// A one-line question -- Save As, so far -- with `Enter` to confirm and `Esc` to cancel.
+    Prompt(Prompt, PromptPurpose),
+    /// "Save modified buffer? (Y/N/Cancel)" -- `^X` on a modified buffer.
+    Confirm,
+    /// The full-screen key list `^G` shows; any key returns to `None`.
+    Help,
+}
+
+enum PromptPurpose {
+    SaveAs,
+}
 
 fn run(mut args: userlib::Args) -> ExitCode {
     let _ = args.next(); // argv[0]
@@ -41,8 +76,9 @@ fn run(mut args: userlib::Args) -> ExitCode {
         return ExitCode(2);
     };
 
-    let config = load_editrc();
+    let (config, mut message) = load_editrc();
 
+    let mut filename = path.to_string();
     let mut buffer = match load_file(path) {
         Ok(buffer) => buffer,
         Err(code) => {
@@ -56,55 +92,226 @@ fn run(mut args: userlib::Args) -> ExitCode {
         return ExitCode(1);
     };
     let (rows, cols) = (usize::from(size.rows), usize::from(size.cols));
+    let text_height = rows.saturating_sub(RESERVED_ROWS).max(1);
     let tab_size = usize::from(config.tab_size);
+    let auto_indent = config.auto_indent;
 
     let mut top = Top::default();
     let mut preferred_col: Option<usize> = None;
+    let mut overlay = Overlay::None;
+
+    let screen = Screen {
+        rows,
+        cols,
+        tab_size,
+    };
+
     loop {
-        top = scroll::scroll_to_cursor(&buffer, top, rows, cols, tab_size);
-        draw(&buffer, top, rows, cols, tab_size);
+        top = scroll::scroll_to_cursor(&buffer, top, text_height, cols, tab_size);
+        draw(
+            &buffer,
+            top,
+            screen,
+            &filename,
+            &overlay,
+            message.as_deref(),
+        );
 
         let Ok(event) = read_key(0) else {
             return ExitCode(1); // stdin isn't the keyboard -- nothing this program can do about it
         };
         let code = event.effective_code();
+        message = None; // a message is shown for exactly one frame, then cleared on the next key
 
-        // Every key below except Up/Down keeps the buffer's own column, not a remembered one.
-        if code != KEY_UP && code != KEY_DOWN {
-            preferred_col = None;
-        }
+        match &mut overlay {
+            Overlay::Help => {
+                overlay = Overlay::None;
+            }
 
-        match code {
-            // Ctrl+Left/Right (word movement) arrives in Step 6 with the rest of typing's ctrl
-            // combinations; for now a plain move is what both keys do.
-            KEY_LEFT => {
-                buffer.move_left();
+            Overlay::Confirm => match event.char() {
+                Some('y' | 'Y') => match try_save(&buffer, &filename) {
+                    Ok(_) => break,
+                    Err(e) => {
+                        message = Some(format!("Error writing {filename}: {}", progs::errmsg(e)));
+                        overlay = Overlay::None;
+                    }
+                },
+                Some('n' | 'N') => break,
+                _ if code == KEY_ESC => overlay = Overlay::None,
+                _ => {}
+            },
+
+            Overlay::Prompt(prompt, purpose) => match code {
+                KEY_ESC => overlay = Overlay::None,
+                KEY_ENTER => {
+                    let answer = prompt.input().to_string();
+                    match purpose {
+                        PromptPurpose::SaveAs => {
+                            if answer.is_empty() {
+                                overlay = Overlay::None;
+                            } else {
+                                match try_save(&buffer, &answer) {
+                                    Ok(lines) => {
+                                        filename = answer;
+                                        buffer.mark_saved();
+                                        message = Some(format!("Wrote {lines} lines"));
+                                    }
+                                    Err(e) => {
+                                        message = Some(format!(
+                                            "Error writing {answer}: {}",
+                                            progs::errmsg(e)
+                                        ));
+                                    }
+                                }
+                                overlay = Overlay::None;
+                            }
+                        }
+                    }
+                }
+                KEY_LEFT => {
+                    prompt.move_left();
+                }
+                KEY_RIGHT => {
+                    prompt.move_right();
+                }
+                KEY_HOME => {
+                    prompt.move_home();
+                }
+                KEY_END => {
+                    prompt.move_end();
+                }
+                KEY_BACKSPACE => {
+                    prompt.backspace();
+                }
+                KEY_DELETE => {
+                    prompt.delete_forward();
+                }
+                _ if !event.ctrl() && !event.alt() => {
+                    if let Some(c) = event.char()
+                        && !c.is_control()
+                    {
+                        prompt.insert_char(c);
+                    }
+                }
+                _ => {}
+            },
+
+            Overlay::None => {
+                if code != KEY_UP && code != KEY_DOWN {
+                    preferred_col = None;
+                }
+                match code {
+                    // Word movement, before the plain-arrow arms below, which would otherwise also
+                    // match a Ctrl-held one (`match` takes the first arm that fits the value alone;
+                    // the guard is what makes this one win only when Ctrl is actually held).
+                    KEY_LEFT if event.ctrl() => {
+                        buffer.move_word_left();
+                    }
+                    KEY_RIGHT if event.ctrl() => {
+                        buffer.move_word_right();
+                    }
+                    KEY_LEFT => {
+                        buffer.move_left();
+                    }
+                    KEY_RIGHT => {
+                        buffer.move_right();
+                    }
+                    KEY_UP => {
+                        scroll::move_vertical(
+                            &mut buffer,
+                            true,
+                            &mut preferred_col,
+                            cols,
+                            tab_size,
+                        );
+                    }
+                    KEY_DOWN => {
+                        scroll::move_vertical(
+                            &mut buffer,
+                            false,
+                            &mut preferred_col,
+                            cols,
+                            tab_size,
+                        );
+                    }
+                    KEY_HOME => {
+                        buffer.move_home();
+                    }
+                    KEY_END => {
+                        buffer.move_end();
+                    }
+                    KEY_PAGEUP => page(
+                        &mut buffer,
+                        &mut preferred_col,
+                        true,
+                        text_height,
+                        cols,
+                        tab_size,
+                    ),
+                    KEY_PAGEDOWN => page(
+                        &mut buffer,
+                        &mut preferred_col,
+                        false,
+                        text_height,
+                        cols,
+                        tab_size,
+                    ),
+                    KEY_BACKSLASH if event.alt() => {
+                        buffer.move_to_first_line();
+                    }
+                    KEY_SLASH if event.alt() => {
+                        buffer.move_to_last_line();
+                    }
+                    KEY_BACKSPACE => {
+                        buffer.backspace();
+                    }
+                    KEY_DELETE => {
+                        buffer.delete_forward();
+                    }
+                    KEY_ENTER => {
+                        buffer.split_line(auto_indent);
+                    }
+                    KEY_S if event.ctrl() && !event.repeat() => {
+                        match try_save(&buffer, &filename) {
+                            Ok(lines) => {
+                                buffer.mark_saved();
+                                message = Some(format!("Wrote {lines} lines"));
+                            }
+                            Err(e) => {
+                                message =
+                                    Some(format!("Error writing {filename}: {}", progs::errmsg(e)));
+                            }
+                        }
+                    }
+                    KEY_O if event.ctrl() && !event.repeat() => {
+                        overlay = Overlay::Prompt(
+                            Prompt::new("File Name to Write: ", &filename),
+                            PromptPurpose::SaveAs,
+                        );
+                    }
+                    KEY_G if event.ctrl() && !event.repeat() => {
+                        overlay = Overlay::Help;
+                    }
+                    KEY_C if event.ctrl() && !event.repeat() => {
+                        message = Some(position_message(&buffer));
+                    }
+                    KEY_X if event.ctrl() && !event.repeat() => {
+                        if buffer.is_modified() {
+                            overlay = Overlay::Confirm;
+                        } else {
+                            break;
+                        }
+                    }
+                    _ if !event.ctrl() && !event.alt() => {
+                        if let Some(c) = event.char()
+                            && (!c.is_control() || c == '\t')
+                        {
+                            buffer.insert_char(c);
+                        }
+                    }
+                    _ => {}
+                }
             }
-            KEY_RIGHT => {
-                buffer.move_right();
-            }
-            KEY_UP => {
-                scroll::move_vertical(&mut buffer, true, &mut preferred_col, cols, tab_size);
-            }
-            KEY_DOWN => {
-                scroll::move_vertical(&mut buffer, false, &mut preferred_col, cols, tab_size);
-            }
-            KEY_HOME => {
-                buffer.move_home();
-            }
-            KEY_END => {
-                buffer.move_end();
-            }
-            KEY_PAGEUP => page(&mut buffer, &mut preferred_col, true, rows, cols, tab_size),
-            KEY_PAGEDOWN => page(&mut buffer, &mut preferred_col, false, rows, cols, tab_size),
-            KEY_BACKSLASH if event.alt() => {
-                buffer.move_to_first_line();
-            }
-            KEY_SLASH if event.alt() => {
-                buffer.move_to_last_line();
-            }
-            KEY_X if event.ctrl() && !event.repeat() => break,
-            _ => {}
         }
     }
     ExitCode(0)
@@ -127,27 +334,54 @@ fn page(
     }
 }
 
-/// Reads `$HOME/.editrc`, if `$HOME` is set and the file exists; any problem it reports goes to
-/// stderr for now (Step 6 gives the editor its own message line to show them on instead).
-fn load_editrc() -> Config {
+/// Truncates `path` and writes the whole buffer to it (Stage 20's chosen save method: in place, no
+/// temp file). Returns the number of lines written, or the negative error from whichever syscall
+/// failed first -- `open`, the write itself, or `close` (a full disk can surface there instead).
+fn try_save(buffer: &Buffer, path: &str) -> Result<usize, isize> {
+    let fd = open(path, O_WRONLY);
+    if fd < 0 {
+        return Err(fd);
+    }
+    let fd = fd as usize;
+    let text = buffer.to_text();
+    let write_result = write_all(fd, text.as_bytes());
+    let close_result = close(fd);
+    write_result?;
+    if close_result < 0 {
+        return Err(close_result);
+    }
+    Ok(buffer.line_count())
+}
+
+/// Reads `$HOME/.editrc`, if `$HOME` is set and the file exists. The first problem it reports, if
+/// any, comes back as a message for the message row's very first frame; the rest are silently
+/// applied (their own setting keeps its default) but not individually shown -- one line is what the
+/// row has room for.
+fn load_editrc() -> (Config, Option<String>) {
     let Some(home) = env::var("HOME") else {
-        return Config::default();
+        return (Config::default(), None);
     };
     let mut path = String::from(home);
     path.push_str("/.editrc");
 
     let fd = open(&path, O_RDONLY);
     if fd < 0 {
-        return Config::default(); // missing (or unreadable): silent, every default applies
+        return (Config::default(), None); // missing (or unreadable): silent, every default applies
     }
     let bytes = read_whole(fd as usize);
     close(fd as usize);
     let text = String::from_utf8_lossy(&bytes);
     let parsed = editrc::parse(&text);
-    for problem in &parsed.problems {
-        let _ = writeln!(Fd(2), "edit: {path}:{}: {}", problem.line, problem.why);
-    }
-    parsed.config
+    let message = parsed.problems.first().map(|first| {
+        let more = parsed.problems.len() - 1;
+        let suffix = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        format!("{path}:{}: {}{suffix}", first.line, first.why)
+    });
+    (parsed.config, message)
 }
 
 /// Opens `path` and reads it whole, as LF-only text (Stage 20's plan: lossy, not a validity check --
@@ -183,11 +417,145 @@ fn read_whole(fd: usize) -> Vec<u8> {
     }
 }
 
-/// Builds one whole frame from what `top` makes visible and sends it with one `CONSOLE_DRAW`. The
-/// cursor's screen row is found by matching its own `Row` (from `layout::wrap_line`, which
-/// `visible_rows` also built its list from) against that same list, rather than re-deriving it from
-/// `top` by another route that could disagree with what was actually drawn.
-fn draw(buffer: &Buffer, top: Top, rows: usize, cols: usize, tab_size: usize) {
+/// `^C`'s message: the cursor's line and column (both 1-based; column counts characters, not display
+/// columns, so a line with tabs or wide glyphs still gets a plain count).
+fn position_message(buffer: &Buffer) -> String {
+    let (line, byte) = buffer.cursor();
+    let column = buffer.line(line)[..byte].chars().count() + 1;
+    format!(
+        "line {} of {}, column {column}",
+        line + 1,
+        buffer.line_count()
+    )
+}
+
+const HELP_FOOTER: &str = "^G Help  ^O WriteOut  ^S Save  ^X Exit";
+
+const HELP_TEXT: &[&str] = &[
+    "edit -- A simple text editor",
+    "",
+    "Arrows, Home/End       move by character / logical line",
+    "Ctrl+Left/Right        move by word",
+    "PgUp/PgDn              move a screenful",
+    "Alt+\\ / Alt+/          first / last line",
+    "",
+    "^S    Save",
+    "^O    Write Out (save as)",
+    "^X    Exit (asks first if modified)",
+    "^C    Show the cursor's line and column",
+    "^G    This help screen",
+    "Esc   Cancel a prompt",
+    "",
+    "Press any key to continue",
+];
+
+/// Pushes `text` as `cols` cells, one column per character (plain ASCII status/footer/prompt text,
+/// not the width-aware text area), all with `attr`, truncated or padded with blanks to fit exactly.
+fn push_line(cells: &mut Vec<Cell>, cols: usize, text: &str, attr: u8) {
+    let mut count = 0;
+    for c in text.chars().take(cols) {
+        cells.push(Cell { ch: c as u32, attr });
+        count += 1;
+    }
+    for _ in count..cols {
+        cells.push(Cell {
+            ch: ' ' as u32,
+            attr,
+        });
+    }
+}
+
+/// The status bar: `name [Modified]   Ln x/y, Col z`, drawn inverse across the whole row.
+fn render_status_bar(cells: &mut Vec<Cell>, cols: usize, filename: &str, buffer: &Buffer) {
+    let (line, byte) = buffer.cursor();
+    let modified = if buffer.is_modified() {
+        " [Modified]"
+    } else {
+        ""
+    };
+    let column = buffer.line(line)[..byte].chars().count() + 1;
+    let text = format!(
+        "{filename}{modified}   Ln {}/{}, Col {column}",
+        line + 1,
+        buffer.line_count()
+    );
+    push_line(cells, cols, &text, ATTR_INVERSE);
+}
+
+/// The prompt row: `label` then the input typed so far, plain. Returns the column the cursor
+/// belongs at (the label's width plus how far into the input it is).
+fn render_prompt_row(cells: &mut Vec<Cell>, cols: usize, prompt: &Prompt) -> usize {
+    let text = format!("{}{}", prompt.label(), prompt.input());
+    push_line(cells, cols, &text, 0);
+    prompt.label().chars().count() + prompt.input()[..prompt.cursor()].chars().count()
+}
+
+/// The bottom row when it isn't a prompt: the help footer, a transient message, or (during
+/// `Overlay::Confirm`) the save-modified question -- plain text, one line.
+fn render_footer(cells: &mut Vec<Cell>, cols: usize, text: &str) {
+    push_line(cells, cols, text, 0);
+}
+
+/// Draws the `^G` help screen: `HELP_TEXT`, one line per row, cursor parked at the top left (there
+/// is nothing here to place it meaningfully on).
+fn draw_help(rows: usize, cols: usize) {
+    let mut cells = Vec::with_capacity(rows * cols);
+    for row in 0..rows {
+        let text = HELP_TEXT.get(row).copied().unwrap_or("");
+        render_row(
+            &mut cells,
+            text,
+            Row {
+                start: 0,
+                end: text.len(),
+            },
+            cols,
+            8,
+        );
+    }
+    send_frame(&cells, rows, cols, 0, 0);
+}
+
+/// Encodes `cells` behind a `ConsoleDraw` header and sends them in one `CONSOLE_DRAW` call.
+fn send_frame(cells: &[Cell], rows: usize, cols: usize, cursor_row: u16, cursor_col: u16) {
+    let header = ConsoleDraw {
+        rows: rows as u16,
+        cols: cols as u16,
+        cursor_row,
+        cursor_col,
+    };
+    let mut frame = Vec::with_capacity(CONSOLE_DRAW_HEADER_SIZE + cells.len() * CELL_SIZE);
+    frame.extend_from_slice(&header.encode());
+    for cell in cells {
+        frame.extend_from_slice(&cell.encode());
+    }
+    let _ = console_draw(1, &frame);
+}
+
+/// Builds one whole frame and sends it. `Overlay::Help` replaces the entire screen; otherwise the
+/// text area (`rows - RESERVED_ROWS` rows), the status bar, and the footer/message/prompt row. The
+/// cursor's screen row is found by matching its exact `Row` (from `layout::wrap_line`, which
+/// `visible_rows` also built its list from) against that list, rather than re-deriving it a second
+/// way that could disagree with what was actually drawn.
+fn draw(
+    buffer: &Buffer,
+    top: Top,
+    screen: Screen,
+    filename: &str,
+    overlay: &Overlay,
+    message: Option<&str>,
+) {
+    let Screen {
+        rows,
+        cols,
+        tab_size,
+    } = screen;
+    if let Overlay::Help = overlay {
+        draw_help(rows, cols);
+        return;
+    }
+
+    let text_height = rows.saturating_sub(RESERVED_ROWS).max(1);
     let (cursor_line, cursor_byte) = buffer.cursor();
     let (cursor_screen_row, cursor_col) =
         layout::position_to_cell(buffer.line(cursor_line), cursor_byte, cols, tab_size);
@@ -196,7 +564,7 @@ fn draw(buffer: &Buffer, top: Top, rows: usize, cols: usize, tab_size: usize) {
 
     let mut cells = Vec::with_capacity(rows * cols);
     let mut cursor_row = 0;
-    for (screen_row, (line, row)) in scroll::visible_rows(buffer, top, rows, cols, tab_size)
+    for (screen_row, (line, row)) in scroll::visible_rows(buffer, top, text_height, cols, tab_size)
         .into_iter()
         .enumerate()
     {
@@ -205,28 +573,29 @@ fn draw(buffer: &Buffer, top: Top, rows: usize, cols: usize, tab_size: usize) {
         }
         render_row(&mut cells, buffer.line(line), row, cols, tab_size);
     }
-    cells.resize(rows * cols, Cell::plain(' ')); // past the end of the buffer: blank rows, nano-style
+    cells.resize(text_height * cols, Cell::plain(' ')); // past the end of the buffer: blank rows
 
-    // The visible cursor: an ordinary cell, drawn inverse -- there is no separate cursor primitive
-    // (`ConsoleDraw`'s own `cursor_row`/`cursor_col` only reposition the console's *bookkeeping*
-    // cursor, for wherever the shell's next prompt starts once this program exits; see Step 3's
-    // notes in `Stage20.md`). Always in range: `position_to_cell` never returns a column equal to
-    // `cols` (a fully-packed row's one-past-the-end position always belongs to a *different* row,
-    // by `layout`'s own trailing-empty-row rule), so the index below always lands inside `cells`.
-    if let Some(cursor_cell) = cells.get_mut(cursor_row * cols + cursor_col) {
-        cursor_cell.attr |= abi::ioctl::ATTR_INVERSE;
-    }
+    render_status_bar(&mut cells, cols, filename, buffer);
 
-    let header = ConsoleDraw {
-        rows: rows as u16,
-        cols: cols as u16,
-        cursor_row: cursor_row as u16,
-        cursor_col: cursor_col as u16,
+    let (cursor_row, cursor_col) = match overlay {
+        Overlay::Prompt(prompt, _) => {
+            let col = render_prompt_row(&mut cells, cols, prompt);
+            (text_height + 1, col)
+        }
+        Overlay::Confirm => {
+            render_footer(&mut cells, cols, "Save modified buffer? (Y/N/Cancel)");
+            (cursor_row, cursor_col)
+        }
+        Overlay::None => {
+            render_footer(&mut cells, cols, message.unwrap_or(HELP_FOOTER));
+            (cursor_row, cursor_col)
+        }
+        Overlay::Help => unreachable!("handled above"),
     };
-    let mut frame = Vec::with_capacity(CONSOLE_DRAW_HEADER_SIZE + cells.len() * CELL_SIZE);
-    frame.extend_from_slice(&header.encode());
-    for cell in &cells {
-        frame.extend_from_slice(&cell.encode());
+
+    if let Some(cell) = cells.get_mut(cursor_row * cols + cursor_col) {
+        cell.attr |= ATTR_INVERSE;
     }
-    let _ = console_draw(1, &frame);
+
+    send_frame(&cells, rows, cols, cursor_row as u16, cursor_col as u16);
 }

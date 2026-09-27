@@ -273,6 +273,50 @@ impl Buffer {
         true
     }
 
+    /// Moves back to the start of the previous word (readline's/`keyboard/line.rs`'s
+    /// backward-word: skip anything that isn't part of a word, then the word itself; a word is a
+    /// run of letters and digits), crossing into the previous line -- one line at a time, so a run
+    /// of blank or punctuation-only lines is still one stop per line, not skipped over -- once
+    /// there is nothing left to skip on the current one.
+    pub fn move_word_left(&mut self) -> bool {
+        if self.cursor_col == 0 {
+            if self.cursor_line == 0 {
+                return false;
+            }
+            // Crossing a line boundary is its own stop, landing exactly at the previous line's
+            // end -- the same one-boundary-per-call shape `move_left` already has -- rather than
+            // also skipping straight into that line's own last word in the same call.
+            self.cursor_line -= 1;
+            self.cursor_col = self.lines[self.cursor_line].len();
+            return true;
+        }
+        let text = &self.lines[self.cursor_line];
+        let after_blanks = back_while(text, self.cursor_col, |c| !is_word(c));
+        let after_word = back_while(text, after_blanks, is_word);
+        let moved = after_word != self.cursor_col;
+        self.cursor_col = after_word;
+        moved
+    }
+
+    /// Moves forward to the end of the next word, the mirror of [`Buffer::move_word_left`].
+    pub fn move_word_right(&mut self) -> bool {
+        let len = self.lines[self.cursor_line].len();
+        if self.cursor_col == len {
+            if self.cursor_line + 1 >= self.lines.len() {
+                return false;
+            }
+            self.cursor_line += 1;
+            self.cursor_col = 0;
+            return true;
+        }
+        let text = &self.lines[self.cursor_line];
+        let after_blanks = forward_while(text, self.cursor_col, |c| !is_word(c));
+        let after_word = forward_while(text, after_blanks, is_word);
+        let moved = after_word != self.cursor_col;
+        self.cursor_col = after_word;
+        moved
+    }
+
     pub fn move_to_first_line(&mut self) -> bool {
         if self.cursor_line == 0 && self.cursor_col == 0 {
             return false;
@@ -298,6 +342,36 @@ impl Default for Buffer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A character of a "word" for word movement: a letter or a digit -- the same rule
+/// `keyboard/line.rs`'s own word movement uses.
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric()
+}
+
+/// The byte offset reached by moving back from `from` over the characters of `text` that `pred`
+/// accepts.
+fn back_while(text: &str, mut from: usize, pred: impl Fn(char) -> bool) -> usize {
+    while let Some((i, c)) = text[..from].char_indices().next_back() {
+        if !pred(c) {
+            break;
+        }
+        from = i;
+    }
+    from
+}
+
+/// The byte offset reached by moving forward from `from` over the characters of `text` that `pred`
+/// accepts.
+fn forward_while(text: &str, mut from: usize, pred: impl Fn(char) -> bool) -> usize {
+    while let Some(c) = text[from..].chars().next() {
+        if !pred(c) {
+            break;
+        }
+        from += c.len_utf8();
+    }
+    from
 }
 
 /// `line`'s leading run of spaces and tabs -- empty if `line` is nothing but whitespace (or is
@@ -545,6 +619,78 @@ mod tests {
         assert!(b.move_to_first_line());
         assert_eq!(b.cursor(), (0, 0));
         assert!(!b.move_to_first_line());
+    }
+
+    #[test]
+    fn word_moves_walk_over_words_of_letters_and_digits() {
+        let mut b = Buffer::from_text("a/b-c123");
+        b.set_cursor(0, 8); // the end; from_text always starts the cursor at (0, 0)
+        for want in [4, 2, 0] {
+            assert!(b.move_word_left());
+            assert_eq!(b.cursor(), (0, want));
+        }
+        assert!(!b.move_word_left());
+        for want in [1, 3, 8] {
+            assert!(b.move_word_right());
+            assert_eq!(b.cursor(), (0, want));
+        }
+        assert!(!b.move_word_right());
+    }
+
+    #[test]
+    fn words_may_be_wide_characters() {
+        let mut b = Buffer::from_text("日本語 abc");
+        b.set_cursor(0, "日本語 abc".len()); // the end
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (0, "日本語 ".len()));
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (0, 0));
+        assert!(b.move_word_right());
+        assert_eq!(b.cursor(), (0, "日本語".len()));
+    }
+
+    #[test]
+    fn word_moves_cross_line_boundaries_one_line_at_a_time() {
+        let mut b = Buffer::from_text("one two\nthree");
+        b.set_cursor(1, 5); // middle of "three"
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (1, 0)); // "three"'s own start, same line
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (0, 7)); // crossed up to the end of "one two"
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (0, 4)); // "two"
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (0, 0)); // "one"
+        assert!(!b.move_word_left());
+    }
+
+    #[test]
+    fn word_move_right_crosses_line_boundaries_one_line_at_a_time() {
+        let mut b = Buffer::from_text("one\ntwo three");
+        assert!(b.move_word_right());
+        assert_eq!(b.cursor(), (0, 3)); // end of "one"
+        assert!(b.move_word_right());
+        assert_eq!(b.cursor(), (1, 0)); // crossed down to the start of the next line
+        assert!(b.move_word_right());
+        assert_eq!(b.cursor(), (1, 3)); // "two"
+        assert!(b.move_word_right());
+        assert_eq!(b.cursor(), (1, 9)); // "three"
+        assert!(!b.move_word_right());
+    }
+
+    #[test]
+    fn a_blank_line_is_one_stop_when_crossed() {
+        let mut b = Buffer::from_text("a\n\nb");
+        b.set_cursor(2, 1); // end of "b"
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (2, 0)); // "b" itself
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (1, 0)); // the blank line, one stop
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (0, 1)); // crossed to the end of "a"
+        assert!(b.move_word_left());
+        assert_eq!(b.cursor(), (0, 0)); // "a" itself
+        assert!(!b.move_word_left());
     }
 
     #[test]

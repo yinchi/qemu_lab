@@ -104,6 +104,8 @@ pub mod editrc;
 pub mod buffer;
 #[path = "../../../user/progs_r20/src/layout.rs"]
 pub mod layout;
+#[path = "../../../user/progs_r20/src/prompt.rs"]
+pub mod editor_prompt;
 #[path = "../../../user/progs_r20/src/region.rs"]
 pub mod region;
 #[path = "../../../user/progs_r20/src/render.rs"]

@@ -9,6 +9,7 @@ A minimal Operating System for the QEMU emulator.
 - Pipes and redirection
 - Environment variables
 - UTF-8 and wide character support (input is US QWERTY-only, but UTF-8 files can be read and displayed correctly, subject to Unifont limitations)
+- A basic text editor (`edit`)
 
 ![screenshot](image.png)
 
