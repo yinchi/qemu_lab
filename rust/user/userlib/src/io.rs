@@ -19,7 +19,10 @@ pub use abi::fs::{
     AT_REMOVEDIR, ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, NAME_MAX, O_APPEND,
     O_RDONLY, O_WRONLY, PATH_MAX, STAT_SIZE,
 };
-pub use abi::ioctl::{CONSOLE_CLEAR, CONSOLE_READ_KEY, TIOCGWINSZ, WINSIZE_SIZE, WinSize};
+pub use abi::ioctl::{
+    ATTR_DIM, ATTR_INVERSE, CELL_SIZE, CONSOLE_CLEAR, CONSOLE_DRAW, CONSOLE_DRAW_HEADER_SIZE,
+    CONSOLE_READ_KEY, Cell, ConsoleDraw, TIOCGWINSZ, WINSIZE_SIZE, WinSize,
+};
 pub use abi::keys::{KEYEVENT_SIZE, KeyEvent};
 
 /// Writes `buf` to the file descriptor `fd`. Returns the number of bytes
@@ -196,6 +199,15 @@ pub fn read_key(fd: usize) -> Result<KeyEvent, isize> {
     } else {
         Ok(KeyEvent::decode(bytes))
     }
+}
+
+/// `CONSOLE_DRAW`: `buf` is a [`ConsoleDraw`] header followed immediately by its cells, already encoded
+/// (`ConsoleDraw::encode`/`Cell::encode`, concatenated) -- building that buffer is the caller's job, not
+/// this thin wrapper's, since its size depends on the frame (`userlib` stays allocation-free). Returns
+/// `0`, or a negative error (`EINVAL` for a malformed frame, `EFAULT` for a bad `buf`, `ENOTTY` if `fd`
+/// is not the console).
+pub fn console_draw(fd: usize, buf: &[u8]) -> isize {
+    ioctl(fd, CONSOLE_DRAW, buf.as_ptr() as usize)
 }
 
 /// Copies the working directory's absolute path (no terminating NUL) into `buf`. Returns its length, or a

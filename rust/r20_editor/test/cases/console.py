@@ -129,3 +129,49 @@ def run(ctx):
     # --- read(0) is untouched by CONSOLE_READ_KEY: the next program's line-based read still works ---
     check("read(0) still works normally after CONSOLE_READ_KEY was used", s.run("echo alive"),
           "echo alive\nalive\n")
+
+    # --- Stage 20, Step 3: CONSOLE_DRAW -- one whole frame per call, from the program's own cells ---
+    check("draw: a full, valid frame succeeds", s.run("tests/probe draw"), "tests/probe draw\ndraw: 0\n")
+
+    # Rows 0/1/2 are all the glyph 'X', differing only in `attr` (see probe.rs's "draw" subcommand), so
+    # their pixel bands are directly comparable: INVERSE and DIM must each look different from plain,
+    # and from each other.
+    bands = dict(text_bands(s.screendump_settled()))
+    check("draw: row 0 exists (nothing left blank)", 0 in bands, True)
+    check("draw: row 1 exists", 1 in bands, True)
+    check("draw: row 2 exists", 2 in bands, True)
+    check("draw: ATTR_INVERSE changes the row's colors", bands[0] != bands[2], True)
+    check("draw: ATTR_DIM changes the row's colors", bands[1] != bands[2], True)
+    check("draw: INVERSE and DIM don't look alike", bands[0] != bands[1], True)
+
+    # --- A cursor one past the last row/column is clamped, not refused ---
+    check("draw: an out-of-range cursor is clamped, not refused", s.run("tests/probe draw-cursor-oob"),
+          "tests/probe draw-cursor-oob\ndraw-cursor-oob: 0\n")
+
+    # --- A malformed frame is refused whole (EINVAL = -22), never partially drawn ---
+    check("draw: a header claiming the wrong size is EINVAL", s.run("tests/probe draw-bad-size"),
+          "tests/probe draw-bad-size\ndraw-bad-size: -22\n")
+    check("draw: a cell that isn't a valid character is EINVAL", s.run("tests/probe draw-bad-char"),
+          "tests/probe draw-bad-char\ndraw-bad-char: -22\n")
+    check("draw: a wide glyph with no room in its row is EINVAL", s.run("tests/probe draw-wide-edge"),
+          "tests/probe draw-wide-edge\ndraw-wide-edge: -22\n")
+
+    # --- A bad pointer is EFAULT, and CONSOLE_DRAW is answered on stdout only ---
+    # Unlike winsize/read-key's output buffers (validated for *write*), CONSOLE_DRAW's header and cells
+    # are validated for *read* -- so `USER_BASE` itself (the program's own, readable, code) is not one of
+    # these cases (it would read as garbage rows/cols and correctly come back EINVAL, not EFAULT); the
+    # boundary just *below* the window stands in for it instead.
+    for addr in (0, 1, 0x4400_0000 - 8, 0x4600_0000 - 4, 0x4600_0000, 2**64 - 4):
+        check(f"draw: bad header pointer {addr:#x} is EFAULT", s.run(f"tests/probe draw-ptr {addr}"),
+              f"tests/probe draw-ptr {addr}\ndraw-ptr({addr}): -14\n")
+    check("draw: stdin is not the console, ENOTTY", s.run("tests/probe ioctl 0 3"),
+          "tests/probe ioctl 0 3\nioctl(0, 3): -25\n")
+
+    # --- Timing: 30 full frames back-to-back (a held key's worth of repeats), for Stage20.md's record --
+    # not a pass/fail threshold (host speed varies), just a number worth having on file. See the ARM
+    # virtual counter in probe.rs's `draw-timing`, not the one-second-granularity real-time clock.
+    timing = s.run("tests/probe draw-timing 30")
+    print("Stage 20 Step 3 timing:", timing.strip().splitlines()[-1])
+    check("draw-timing: prints a plausible result", "draw-timing: 30 frames in" in timing, True)
+
+    check("shell alive after CONSOLE_DRAW", s.run("echo alive"), "echo alive\nalive\n")

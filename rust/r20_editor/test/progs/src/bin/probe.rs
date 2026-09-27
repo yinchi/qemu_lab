@@ -41,6 +41,16 @@
 //!                      (MODS as a bare number: SHIFT=1 CTRL=2 ALT=4 CAPS=8 NUM=16 REPEAT=32), or `read-key(FD): ERRNO`
 //!   probe read-key-ptr FD ADDR  `CONSOLE_READ_KEY` on FD with ADDR (decimal) as the output pointer -- for the bad ones
 //!                      (never blocking: a bad pointer is refused before the keyboard is touched)
+//!   probe draw           `CONSOLE_DRAW` a full, valid, distinctive frame (a repeating letter pattern, row 0
+//!                      inverse, row 1 dim, cursor at (2,3)) and print `draw: RET`
+//!   probe draw-bad-size   the same frame under a header claiming one extra row -- must be `-22` (`EINVAL`), nothing drawn
+//!   probe draw-bad-char   the same frame with one cell holding a surrogate (not a valid character) -- `-22`, nothing drawn
+//!   probe draw-wide-edge  a fullwidth character (中) in the last column of a row -- `-22` (no room for its second column)
+//!   probe draw-ptr ADDR   `CONSOLE_DRAW` on stdout with ADDR (decimal) as the header pointer -- for the bad ones: `-14` (`EFAULT`)
+//!   probe draw-cursor-oob  a cursor one past the last row/column -- must be clamped, not refused: prints `draw-cursor-oob: RET`
+//!   probe draw-timing [N]  draws N (default 30, one held key's worth of repeats) full frames back-to-back
+//!                      and prints the elapsed time in milliseconds (the virtual counter, not the
+//!                      one-second-granularity real-time clock -- see `spin.rs`)
 //!   probe getcwd N     the `getcwd` syscall with an N-byte buffer (N <= 4096): prints its return value and,
 //!                      if it succeeded, the path
 //!   probe utimens PATH ASEC ANSEC MSEC MNSEC  the `utimensat` syscall with those two `timespec`s (`nsec` may be `now` or `omit`
@@ -56,11 +66,18 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+use alloc::vec;
+use alloc::vec::Vec;
 use core::arch::asm;
 use core::fmt::Write;
 
-use abi::syscall::{SYS_CHMOD, SYS_CLOCK_GETTIME, SYS_GETCWD, SYS_GETDENTS, SYS_OPEN, SYS_READ, SYS_WRITE};
+use abi::syscall::{
+    SYS_CHMOD, SYS_CLOCK_GETTIME, SYS_GETCWD, SYS_GETDENTS, SYS_OPEN, SYS_READ, SYS_WRITE,
+};
 use progs::Fd;
+use userlib::{ATTR_DIM, ATTR_INVERSE, Cell, ConsoleDraw};
 
 /// A raw syscall with up to four arguments -- deliberately not `userlib`'s, which only ever sends
 /// well-formed calls.
@@ -91,7 +108,12 @@ pub extern "C" fn main(argc: usize, argv: *const *const u8, envp: *const *const 
     userlib::exit(code)
 }
 
-fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *const *const u8) -> i32 {
+fn run(
+    mut args: userlib::Args,
+    argc: usize,
+    argv: *const *const u8,
+    envp: *const *const u8,
+) -> i32 {
     let _ = args.next(); // argv[0]
     let mut out = Fd(1);
     match args.next() {
@@ -115,7 +137,11 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
                     userlib::close(fd as usize);
                 }
                 let after = userlib::umount(target);
-                let _ = writeln!(out, "open {}, umount while open: {while_open}, umount after close: {after}", if fd >= 0 { "ok" } else { "failed" });
+                let _ = writeln!(
+                    out,
+                    "open {}, umount while open: {while_open}, umount after close: {after}",
+                    if fd >= 0 { "ok" } else { "failed" }
+                );
                 0
             }
             _ => usage_exit("probe umount-open TARGET FILE"),
@@ -148,7 +174,11 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
         },
         Some("reboot-wide") => {
             let wide = 0x1_0000_0000 | abi::reboot::LINUX_REBOOT_CMD_POWER_OFF as usize;
-            let _ = writeln!(out, "reboot({wide:#x}): {}", raw(abi::syscall::SYS_REBOOT, wide, 0, 0, 0));
+            let _ = writeln!(
+                out,
+                "reboot({wide:#x}): {}",
+                raw(abi::syscall::SYS_REBOOT, wide, 0, 0, 0)
+            );
             0
         }
         Some("getdents-small") => {
@@ -208,7 +238,11 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
                 args.next().and_then(progs::atoi),
             ) {
                 (Some(fd), Some(request)) => {
-                    let _ = writeln!(out, "ioctl({fd}, {request}): {}", userlib::ioctl(fd, request, 0));
+                    let _ = writeln!(
+                        out,
+                        "ioctl({fd}, {request}): {}",
+                        userlib::ioctl(fd, request, 0)
+                    );
                     0
                 }
                 _ => usage_exit("probe ioctl FD REQUEST"),
@@ -236,7 +270,11 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
             Some(fd) => {
                 match userlib::read_key(fd) {
                     Ok(event) => {
-                        let _ = writeln!(out, "read-key({fd}): {} {} {}", event.code, event.mods, event.ch);
+                        let _ = writeln!(
+                            out,
+                            "read-key({fd}): {} {} {}",
+                            event.code, event.mods, event.ch
+                        );
                     }
                     Err(e) => {
                         let _ = writeln!(out, "read-key({fd}): {e}");
@@ -262,6 +300,92 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
                 _ => usage_exit("probe read-key-ptr FD ADDR"),
             }
         }
+        Some("draw") => {
+            let (rows, cols) = console_size();
+            let mut cells = vec![Cell::plain(' '); rows * cols];
+            for row in 0..rows {
+                for col in 0..cols {
+                    // Rows 0-2 are all 'X', differing only in `attr`, so a QEMU test can compare their
+                    // pixels directly to confirm INVERSE and DIM actually change what is drawn (not
+                    // just that the syscall returns 0); the rest cycle through the alphabet, just to
+                    // fill the screen with something visibly non-blank everywhere.
+                    let (c, attr) = match row {
+                        0 => ('X', ATTR_INVERSE),
+                        1 => ('X', ATTR_DIM),
+                        2 => ('X', 0),
+                        _ => ((b'A' + ((row + col) % 26) as u8) as char, 0),
+                    };
+                    cells[row * cols + col] = Cell { ch: c as u32, attr };
+                }
+            }
+            let ret = draw(rows, cols, 2, 3, &cells);
+            let _ = writeln!(out, "draw: {ret}");
+            0
+        }
+        Some("draw-bad-size") => {
+            let (rows, cols) = console_size();
+            let cells = vec![Cell::plain(' '); rows * cols];
+            let header = ConsoleDraw {
+                rows: rows as u16 + 1, // one more than the console actually has
+                cols: cols as u16,
+                cursor_row: 0,
+                cursor_col: 0,
+            };
+            let ret = draw_raw(&header, &cells);
+            let _ = writeln!(out, "draw-bad-size: {ret}");
+            0
+        }
+        Some("draw-bad-char") => {
+            let (rows, cols) = console_size();
+            let mut cells = vec![Cell::plain(' '); rows * cols];
+            cells[0] = Cell {
+                ch: 0xD800,
+                attr: 0,
+            }; // a surrogate half: not a valid `char`
+            let ret = draw(rows, cols, 0, 0, &cells);
+            let _ = writeln!(out, "draw-bad-char: {ret}");
+            0
+        }
+        Some("draw-wide-edge") => {
+            let (rows, cols) = console_size();
+            let mut cells = vec![Cell::plain(' '); rows * cols];
+            cells[cols - 1] = Cell::plain('中'); // the last column: no room for a second one
+            let ret = draw(rows, cols, 0, 0, &cells);
+            let _ = writeln!(out, "draw-wide-edge: {ret}");
+            0
+        }
+        Some("draw-timing") => {
+            let n = args.next().and_then(progs::atoi).unwrap_or(30);
+            let (rows, cols) = console_size();
+            let cells = vec![Cell::plain('X'); rows * cols];
+            let frequency = counter_frequency();
+            let start = counter();
+            for _ in 0..n {
+                draw(rows, cols, 0, 0, &cells);
+            }
+            let elapsed_ms = (counter() - start) * 1000 / frequency;
+            let _ = writeln!(out, "draw-timing: {n} frames in {elapsed_ms} ms");
+            0
+        }
+        Some("draw-cursor-oob") => {
+            let (rows, cols) = console_size();
+            let cells = vec![Cell::plain(' '); rows * cols];
+            // One past the last valid row/column each -- must be clamped into range, not refused.
+            let ret = draw(rows, cols, rows as u16, cols as u16, &cells);
+            let _ = writeln!(out, "draw-cursor-oob: {ret}");
+            0
+        }
+        Some("draw-ptr") => match args.next().and_then(progs::atoi) {
+            Some(addr) => {
+                let _ = writeln!(
+                    out,
+                    "draw-ptr({addr}): {}",
+                    userlib::ioctl(1, userlib::CONSOLE_DRAW, addr)
+                );
+                0
+            }
+            None => usage_exit("probe draw-ptr ADDR"),
+        },
         Some("winsize-ptr") => {
             match (
                 args.next().and_then(progs::atoi),
@@ -303,11 +427,20 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
                         other => other.parse::<i64>().unwrap_or(0),
                     };
                     let mut times = [0u8; abi::time::UTIMES_SIZE];
-                    for (i, (s, n)) in [(sec(asec), nsec(ansec)), (sec(msec), nsec(mnsec))].into_iter().enumerate() {
+                    for (i, (s, n)) in [(sec(asec), nsec(ansec)), (sec(msec), nsec(mnsec))]
+                        .into_iter()
+                        .enumerate()
+                    {
                         times[i * 16..i * 16 + 8].copy_from_slice(&s.to_le_bytes());
                         times[i * 16 + 8..i * 16 + 16].copy_from_slice(&n.to_le_bytes());
                     }
-                    let r = raw(abi::syscall::SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), times.as_ptr() as usize, 0);
+                    let r = raw(
+                        abi::syscall::SYS_UTIMENSAT,
+                        path.as_ptr() as usize,
+                        path.len(),
+                        times.as_ptr() as usize,
+                        0,
+                    );
                     let _ = writeln!(out, "utimens: {r}");
                     0
                 }
@@ -316,7 +449,13 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
         }
         Some("utimens-null") => match args.next() {
             Some(path) => {
-                let r = raw(abi::syscall::SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), 0, 0);
+                let r = raw(
+                    abi::syscall::SYS_UTIMENSAT,
+                    path.as_ptr() as usize,
+                    path.len(),
+                    0,
+                    0,
+                );
                 let _ = writeln!(out, "utimens: {r}");
                 0
             }
@@ -325,8 +464,20 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
         Some("utimens-bad") => match args.next() {
             Some(path) => {
                 // The last bytes of the address space, and one inside the kernel's window: neither is readable user memory.
-                let r = raw(abi::syscall::SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), usize::MAX - 8, 0);
-                let low = raw(abi::syscall::SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), 16, 0);
+                let r = raw(
+                    abi::syscall::SYS_UTIMENSAT,
+                    path.as_ptr() as usize,
+                    path.len(),
+                    usize::MAX - 8,
+                    0,
+                );
+                let low = raw(
+                    abi::syscall::SYS_UTIMENSAT,
+                    path.as_ptr() as usize,
+                    path.len(),
+                    16,
+                    0,
+                );
                 let _ = writeln!(out, "utimens: {r} {low}");
                 0
             }
@@ -371,7 +522,10 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
             }
         },
         _ => {
-            let _ = writeln!(Fd(2), "usage: probe sys-unknown|bad-ptr|fds|close-out|brk|clock|leak-write|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ...");
+            let _ = writeln!(
+                Fd(2),
+                "usage: probe sys-unknown|bad-ptr|fds|close-out|brk|clock|leak-write|reboot-wide|getdents-small|args|exit|poke|poke-w|user-ptrs|ioctl|getcwd|sp|stack|frag|frag-raw|bs-wide|interleave ..."
+            );
             2
         }
     }
@@ -380,14 +534,32 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
 fn bad_ptr(out: &mut Fd) {
     let valid = b"hello".as_ptr() as usize;
     let cases: [(&str, isize); 8] = [
-        ("write, pointer in kernel memory", raw(SYS_WRITE, 1, 0x4000_0000, 4, 0)),
-        ("write, pointer at the top of the address space", raw(SYS_WRITE, 1, usize::MAX - 3, 8, 0)),
-        ("write, length larger than the window", raw(SYS_WRITE, 1, valid, 0x4000_0000, 0)),
-        ("read, bad pointer", raw(SYS_READ, 0, 0xffff_0000_0000_0000, 4, 0)),
+        (
+            "write, pointer in kernel memory",
+            raw(SYS_WRITE, 1, 0x4000_0000, 4, 0),
+        ),
+        (
+            "write, pointer at the top of the address space",
+            raw(SYS_WRITE, 1, usize::MAX - 3, 8, 0),
+        ),
+        (
+            "write, length larger than the window",
+            raw(SYS_WRITE, 1, valid, 0x4000_0000, 0),
+        ),
+        (
+            "read, bad pointer",
+            raw(SYS_READ, 0, 0xffff_0000_0000_0000, 4, 0),
+        ),
         ("open, bad pointer", raw(SYS_OPEN, 0x1000, 5, 0, 0)),
-        ("open, path is not UTF-8", raw(SYS_OPEN, b"\xff\xfe".as_ptr() as usize, 2, 0, 0)),
+        (
+            "open, path is not UTF-8",
+            raw(SYS_OPEN, b"\xff\xfe".as_ptr() as usize, 2, 0, 0),
+        ),
         ("chmod, bad pointer", raw(SYS_CHMOD, usize::MAX, 4, 0, 0)),
-        ("getdents on a closed fd", raw(SYS_GETDENTS, 99, valid, 8, 0)),
+        (
+            "getdents on a closed fd",
+            raw(SYS_GETDENTS, 99, valid, 8, 0),
+        ),
     ];
     for (what, ret) in cases {
         let _ = writeln!(out, "{what}: {ret}");
@@ -420,7 +592,11 @@ fn fds(out: &mut Fd, paths: userlib::Args) {
         userlib::close(fd);
     }
     let again = userlib::open("/tests/notes.txt", userlib::O_RDONLY);
-    let _ = writeln!(out, "after closing all: {}", if again >= 0 { "open ok" } else { "open failed" });
+    let _ = writeln!(
+        out,
+        "after closing all: {}",
+        if again >= 0 { "open ok" } else { "open failed" }
+    );
     userlib::close(again as usize);
 }
 
@@ -436,7 +612,11 @@ fn brk_probe(out: &mut Fd) {
 
     // Grow by three pages and a byte: the break is exactly what was asked, four pages are mapped.
     let want = start + 3 * PAGE + 1;
-    let _ = writeln!(out, "grow +3 pages +1 byte: granted {}", userlib::brk(want) == want);
+    let _ = writeln!(
+        out,
+        "grow +3 pages +1 byte: granted {}",
+        userlib::brk(want) == want
+    );
     let heap = start as *mut u8;
     let mut zero = true;
     for i in 0..4 * PAGE {
@@ -451,35 +631,85 @@ fn brk_probe(out: &mut Fd) {
     // The kernel checks a pointer against what is mapped: the last mapped page is fine, one past it is not.
     // (`getcwd` writes the working directory's path, which is short, at the pointer.)
     let end = start + 4 * PAGE;
-    let _ = writeln!(out, "kernel write at the last mapped bytes: {}", raw(SYS_GETCWD, end - 64, 64, 0, 0) > 0);
-    let _ = writeln!(out, "kernel write across the end: {}", raw(SYS_GETCWD, end - 32, 64, 0, 0));
-    let _ = writeln!(out, "kernel write just past it: {}", raw(SYS_GETCWD, end, 64, 0, 0));
+    let _ = writeln!(
+        out,
+        "kernel write at the last mapped bytes: {}",
+        raw(SYS_GETCWD, end - 64, 64, 0, 0) > 0
+    );
+    let _ = writeln!(
+        out,
+        "kernel write across the end: {}",
+        raw(SYS_GETCWD, end - 32, 64, 0, 0)
+    );
+    let _ = writeln!(
+        out,
+        "kernel write just past it: {}",
+        raw(SYS_GETCWD, end, 64, 0, 0)
+    );
 
     // Shrink to the middle of the first page: the pages above go, and the rest of that page is zeroed.
     let keep = start + 100;
-    let _ = writeln!(out, "shrink to +100: granted {}", userlib::brk(keep) == keep);
+    let _ = writeln!(
+        out,
+        "shrink to +100: granted {}",
+        userlib::brk(keep) == keep
+    );
     // SAFETY: the first page is still mapped.
     let (below, above) = unsafe { (read_volatile(heap.add(50)), read_volatile(heap.add(200))) };
-    let _ = writeln!(out, "shrink: below the break kept {}, above it zeroed {}", below == 0xAB, above == 0);
-    let _ = writeln!(out, "shrink: the page above is unmapped: {}", raw(SYS_GETCWD, start + PAGE, 64, 0, 0));
-    let _ = writeln!(out, "regrow: granted {}", userlib::brk(start + 2 * PAGE) == start + 2 * PAGE);
+    let _ = writeln!(
+        out,
+        "shrink: below the break kept {}, above it zeroed {}",
+        below == 0xAB,
+        above == 0
+    );
+    let _ = writeln!(
+        out,
+        "shrink: the page above is unmapped: {}",
+        raw(SYS_GETCWD, start + PAGE, 64, 0, 0)
+    );
+    let _ = writeln!(
+        out,
+        "regrow: granted {}",
+        userlib::brk(start + 2 * PAGE) == start + 2 * PAGE
+    );
     // SAFETY: the two pages are mapped again.
-    let regrown = unsafe { read_volatile(heap.add(200)) == 0 && read_volatile(heap.add(PAGE + 5)) == 0 };
+    let regrown =
+        unsafe { read_volatile(heap.add(200)) == 0 && read_volatile(heap.add(PAGE + 5)) == 0 };
     let _ = writeln!(out, "regrow: zero again {regrown}");
 
     // What is refused leaves the break where it was.
     let now = userlib::brk(0);
-    let _ = writeln!(out, "below the start: unchanged {}", userlib::brk(start - 1) == now);
-    let _ = writeln!(out, "into the stack's guard: unchanged {}", userlib::brk(HEAP_LIMIT + 1) == now);
-    let _ = writeln!(out, "the whole address space: unchanged {}", userlib::brk(usize::MAX) == now);
-    let _ = writeln!(out, "up to the guard exactly: granted {}", userlib::brk(HEAP_LIMIT) == HEAP_LIMIT);
+    let _ = writeln!(
+        out,
+        "below the start: unchanged {}",
+        userlib::brk(start - 1) == now
+    );
+    let _ = writeln!(
+        out,
+        "into the stack's guard: unchanged {}",
+        userlib::brk(HEAP_LIMIT + 1) == now
+    );
+    let _ = writeln!(
+        out,
+        "the whole address space: unchanged {}",
+        userlib::brk(usize::MAX) == now
+    );
+    let _ = writeln!(
+        out,
+        "up to the guard exactly: granted {}",
+        userlib::brk(HEAP_LIMIT) == HEAP_LIMIT
+    );
     let _ = writeln!(out, "back down: granted {}", userlib::brk(start) == start);
 }
 
 fn clock(out: &mut Fd) {
     match userlib::clock_gettime(userlib::CLOCK_REALTIME) {
         Ok((sec, nsec)) => {
-            let _ = writeln!(out, "realtime: plausible={} nsec={nsec}", sec > 1_600_000_000);
+            let _ = writeln!(
+                out,
+                "realtime: plausible={} nsec={nsec}",
+                sec > 1_600_000_000
+            );
         }
         Err(e) => {
             let _ = writeln!(out, "realtime: error {e}");
@@ -493,8 +723,16 @@ fn clock(out: &mut Fd) {
         let _ = writeln!(out, "clock {label}: {result}");
     }
     let code = clock as *const () as usize; // read-only: mapped for execution, never writable
-    for (what, ptr) in [("null", 0usize), ("wrapping", usize::MAX - 7), ("read-only", code)] {
-        let _ = writeln!(out, "{what} pointer: {}", raw(SYS_CLOCK_GETTIME, 0, ptr, 0, 0));
+    for (what, ptr) in [
+        ("null", 0usize),
+        ("wrapping", usize::MAX - 7),
+        ("read-only", code),
+    ] {
+        let _ = writeln!(
+            out,
+            "{what} pointer: {}",
+            raw(SYS_CLOCK_GETTIME, 0, ptr, 0, 0)
+        );
     }
 }
 
@@ -502,10 +740,26 @@ fn getdents_small(out: &mut Fd) {
     let dir = userlib::open("/tests", userlib::O_RDONLY);
     let file = userlib::open("/tests/notes.txt", userlib::O_RDONLY);
     let mut buf = [0u8; abi::fs::DIRENT_SIZE];
-    let _ = writeln!(out, "empty buffer: {}", userlib::getdents(dir as usize, &mut buf[..0]));
-    let _ = writeln!(out, "one byte short: {}", userlib::getdents(dir as usize, &mut buf[..abi::fs::DIRENT_SIZE - 1]));
-    let _ = writeln!(out, "on a file, too small: {}", userlib::getdents(file as usize, &mut buf[..10]));
-    let _ = writeln!(out, "exactly one record: {}", userlib::getdents(dir as usize, &mut buf));
+    let _ = writeln!(
+        out,
+        "empty buffer: {}",
+        userlib::getdents(dir as usize, &mut buf[..0])
+    );
+    let _ = writeln!(
+        out,
+        "one byte short: {}",
+        userlib::getdents(dir as usize, &mut buf[..abi::fs::DIRENT_SIZE - 1])
+    );
+    let _ = writeln!(
+        out,
+        "on a file, too small: {}",
+        userlib::getdents(file as usize, &mut buf[..10])
+    );
+    let _ = writeln!(
+        out,
+        "exactly one record: {}",
+        userlib::getdents(dir as usize, &mut buf)
+    );
     userlib::close(dir as usize);
     userlib::close(file as usize);
 }
@@ -523,7 +777,11 @@ fn print_args(out: &mut Fd, argc: usize, argv: *const *const u8) {
     unsafe { asm!("mov {}, sp", out(reg) sp) };
     let yes = |b: bool| if b { "yes" } else { "no" };
     let _ = writeln!(out, "argv[argc] is NULL: {}", yes(terminator.is_null()));
-    let _ = writeln!(out, "argv is 16-byte aligned: {}", yes((argv as usize).is_multiple_of(16)));
+    let _ = writeln!(
+        out,
+        "argv is 16-byte aligned: {}",
+        yes((argv as usize).is_multiple_of(16))
+    );
     let _ = writeln!(out, "sp is 16-byte aligned: {}", yes(sp.is_multiple_of(16)));
 }
 
@@ -536,9 +794,21 @@ fn print_env(out: &mut Fd, argc: usize, argv: *const *const u8, envp: *const *co
     }
     let yes = |b: bool| if b { "yes" } else { "no" };
     let _ = writeln!(out, "envc={count}");
-    let _ = writeln!(out, "envp[envc] is NULL: {}", yes(unsafe { *envp.add(count) }.is_null()));
-    let _ = writeln!(out, "envp directly follows argv's NULL: {}", yes(envp == unsafe { argv.add(argc + 1) }));
-    let _ = writeln!(out, "vars() agrees: {}", yes(userlib::env::vars().count() == count));
+    let _ = writeln!(
+        out,
+        "envp[envc] is NULL: {}",
+        yes(unsafe { *envp.add(count) }.is_null())
+    );
+    let _ = writeln!(
+        out,
+        "envp directly follows argv's NULL: {}",
+        yes(envp == unsafe { argv.add(argc + 1) })
+    );
+    let _ = writeln!(
+        out,
+        "vars() agrees: {}",
+        yes(userlib::env::vars().count() == count)
+    );
 }
 
 /// User-window addresses (see the kernel's `platform/base_addresses.rs`) that are not backed by memory
@@ -555,17 +825,85 @@ fn user_ptrs(out: &mut Fd) {
     let cases: [(&str, isize); 9] = [
         ("write from the gap", raw(SYS_WRITE, 1, GAP, 16, 0)),
         ("write from the guard", raw(SYS_WRITE, 1, GUARD, 16, 0)),
-        ("write running off the top of the stack", raw(SYS_WRITE, 1, STACK_TOP - 8, 16, 0)),
-        ("read into read-only code", raw(SYS_READ, fd as usize, code, 16, 0)),
-        ("read into the guard", raw(SYS_READ, fd as usize, GUARD, 16, 0)),
-        ("getdents into read-only code", raw(SYS_GETDENTS, dir as usize, code, 64, 0)),
-        ("open with the path in the guard", raw(SYS_OPEN, GUARD, 5, 0, 0)),
-        ("chmod with the path in the gap", raw(SYS_CHMOD, GAP, 4, 0, 0)),
-        ("write from code (the kernel only reads it: allowed)", raw(SYS_WRITE, 1, code, 0, 0)),
+        (
+            "write running off the top of the stack",
+            raw(SYS_WRITE, 1, STACK_TOP - 8, 16, 0),
+        ),
+        (
+            "read into read-only code",
+            raw(SYS_READ, fd as usize, code, 16, 0),
+        ),
+        (
+            "read into the guard",
+            raw(SYS_READ, fd as usize, GUARD, 16, 0),
+        ),
+        (
+            "getdents into read-only code",
+            raw(SYS_GETDENTS, dir as usize, code, 64, 0),
+        ),
+        (
+            "open with the path in the guard",
+            raw(SYS_OPEN, GUARD, 5, 0, 0),
+        ),
+        (
+            "chmod with the path in the gap",
+            raw(SYS_CHMOD, GAP, 4, 0, 0),
+        ),
+        (
+            "write from code (the kernel only reads it: allowed)",
+            raw(SYS_WRITE, 1, code, 0, 0),
+        ),
     ];
     for (what, ret) in cases {
         let _ = writeln!(out, "{what}: {ret}");
     }
+}
+
+/// The console's size in cells, via `TIOCGWINSZ` -- panics if fd 1 isn't the console, which every
+/// `draw*` subcommand needs anyway.
+fn console_size() -> (usize, usize) {
+    let size = userlib::winsize(1).expect("stdout is not the console");
+    (usize::from(size.rows), usize::from(size.cols))
+}
+
+/// Builds a `CONSOLE_DRAW` buffer (a header claiming the real console size, then `cells`) and draws
+/// it on stdout.
+fn draw(rows: usize, cols: usize, cursor_row: u16, cursor_col: u16, cells: &[Cell]) -> isize {
+    let header = ConsoleDraw {
+        rows: rows as u16,
+        cols: cols as u16,
+        cursor_row,
+        cursor_col,
+    };
+    draw_raw(&header, cells)
+}
+
+/// As `draw`, but with a header the caller builds itself -- for a header that deliberately doesn't
+/// match the real console (`draw-bad-size`).
+fn draw_raw(header: &ConsoleDraw, cells: &[Cell]) -> isize {
+    let mut buf =
+        Vec::with_capacity(userlib::CONSOLE_DRAW_HEADER_SIZE + cells.len() * userlib::CELL_SIZE);
+    buf.extend_from_slice(&header.encode());
+    for cell in cells {
+        buf.extend_from_slice(&cell.encode());
+    }
+    userlib::console_draw(1, &buf)
+}
+
+/// The ARM virtual counter and its frequency -- as `spin.rs` uses, for a resolution the one-second
+/// real-time clock doesn't have.
+fn counter() -> u64 {
+    let value: u64;
+    // SAFETY: reads the virtual counter, enabled for EL0 by the kernel.
+    unsafe { asm!("mrs {v}, cntvct_el0", v = out(reg) value) };
+    value
+}
+
+fn counter_frequency() -> u64 {
+    let frequency: u64;
+    // SAFETY: always readable at EL0.
+    unsafe { asm!("mrs {f}, cntfrq_el0", f = out(reg) frequency) };
+    frequency
 }
 
 fn usage_exit(text: &str) -> i32 {

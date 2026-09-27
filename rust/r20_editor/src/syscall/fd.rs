@@ -9,8 +9,9 @@
 //! shell's stream bindings, can refer to the same one, and it is closed when the last reference goes.
 //! `Console` and `Keyboard` have no state of their own here.
 
+use crate::console::font::glyph_for;
 use crate::console::utf8::Utf8Decoder;
-use crate::console::{BG, FG};
+use crate::console::{BG, DIM_FG, FG};
 use crate::exec::elf;
 use crate::exec::shell_state::{self, Stdio};
 use crate::fs::fattime::{TimeChoice, choose};
@@ -22,7 +23,10 @@ use crate::platform::uart::{uart_clear_screen, uart_write};
 use crate::static_mut_ref;
 use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY, ERANGE};
 use abi::fs::{AT_REMOVEDIR, O_APPEND, O_RDONLY, O_WRONLY, STAT_SIZE};
-use abi::ioctl::{CONSOLE_CLEAR, CONSOLE_READ_KEY, TIOCGWINSZ, WINSIZE_SIZE, WinSize};
+use abi::ioctl::{
+    ATTR_DIM, ATTR_INVERSE, CELL_SIZE, CONSOLE_CLEAR, CONSOLE_DRAW, CONSOLE_DRAW_HEADER_SIZE,
+    CONSOLE_READ_KEY, Cell, ConsoleDraw, TIOCGWINSZ, WINSIZE_SIZE, WinSize,
+};
 use abi::keys::KEYEVENT_SIZE;
 use abi::time::UTIMES_SIZE;
 
@@ -293,13 +297,15 @@ pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
 /// `arg` and is answered for the keyboard (stdin) as well as the console, so a program learns from any
 /// of its three standard fds whether it is on a terminal and how big it is; `EFAULT` for a bad `arg`.
 /// `CONSOLE_READ_KEY` blocks for one key press and writes it to `arg`, answered for the keyboard
-/// (stdin) only -- not the console, since that fd is for drawing, not reading. Any other request, or
-/// any other kind of fd, is `ENOTTY`; an fd that isn't open is `EBADF`.
+/// (stdin) only -- not the console, since that fd is for drawing, not reading. `CONSOLE_DRAW` draws a
+/// whole frame from `arg` and is answered for the console only, the opposite way round. Any other
+/// request, or any other kind of fd, is `ENOTTY`; an fd that isn't open is `EBADF`.
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> isize {
     match (FileDescriptor::for_fd(fd), request) {
         (None, _) => EBADF,
         (Some(FileDescriptor::Console | FileDescriptor::Keyboard), TIOCGWINSZ) => window_size(arg),
         (Some(FileDescriptor::Keyboard), CONSOLE_READ_KEY) => read_key(arg),
+        (Some(FileDescriptor::Console), CONSOLE_DRAW) => draw_frame(arg),
         (Some(FileDescriptor::Console), CONSOLE_CLEAR) => {
             // SAFETY: as `console_draw`.
             unsafe {
@@ -326,6 +332,108 @@ fn read_key(ptr: usize) -> isize {
     // SAFETY: validated above to lie entirely within writable user memory.
     let out = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, KEYEVENT_SIZE) };
     out.copy_from_slice(&event.encode());
+    0
+}
+
+/// One [`Cell`]'s worth of what `draw_frame` needs: the character to draw and how many columns it
+/// takes (2 for a wide glyph, 1 otherwise) -- or `None` for a cell that isn't a valid, non-control
+/// Unicode scalar value, which refuses the whole frame (see `abi::ioctl::Cell`'s doc comment).
+fn decode_cell(bytes: [u8; CELL_SIZE]) -> Option<(char, u8, usize)> {
+    let cell = Cell::decode(bytes);
+    let c = char::from_u32(cell.ch).filter(|c| !c.is_control())?;
+    let width = if glyph_for(c).is_fullwidth() { 2 } else { 1 };
+    Some((c, cell.attr, width))
+}
+
+/// The `(fg, bg)` pair `draw_frame` gives `Console::put_char_at` for one cell's `attr` -- reserved bits
+/// beyond `ATTR_INVERSE`/`ATTR_DIM` are masked off, not refused, so a future flag doesn't break a
+/// program built against this one.
+fn cell_colors(attr: u8) -> (u32, u32) {
+    match (attr & ATTR_INVERSE != 0, attr & ATTR_DIM != 0) {
+        (false, false) => (FG, BG),
+        (false, true) => (DIM_FG, BG),
+        (true, false) => (BG, FG),
+        (true, true) => (BG, DIM_FG),
+    }
+}
+
+/// `CONSOLE_DRAW`: draws a whole frame from the header-then-cells buffer at `ptr` (see
+/// `abi::ioctl::CONSOLE_DRAW`). Walks the frame **twice**: once to check every cell decodes to a
+/// character with room for its width in its row (`EINVAL` on the first violation, same principle as
+/// `exec::elf::load`'s "validate everything first" -- a malformed frame is refused whole, never drawn
+/// in part and then rejected), and again to actually draw, so nothing between those two passes can
+/// leave the screen in a state no single call produced. A wide glyph's second column is *walked* (its
+/// byte range still exists in the buffer) but never separately decoded or drawn -- see `Cell`'s doc
+/// comment.
+fn draw_frame(ptr: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // reads a user buffer: clear PAN while it does
+    if !validate(ptr, CONSOLE_DRAW_HEADER_SIZE, false) {
+        return EFAULT;
+    }
+    // SAFETY: validated above to lie entirely within mapped user memory.
+    let header_bytes =
+        unsafe { core::slice::from_raw_parts(ptr as *const u8, CONSOLE_DRAW_HEADER_SIZE) };
+    let header = ConsoleDraw::decode(header_bytes.try_into().unwrap());
+
+    // SAFETY: as `console_draw` (CONSOLE is populated well before any program can be running).
+    let (rows, cols) = unsafe {
+        let console = static_mut_ref!(CONSOLE);
+        (console.rows, console.cols)
+    };
+    if usize::from(header.rows) != rows || usize::from(header.cols) != cols {
+        return EINVAL;
+    }
+
+    let Some(cell_bytes_len) = (rows * cols).checked_mul(CELL_SIZE) else {
+        return EINVAL; // unreachable at this console's actual size; never trust the arithmetic anyway
+    };
+    let Some(cells_ptr) = ptr.checked_add(CONSOLE_DRAW_HEADER_SIZE) else {
+        return EFAULT;
+    };
+    if !validate(cells_ptr, cell_bytes_len, false) {
+        return EFAULT;
+    }
+    // SAFETY: validated above to lie entirely within mapped user memory.
+    let cell_bytes = unsafe { core::slice::from_raw_parts(cells_ptr as *const u8, cell_bytes_len) };
+    let cell_at = |row: usize, col: usize| -> [u8; CELL_SIZE] {
+        let start = (row * cols + col) * CELL_SIZE;
+        cell_bytes[start..start + CELL_SIZE].try_into().unwrap()
+    };
+
+    // Pass 1: every cell that will actually be drawn (skipping a wide glyph's second column, which is
+    // never separately decoded) must decode, and must fit in what's left of its row.
+    for row in 0..rows {
+        let mut col = 0;
+        while col < cols {
+            let Some((_, _, width)) = decode_cell(cell_at(row, col)) else {
+                return EINVAL;
+            };
+            if col + width > cols {
+                return EINVAL;
+            }
+            col += width;
+        }
+    }
+
+    // Pass 2: draw, now that nothing in the frame can panic `Console::put_char_at`.
+    // SAFETY: as above.
+    let console = unsafe { static_mut_ref!(CONSOLE) };
+    for row in 0..rows {
+        let mut col = 0;
+        while col < cols {
+            let (c, attr, width) = decode_cell(cell_at(row, col)).unwrap();
+            let (fg, bg) = cell_colors(attr);
+            console.put_char_at(row, col, c, fg, bg);
+            col += width;
+        }
+    }
+    let cursor_row = usize::from(header.cursor_row).min(rows - 1);
+    let cursor_col = usize::from(header.cursor_col).min(cols - 1);
+    console.move_cursor(cursor_row, cursor_col);
+    // SAFETY: as above.
+    unsafe { static_mut_ref!(GPU).flush() };
+    #[cfg(feature = "testhooks")]
+    testhooks::count_flush();
     0
 }
 

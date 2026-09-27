@@ -23,6 +23,9 @@ use unifont::Glyph;
 // same colors.
 pub const FG: u32 = 0xFF55FF55;
 pub const BG: u32 = 0xFF00_0000;
+/// `FG` at about half brightness (each RGB channel halved: `0x55`->`0x2A`, `0xFF`->`0x7F`) -- from Stage
+/// 20, for `CONSOLE_DRAW`'s `ATTR_DIM` (the editor's line-number gutter, a past-end-of-file filler).
+pub const DIM_FG: u32 = 0xFF2A_7F2A;
 
 /// Column spacing for `\t`, matching the traditional terminal default.
 const TAB_WIDTH: usize = 8;
