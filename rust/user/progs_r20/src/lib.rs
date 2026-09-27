@@ -11,5 +11,6 @@ pub mod buffer;
 pub mod editrc;
 pub mod layout;
 pub mod region;
+pub mod render;
 pub mod scroll;
 pub mod width;

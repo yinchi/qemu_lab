@@ -18,7 +18,7 @@
 use alloc::vec::Vec;
 
 use crate::buffer::Buffer;
-use crate::layout::{Row, position_to_cell, row_count, wrap_line};
+use crate::layout::{Row, cell_to_position, position_to_cell, row_count, wrap_line};
 
 /// The view's top: line `line`, its own screen row `sub_row` (always 0 unless that line is taller
 /// than the text area and the cursor is presently inside it).
@@ -141,6 +141,49 @@ pub fn visible_rows(
         skip = 0;
     }
     out
+}
+
+/// Moves `buffer`'s cursor one screen row up (`up`) or down, crossing into the previous or next
+/// logical line where the current one's own rows run out, and landing at (or as close as possible
+/// to) `preferred_col` -- the *display* column Up/Down keep returning to across a run of vertical
+/// moves, even through lines too short to reach it, until something else moves the cursor
+/// horizontally and the caller resets it to `None` (this function only ever reads and updates it;
+/// resetting on a horizontal move is the caller's job, since only it knows which key that was).
+/// Returns whether anything moved (`false` at the very first or very last row of the buffer).
+pub fn move_vertical(
+    buffer: &mut Buffer,
+    up: bool,
+    preferred_col: &mut Option<usize>,
+    width: usize,
+    tab_size: usize,
+) -> bool {
+    let (line, byte) = buffer.cursor();
+    let (row, col) = position_to_cell(buffer.line(line), byte, width, tab_size);
+    let want = preferred_col.unwrap_or(col);
+
+    let (target_line, target_row) = if up {
+        if row > 0 {
+            (line, row - 1)
+        } else if line > 0 {
+            (
+                line - 1,
+                row_count(buffer.line(line - 1), width, tab_size) - 1,
+            )
+        } else {
+            return false; // already the very first row of the buffer
+        }
+    } else if row + 1 < row_count(buffer.line(line), width, tab_size) {
+        (line, row + 1)
+    } else if line + 1 < buffer.line_count() {
+        (line + 1, 0)
+    } else {
+        return false; // already the very last row of the buffer
+    };
+
+    let new_byte = cell_to_position(buffer.line(target_line), target_row, want, width, tab_size);
+    buffer.set_cursor(target_line, new_byte);
+    *preferred_col = Some(want);
+    true
 }
 
 #[cfg(test)]
@@ -348,5 +391,52 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[0].0, rows[0].1.start), (0, 8));
         assert_eq!((rows[1].0, rows[1].1.start), (0, 9));
+    }
+
+    #[test]
+    fn move_vertical_within_one_line_seeks_the_same_display_column() {
+        let mut b = buffer_of(&["1234567890", "12345"]);
+        b.set_cursor(0, 4); // width 80, tab 4: column 4
+        let mut preferred = None;
+        assert!(move_vertical(&mut b, false, &mut preferred, 80, 4)); // Down, into the shorter line
+        assert_eq!(b.cursor(), (1, 4));
+        assert_eq!(preferred, Some(4));
+        assert!(move_vertical(&mut b, true, &mut preferred, 80, 4)); // Up, back
+        assert_eq!(b.cursor(), (0, 4));
+    }
+
+    #[test]
+    fn move_vertical_keeps_the_preferred_column_through_a_shorter_line() {
+        // Moving down through a line too short to reach the preferred column, then down again into
+        // one long enough, lands back at the original column -- not wherever the short line's own
+        // end happened to be.
+        let mut b = buffer_of(&["1234567890", "12", "1234567890"]);
+        b.set_cursor(0, 7);
+        let mut preferred = None;
+        assert!(move_vertical(&mut b, false, &mut preferred, 80, 4));
+        assert_eq!(b.cursor(), (1, 2)); // "12" has no column 7: lands at its own end
+        assert_eq!(preferred, Some(7)); // the *want*, not where it actually landed
+        assert!(move_vertical(&mut b, false, &mut preferred, 80, 4));
+        assert_eq!(b.cursor(), (2, 7)); // column 7 exists again
+    }
+
+    #[test]
+    fn move_vertical_crosses_a_wrapped_lines_own_rows_before_the_next_line() {
+        // "12345678901234567890" at width 5 wraps to four rows of the one line; moving down from its
+        // second row goes to its third row, still the same line, before ever reaching "next".
+        let mut b = buffer_of(&["12345678901234567890", "next"]);
+        b.set_cursor(0, 7); // row 1 (chars 5-9), column 2
+        let mut preferred = None;
+        assert!(move_vertical(&mut b, false, &mut preferred, 5, 4));
+        assert_eq!(b.cursor(), (0, 12)); // row 2, same column
+    }
+
+    #[test]
+    fn move_vertical_does_nothing_at_the_very_first_or_last_row() {
+        let mut b = buffer_of(&["a", "b"]);
+        let mut preferred = None;
+        assert!(!move_vertical(&mut b, true, &mut preferred, 80, 4));
+        b.set_cursor(1, 1);
+        assert!(!move_vertical(&mut b, false, &mut preferred, 80, 4));
     }
 }

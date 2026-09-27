@@ -41,6 +41,8 @@ pub const KEY_H: u16 = 35;
 /// Ctrl+K: erase from the cursor to the end of the line.
 pub const KEY_K: u16 = 37;
 pub const KEY_BACKSLASH: u16 = 43;
+/// Ctrl+X: `edit`'s exit.
+pub const KEY_X: u16 = 45;
 /// Ctrl+B: one character left (Alt+B: one word left).
 pub const KEY_B: u16 = 48;
 /// Ctrl+N: the next history entry, as Down.
@@ -270,6 +272,7 @@ mod tests {
             (KEY_W, KEY_P, KEY_F, KEY_H, KEY_B, KEY_N),
             (17, 25, 33, 35, 48, 49)
         );
+        assert_eq!(KEY_X, 45);
     }
 
     #[test]

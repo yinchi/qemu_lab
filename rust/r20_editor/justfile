@@ -27,7 +27,7 @@ elf:
     bash ../elf_test.sh {{justfile_directory()}}/{{BIN}}.elf
 
 # Builds disk.img (64 MiB FAT16): every core utility of every program tier up to this stage --
-# ../user/progs (the base tier, Stages 9-11) and ../user/progs_r12 (Stage 12) and ../user/progs_r13 (Stage 13) and ../user/progs_r15 (Stage 15) and ../user/progs_r16 (Stage 16) and ../user/progs_r17 (Stage 17) and ../user/progs_r18 (Stage 18) and ../user/progs_r19 (Stage 19); see
+# ../user/progs (the base tier, Stages 9-11) and ../user/progs_r12 (Stage 12) and ../user/progs_r13 (Stage 13) and ../user/progs_r15 (Stage 15) and ../user/progs_r16 (Stage 16) and ../user/progs_r17 (Stage 17) and ../user/progs_r18 (Stage 18), ../user/progs_r19 (Stage 19) and ../user/progs_r20 (Stage 20); see
 # docs/progs.md -- staged into disk/bin/ as <name> (Stages 9-16 named them <name>.exe), tiers copied lowest first so that a later tier's
 # program replaces an earlier tier's of the same name -- the launcher looks a name up
 # exactly as typed -- plus this stage's test
@@ -46,7 +46,7 @@ disk:
     mkdir -p disk/bin
     # Program tiers, lowest first: a later tier's binary overwrites an earlier one's of the same name.
     # A later stage lists every tier up to its own.
-    for tier in progs progs_r12 progs_r13 progs_r15 progs_r16 progs_r17 progs_r18 progs_r19; do
+    for tier in progs progs_r12 progs_r13 progs_r15 progs_r16 progs_r17 progs_r18 progs_r19 progs_r20; do
         (cd ../user/${tier} && cargo build --target ${TARGET} --release)
         for src in ../user/${tier}/src/bin/*.rs; do
             name=$(basename "$src" .rs)

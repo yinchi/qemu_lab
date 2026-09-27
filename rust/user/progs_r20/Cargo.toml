@@ -1,9 +1,5 @@
-# The pure logic behind Stage 20's editor, `edit` -- a tier of its own, as the scheme in
-# `../progs_r12/Cargo.toml` describes. `edit` itself (`src/bin/edit.rs`) arrives in Step 5, along
-# with `abi`/`userlib`/`progs` as dependencies; this crate's modules exist beforehand, with none of
-# those three, so they can be host-tested (`../../../r20_editor/hosttests`) the way the kernel's own
-# pure modules are, and so no syscall or userlib dependency creeps into logic that has no business
-# needing one.
+# The pure logic behind Stage 20's editor, `edit`, plus (from Step 5) `edit` itself
+# (`src/bin/edit.rs`) -- a tier of its own, as the scheme in `../progs_r12/Cargo.toml` describes.
 [package]
 name = "progs_r20"
 version = "0.1.0"
@@ -14,6 +10,9 @@ edition = "2024"
 # dependency) -- so the editor's line-wrapping agrees with what `CONSOLE_DRAW` will actually put
 # on screen, not an independent guess.
 unifont = "1.1"
+abi = { path = "../abi" }
+userlib = { path = "../userlib", features = ["heap"] }
+progs = { path = "../progs" }
 
 [profile.dev]
 panic = "abort"

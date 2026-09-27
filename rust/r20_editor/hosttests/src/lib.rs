@@ -106,5 +106,7 @@ pub mod buffer;
 pub mod layout;
 #[path = "../../../user/progs_r20/src/region.rs"]
 pub mod region;
+#[path = "../../../user/progs_r20/src/render.rs"]
+pub mod render;
 #[path = "../../../user/progs_r20/src/scroll.rs"]
 pub mod scroll;

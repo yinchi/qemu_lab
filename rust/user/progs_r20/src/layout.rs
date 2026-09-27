@@ -32,8 +32,10 @@ pub struct Row {
 
 /// `c`'s width starting at display column `col` -- every character's own [`cell_width`], except a
 /// tab, which reaches the next multiple of `tab_size` (so it is always between 1 and `tab_size`
-/// columns wide, depending only on where it starts).
-fn width_at(c: char, col: usize, tab_size: usize) -> usize {
+/// columns wide, depending only on where it starts). `pub` so a renderer building the actual
+/// [`abi::ioctl::Cell`]s of a row (walking it the same way, but emitting characters instead of just
+/// measuring them) uses this exact rule rather than a second copy of it.
+pub fn width_at(c: char, col: usize, tab_size: usize) -> usize {
     if c == '\t' {
         tab_size - col % tab_size
     } else {
