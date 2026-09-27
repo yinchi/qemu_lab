@@ -48,7 +48,7 @@ impl<T: Copy, const N: usize> RingBuffer<T, N> {
         self.len == 0
     }
 
-    #[cfg(test)]
+    /// How many items are waiting.
     pub fn len(&self) -> usize {
         self.len
     }

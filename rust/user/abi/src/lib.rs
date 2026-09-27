@@ -1,5 +1,5 @@
 //! The ABI shared by the kernel and every EL0 program -- one definition, instead of a copy on each
-//! side kept in sync by convention. Eight modules, used by their full path (`abi::errno::ENOENT`,
+//! side kept in sync by convention. Nine modules, used by their full path (`abi::errno::ENOENT`,
 //! `abi::syscall::SYS_WRITE`, `abi::fs::ATTR_EXEC`, `abi::ioctl::CONSOLE_CLEAR`):
 //!
 //! - [`syscall`]: the syscall numbers.
@@ -7,6 +7,8 @@
 //! - [`ioctl`]: the request codes `SYS_IOCTL` takes.
 //! - [`fs`]: the fixed layouts and flags around files -- `open` flags, the `getdents` record, the
 //!   FAT attribute bits.
+//! - [`keys`]: the keyboard's vocabulary -- evdev key codes, modifier bits, the key-event record and
+//!   `effective_code`, which says what the numeric keypad means.
 //! - [`blk`]: the record `SYS_BLKINFO` fills in for a block device.
 //! - [`reboot`]: the `cmd` values `SYS_REBOOT` takes.
 //! - [`time`]: the clock id and `timespec` layout `SYS_CLOCK_GETTIME` uses.
@@ -26,6 +28,7 @@ pub mod blk;
 pub mod errno;
 pub mod fs;
 pub mod ioctl;
+pub mod keys;
 pub mod reboot;
 pub mod syscall;
 pub mod time;

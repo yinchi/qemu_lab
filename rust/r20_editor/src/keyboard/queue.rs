@@ -17,7 +17,7 @@
 
 use super::events::token_for;
 use super::ring_buffer::RingBuffer;
-use super::tokens::Token;
+use super::tokens::{Token, admits};
 use crate::arch::irq::{wait_for_interrupt_unless, without_irqs};
 use crate::platform::globals::KEYBOARD;
 use crate::platform::uart::{uart_ensure_newline, uart_write};
@@ -38,7 +38,8 @@ static mut TOKENS: RingBuffer<Token, CAPACITY> = RingBuffer::new();
 static mut OVERFLOW_NOTED: bool = false;
 
 /// Moves every pending event from the keyboard device into the queue, as tokens. If the queue is full
-/// the newest presses are dropped, and the UART gets one note per burst.
+/// the newest presses are dropped, and the UART gets one note per burst. A key's auto-repeat is queued
+/// only when nothing else is waiting.
 ///
 /// Callable from the IRQ handler and from `read(0)`'s wait loop: neither can be interrupted by the other.
 #[allow(clippy::deref_addrof)]
@@ -53,6 +54,11 @@ pub fn drain_keyboard() {
         };
         // SAFETY: see this module's doc comment.
         let (tokens, noted) = unsafe { (&mut *(&raw mut TOKENS), &mut *(&raw mut OVERFLOW_NOTED)) };
+        // The keyboard's auto-repeat is dropped while anything is still queued (see `admits`), so a slow
+        // reader never has a backlog of repeats to work off after the key is let go.
+        if !admits(&token, tokens.len()) {
+            continue;
+        }
         if tokens.push(token).is_err() && !*noted {
             *noted = true;
             uart_ensure_newline();

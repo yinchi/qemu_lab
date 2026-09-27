@@ -21,34 +21,14 @@
 
 use super::keymap::{KEY_NAMES, KeyState, LockState};
 
-// Exported for a future raw-mode consumer (Stage 19) to match `Token::code` against -- nothing
-// in this stage's canonical line loop has a defined action for Escape yet.
-#[allow(dead_code)]
-pub const KEY_ESC: u16 = 1;
-pub const KEY_BACKSPACE: u16 = 14;
-pub const KEY_TAB: u16 = 15;
-pub const KEY_ENTER: u16 = 28;
-pub const KEY_SPACE: u16 = 57;
-/// Ctrl+D on an empty line is `read(0)`'s end-of-file -- see `stdin.rs`.
-pub const KEY_D: u16 = 32;
-
-// Step 12 (`Stage12.md`): cursor movement, history, and readline-style Ctrl combinations --
-// `Mode::Prompt` only, see `line.rs`'s "Token handling by mode" table.
-pub const KEY_HOME: u16 = 102;
-pub const KEY_UP: u16 = 103;
-pub const KEY_LEFT: u16 = 105;
-pub const KEY_RIGHT: u16 = 106;
-pub const KEY_END: u16 = 107;
-pub const KEY_DOWN: u16 = 108;
-pub const KEY_DELETE: u16 = 111;
-/// Ctrl+A: move to the start of the line.
-pub const KEY_A: u16 = 30;
-/// Ctrl+E: move to the end of the line.
-pub const KEY_E: u16 = 18;
-/// Ctrl+U: erase from the cursor to the start of the line (both modes -- see `line.rs`).
-pub const KEY_U: u16 = 22;
-/// Ctrl+K: erase from the cursor to the end of the line.
-pub const KEY_K: u16 = 37;
+// The evdev codes something here or in `line.rs` names live in the shared `abi::keys` (the editor and the
+// kernel's own key handling read them from one place); only the modifier and lock keys, which never
+// become tokens, are named privately below.
+use abi::keys::{
+    KEY_KP0, KEY_KP1, KEY_KP2, KEY_KP3, KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP7, KEY_KP8, KEY_KP9,
+    KEY_KPASTERISK, KEY_KPDOT, KEY_KPMINUS, KEY_KPPLUS, KEY_KPSLASH,
+};
+use abi::keys::{KEY_SPACE, KEY_TAB, effective_code};
 
 const KEY_LCTRL: u16 = 29;
 const KEY_LSHIFT: u16 = 42;
@@ -73,6 +53,13 @@ pub struct Token {
     /// `LockState` wherever `char()` is called) so a `Token` is a self-contained snapshot, the
     /// same way `shift`/`ctrl`/`alt` are.
     pub caps: bool,
+    /// NumLock's toggle state, captured the same way as `caps`: it decides what a keypad key is
+    /// (`char()`, `effective_code()`).
+    pub num: bool,
+    /// The key was already down: the keyboard's own auto-repeat, not a fresh press. A consumer that
+    /// must act once per press (an editor's Save) ignores these; one that acts per keystroke (moving,
+    /// typing, Backspace) takes them.
+    pub repeat: bool,
 }
 
 /// Shifted variant for keys whose `KEY_NAMES` entry is already their unshifted character
@@ -102,10 +89,49 @@ const SHIFTED: &[(u16, char)] = &[
     (53, '?'),
 ];
 
+/// What a keypad key types: `* - + /` always, as on a PC, and the digits and the dot only with NumLock
+/// on (with it off they navigate -- see `abi::keys::effective_code`). Shift is not consulted.
+fn keypad_char(code: u16, num: bool) -> Option<char> {
+    match code {
+        KEY_KPASTERISK => Some('*'),
+        KEY_KPMINUS => Some('-'),
+        KEY_KPPLUS => Some('+'),
+        KEY_KPSLASH => Some('/'),
+        _ if !num => None,
+        KEY_KP0 => Some('0'),
+        KEY_KP1 => Some('1'),
+        KEY_KP2 => Some('2'),
+        KEY_KP3 => Some('3'),
+        KEY_KP4 => Some('4'),
+        KEY_KP5 => Some('5'),
+        KEY_KP6 => Some('6'),
+        KEY_KP7 => Some('7'),
+        KEY_KP8 => Some('8'),
+        KEY_KP9 => Some('9'),
+        KEY_KPDOT => Some('.'),
+        _ => None,
+    }
+}
+
+/// Whether a `repeat` token may enter a queue that already holds `queued` tokens: it may not. A held
+/// key repeats faster than a slow consumer (an editor redrawing a screen per key) can take, and every
+/// repeat that waited in the queue would keep moving the cursor after the key was released -- so a
+/// repeat is dropped unless the queue has been drained. A fresh press always enters.
+pub fn admits(token: &Token, queued: usize) -> bool {
+    !token.repeat || queued == 0
+}
+
 impl Token {
-    /// The printable character this key resolves to, given Shift/CapsLock -- `None` for keys
-    /// with no character of their own (Enter, Left, F1, ...) or that this layer doesn't (yet)
-    /// resolve. Ctrl/Alt don't affect this; see this module's doc comment for why.
+    /// The key as a program means it, with the numeric keypad resolved by NumLock -- the code to match
+    /// commands and navigation on (`abi::keys::effective_code`); `code` stays the raw evdev code.
+    pub fn effective_code(&self) -> u16 {
+        effective_code(self.code, self.num)
+    }
+
+    /// The printable character this key resolves to, given Shift/CapsLock (and NumLock, for the
+    /// keypad) -- `None` for keys with no character of their own (Enter, Left, F1, a keypad digit with
+    /// NumLock off, ...) or that this layer doesn't (yet) resolve. Ctrl/Alt don't affect this; see this
+    /// module's doc comment for why.
     ///
     /// SAFETY: KEY_NAMES must already be populated -- true from very early in `kernel_main`
     /// onward, same as every other reader of it (see its doc comment in `keymap.rs`).
@@ -114,6 +140,10 @@ impl Token {
             KEY_TAB => return Some('\t'),
             KEY_SPACE => return Some(' '),
             _ => {}
+        }
+        // The keypad's names ("Kp7") are multi-character, so `KEY_NAMES` would call them non-text keys.
+        if let Some(c) = keypad_char(self.code, self.num) {
+            return Some(c);
         }
 
         let name = unsafe { crate::static_ref!(KEY_NAMES) }.get_by_left(&self.code)?;
@@ -189,8 +219,9 @@ fn is_modifier(code: u16) -> bool {
 }
 
 /// Turns one key press into a token, given the current modifier/lock state -- or `None` if
-/// `code` is one of the modifier/lock keys themselves (see `is_modifier`).
-pub fn emit(code: u16, keys: &KeyState, locks: &LockState) -> Option<Token> {
+/// `code` is one of the modifier/lock keys themselves (see `is_modifier`). `repeat` says the key was
+/// already down (the caller knows: it read the held set before updating it).
+pub fn emit(code: u16, keys: &KeyState, locks: &LockState, repeat: bool) -> Option<Token> {
     if is_modifier(code) {
         return None;
     }
@@ -200,5 +231,143 @@ pub fn emit(code: u16, keys: &KeyState, locks: &LockState) -> Option<Token> {
         ctrl: keys.is_held(KEY_LCTRL) || keys.is_held(KEY_RCTRL),
         alt: keys.is_held(KEY_LALT) || keys.is_held(KEY_RALT),
         caps: locks.caps,
+        num: locks.num,
+        repeat,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use abi::keys::{KEY_A, KEY_ENTER, KEY_HOME, KEY_KPENTER, KEY_LEFT};
+
+    // None of these reach `KEY_NAMES` (host tests have no live kernel key-name state): the keypad is
+    // resolved before that lookup, and a token's other fields are plain data.
+    fn token(code: u16, num: bool, repeat: bool) -> Token {
+        Token {
+            code,
+            shift: false,
+            ctrl: false,
+            alt: false,
+            caps: false,
+            num,
+            repeat,
+        }
+    }
+
+    #[test]
+    fn keypad_digits_and_dot_type_only_with_numlock_on() {
+        let digits = [
+            (KEY_KP0, '0'),
+            (KEY_KP1, '1'),
+            (KEY_KP2, '2'),
+            (KEY_KP3, '3'),
+            (KEY_KP4, '4'),
+            (KEY_KP5, '5'),
+            (KEY_KP6, '6'),
+            (KEY_KP7, '7'),
+            (KEY_KP8, '8'),
+            (KEY_KP9, '9'),
+            (KEY_KPDOT, '.'),
+        ];
+        for (code, c) in digits {
+            assert_eq!(keypad_char(code, true), Some(c));
+            assert_eq!(keypad_char(code, false), None);
+            assert_eq!(token(code, true, false).char(), Some(c));
+        }
+    }
+
+    #[test]
+    fn keypad_operators_type_whatever_numlock_says() {
+        for num in [false, true] {
+            assert_eq!(keypad_char(KEY_KPASTERISK, num), Some('*'));
+            assert_eq!(keypad_char(KEY_KPMINUS, num), Some('-'));
+            assert_eq!(keypad_char(KEY_KPPLUS, num), Some('+'));
+            assert_eq!(keypad_char(KEY_KPSLASH, num), Some('/'));
+            assert_eq!(token(KEY_KPPLUS, num, false).char(), Some('+'));
+        }
+    }
+
+    #[test]
+    fn shift_does_not_change_a_keypad_character() {
+        let mut t = token(KEY_KP7, true, false);
+        t.shift = true;
+        assert_eq!(t.char(), Some('7'));
+    }
+
+    #[test]
+    fn a_token_matches_on_its_effective_code() {
+        assert_eq!(token(KEY_KP4, false, false).effective_code(), KEY_LEFT);
+        assert_eq!(token(KEY_KP7, false, false).effective_code(), KEY_HOME);
+        assert_eq!(
+            token(KEY_KP4, true, false).effective_code(),
+            abi::keys::KEY_4
+        );
+        assert_eq!(token(KEY_KPENTER, true, false).effective_code(), KEY_ENTER);
+        assert_eq!(token(KEY_A, false, false).effective_code(), KEY_A);
+        // the raw code is never rewritten
+        assert_eq!(token(KEY_KP4, false, false).code, KEY_KP4);
+    }
+
+    #[test]
+    fn emit_carries_the_lock_state_and_the_repeat_flag() {
+        let keys = KeyState::new();
+        let mut locks = LockState::new();
+        assert!(locks.num, "NumLock starts on");
+        let t = emit(KEY_KP4, &keys, &locks, false).unwrap();
+        assert_eq!(
+            (t.code, t.num, t.caps, t.repeat),
+            (KEY_KP4, true, false, false)
+        );
+
+        locks.num = false;
+        locks.caps = true;
+        let t = emit(KEY_KP4, &keys, &locks, true).unwrap();
+        assert_eq!((t.num, t.caps, t.repeat), (false, true, true));
+    }
+
+    #[test]
+    fn emit_reads_the_held_modifiers() {
+        let mut keys = KeyState::new();
+        keys.set(KEY_LCTRL, true);
+        keys.set(KEY_RALT, true);
+        let t = emit(KEY_A, &keys, &LockState::new(), false).unwrap();
+        assert_eq!((t.shift, t.ctrl, t.alt), (false, true, true));
+    }
+
+    #[test]
+    fn modifier_and_lock_keys_never_become_tokens() {
+        let keys = KeyState::new();
+        let locks = LockState::new();
+        for code in [
+            KEY_LCTRL,
+            KEY_RCTRL,
+            KEY_LSHIFT,
+            KEY_RSHIFT,
+            KEY_LALT,
+            KEY_RALT,
+            KEY_CAPSLOCK,
+            KEY_NUMLOCK,
+            KEY_SCROLLLOCK,
+        ] {
+            assert!(emit(code, &keys, &locks, false).is_none());
+            assert!(emit(code, &keys, &locks, true).is_none());
+        }
+    }
+
+    #[test]
+    fn a_fresh_press_always_enters_the_queue() {
+        let press = token(KEY_A, true, false);
+        for queued in [0, 1, 255] {
+            assert!(admits(&press, queued));
+        }
+    }
+
+    #[test]
+    fn a_repeat_enters_only_an_empty_queue() {
+        let repeat = token(KEY_A, true, true);
+        assert!(admits(&repeat, 0));
+        assert!(!admits(&repeat, 1));
+        assert!(!admits(&repeat, 255));
+    }
 }

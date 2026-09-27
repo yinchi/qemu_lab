@@ -27,10 +27,22 @@ flowchart TD
 
 - **Events to tokens** (`keyboard/events.rs`, `tokens.rs`, `keymap.rs`). The virtio keyboard reports Linux
   *evdev* key codes, not scancodes or bytes. `keymap.rs` tracks which keys are held and which locks are on;
-  a genuine key-down of a non-modifier key becomes a `Token { code, shift, ctrl, alt, caps }`. Repeats and
-  releases produce nothing (`KeyState::set` reports whether the held set actually changed, so a resent press
-  is a no-op too). A `Token` names *which key* was pressed with the modifiers held at that moment; what that
-  means (`Ctrl+A` is "go to the start of the line") is decided by whoever consumes it.
+  a key-down of a non-modifier key becomes a `Token { code, shift, ctrl, alt, caps, num, repeat }`. Releases
+  produce nothing. A press of a key that is *already held* is the keyboard's own auto-repeat (the virtio device
+  resends a plain press, or tags it `value == 2`): from Stage 20 it is a token with `repeat` set, where earlier
+  stages dropped it. A repeat is queued only when nothing else is waiting (`tokens::admits`), so a slow reader
+  never has a backlog of repeats to work off after the key is let go, and Ctrl+D on a `read(0)` line ignores
+  repeats, so holding it cannot end one program's input and then the next one's. A `Token` names *which key*
+  was pressed with the modifiers and locks at that moment; what that means (`Ctrl+A` is "go to the start of
+  the line") is decided by whoever consumes it.
+- **The numeric keypad** (from Stage 20; before it the keypad produced nothing). NumLock starts **on**, as on a
+  PC. `Token::code` is always the raw evdev code; consumers match on `Token::effective_code()`
+  (`abi::keys::effective_code`), which resolves the keypad: its Enter is Enter and its `/` and `-` are the main
+  block's, whatever NumLock says; with NumLock **on** its digits and dot are the main block's (so `Alt+Numpad6`
+  is `Alt+6`), and with it **off** they navigate (7 Home, 8 Up, 9 PgUp, 4 Left, 6 Right, 1 End, 2 Down, 3 PgDn,
+  0 Insert, dot Delete; 5 does nothing). `Token::char()` types the digits and dot only with NumLock on, and
+  `+ - * /` always, as a PC does. The shell's line editor uses all of this, so the tables below hold for the
+  keypad's keys as for their main-block twins.
 - **No escape sequences.** Input never arrives as a byte stream, so there is no ANSI/CSI decoding anywhere:
   the Left arrow is one `Token` (`KEY_LEFT`), not `ESC [ D`. This is a deliberate departure from a real
   terminal, which has to re-encode structured key events as bytes for a serial-port-shaped device.

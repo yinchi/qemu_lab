@@ -198,7 +198,8 @@ impl LockState {
     pub const fn new() -> Self {
         Self {
             caps: false,
-            num: false,
+            // On, as on a PC: the keypad types digits until the user turns NumLock off.
+            num: true,
             scroll: false,
         }
     }

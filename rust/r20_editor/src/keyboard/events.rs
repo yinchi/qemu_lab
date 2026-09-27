@@ -26,15 +26,30 @@ pub fn token_for(event: InputEvent) -> Option<Token> {
     // value: 0 = released, 1 = pressed, 2 = auto-repeat (treated as still-pressed).
     let down = event.value != 0;
 
+    // A press of a key that is already held is the keyboard's own auto-repeat, whether the transport
+    // tags it `value == 2` or (as observed here) resends a plain `value == 1`; asked *before* the held
+    // set is updated, since afterwards the two cases look alike. A code past the held set's range is
+    // never "held", so an exotic key is neither a press nor a repeat.
+    // SAFETY: see this function's doc comment.
+    let was_held = unsafe { static_ref!(KEY_STATE) }.is_held(event.code);
     // SAFETY: see this function's doc comment.
     let key_changed = unsafe { static_mut_ref!(KEY_STATE) }.set(event.code, down);
-    // Lock keys flip on press only -- LockState::apply ignores release/auto-repeat itself.
-    // SAFETY: see this function's doc comment.
-    unsafe { static_mut_ref!(LOCK_STATE) }.apply(event.code, event.value);
-
-    if down && key_changed {
+    // A lock key flips on a fresh press only: a resent press (its auto-repeat) must not toggle it again.
+    if key_changed {
         // SAFETY: see this function's doc comment.
-        unsafe { tokens::emit(event.code, static_ref!(KEY_STATE), static_ref!(LOCK_STATE)) }
+        unsafe { static_mut_ref!(LOCK_STATE) }.apply(event.code, event.value);
+    }
+
+    if down && (key_changed || was_held) {
+        // SAFETY: see this function's doc comment.
+        unsafe {
+            tokens::emit(
+                event.code,
+                static_ref!(KEY_STATE),
+                static_ref!(LOCK_STATE),
+                was_held,
+            )
+        }
     } else {
         None
     }

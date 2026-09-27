@@ -35,10 +35,11 @@ use alloc::string::String;
 use super::history::History;
 use super::line::{LineBuffer, LineEvent};
 pub use super::line::Mode;
-use super::tokens::{KEY_D, KEY_DOWN, KEY_UP, Token};
+use super::tokens::Token;
 use crate::console::input_layout::{cursor_position, fits_on_screen, rows_needed};
 use crate::console::{BG, Console, FG};
 use crate::platform::uart::uart_write;
+use abi::keys::{KEY_D, KEY_DOWN, KEY_UP};
 
 /// What handling one token did.
 pub enum LineOutcome {
@@ -171,6 +172,10 @@ impl LineDiscipline {
     /// Handles one token. The caller flushes the display afterwards if the outcome says so.
     pub fn handle(&mut self, token: Token, console: &mut Console) -> LineOutcome {
         if self.mode == Mode::Canonical && token.ctrl && token.code == KEY_D {
+            if token.repeat {
+                // Holding Ctrl+D must not end this program's input and then the next one's.
+                return LineOutcome::Ignored;
+            }
             // Un-invert wherever the cursor was last drawn -- same reason as the `Finished` arm
             // below: nothing else redraws this row before the caller moves on (`read`'s next call,
             // if any, starts a fresh one via `begin`), so a stale inverted cell would otherwise be
@@ -189,9 +194,9 @@ impl LineDiscipline {
         if self.mode == Mode::Prompt
             && !token.ctrl
             && !token.alt
-            && (token.code == KEY_UP || token.code == KEY_DOWN)
+            && (token.effective_code() == KEY_UP || token.effective_code() == KEY_DOWN)
         {
-            let recalled = if token.code == KEY_UP {
+            let recalled = if token.effective_code() == KEY_UP {
                 self.history.recall_prev(self.buffer.as_str())
             } else {
                 self.history.recall_next()

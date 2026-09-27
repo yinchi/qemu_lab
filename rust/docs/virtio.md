@@ -50,7 +50,7 @@ The VirtIOInput driver is generic, supporting various input devices such as keyb
 - `InputEvent.code`: the key code of the key that generated the event.
 - `InputEvent.value`: the value of the event, (0 for release, 1 for press, 2 for autorepeat).
 
-Autorepeat is not acted on: `keyboard/events.rs` treats any non-release event as "down", and `KeyState::set` reports whether the set of held keys actually changed, so a repeat (or a plain press resent with no repeat tag, which is what this QEMU setup actually does) is a no-op. What happens to the resulting tokens (the queue, line editing, the two reading modes) is described in [`console.md`](console.md).
+Autorepeat: `keyboard/events.rs` treats any non-release event as "down". Until Stage 19 a repeat (or a plain press resent with no repeat tag, which is what this QEMU setup is reported to do) was dropped, because `KeyState::set` reports that the held set did not change. From Stage 20 the event is asked about first (`KeyState::is_held`): a press of an already-held key becomes a token with `repeat` set, and a lock key (Caps/Num/Scroll Lock) flips only on a *fresh* press, so a resent press cannot toggle it again. What happens to the resulting tokens (the queue, line editing, the two reading modes) is described in [`console.md`](console.md).
 
 ### Keymap
 
@@ -68,7 +68,7 @@ pub struct KeyState {
 }
 ```
 
-For example, if the user presses and releases Caps Lock, then holds down 'A' while pressing and releasing 'B', the `LockState` would reflect that Caps Lock is active, and the `KeyState` would have only 'A' marked in its `held` array. Neither type tracks which key was pressed last, since auto-repeat is not supported.
+For example, if the user presses and releases Caps Lock, then holds down 'A' while pressing and releasing 'B', the `LockState` would reflect that Caps Lock is active, and the `KeyState` would have only 'A' marked in its `held` array. Neither type tracks which key was pressed last; a repeat is recognised by asking `KeyState` whether the key was already held. `LockState::new()` starts Num Lock on (from Stage 20; it was off).
 
 ## GPU
 

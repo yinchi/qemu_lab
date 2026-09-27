@@ -11,10 +11,13 @@
 
 use alloc::string::String;
 
-use super::tokens::{
+use super::tokens::Token;
+use abi::keys::{
     KEY_A, KEY_BACKSPACE, KEY_DELETE, KEY_E, KEY_END, KEY_ENTER, KEY_HOME, KEY_K, KEY_LEFT,
-    KEY_RIGHT, KEY_U, Token,
+    KEY_RIGHT, KEY_U,
 };
+#[cfg(test)]
+use abi::keys::{KEY_KP1, KEY_KP2, KEY_KP4, KEY_KP6, KEY_KP7, KEY_KPDOT, KEY_KPENTER, KEY_KPPLUS};
 
 /// How a line is being read -- defined here (not `line_discipline.rs`) so `LineBuffer::feed`'s mode
 /// gating stays a dependency of pure-logic `line.rs` alone, not of the kernel-dependent line
@@ -199,7 +202,9 @@ impl LineBuffer {
     /// since it's correct in both modes already. Up/Down aren't matched here at all: they replace
     /// the buffer via history rather than editing it, so `line_discipline.rs` handles them directly.
     pub fn feed(&mut self, token: Token, mode: Mode) -> Option<LineEvent> {
-        match token.code {
+        // `effective_code`, not `code`: the keypad's Enter is Enter, and with NumLock off its keys are the
+        // navigation keys they are labelled as.
+        match token.effective_code() {
             KEY_ENTER => Some(LineEvent::Finished(self.take())),
             KEY_BACKSPACE => self.backspace().then_some(LineEvent::Changed),
             KEY_DELETE => {
@@ -285,6 +290,8 @@ mod tests {
             ctrl: false,
             alt: false,
             caps: false,
+            num: true,
+            repeat: false,
         }
     }
 
@@ -295,7 +302,74 @@ mod tests {
             ctrl: true,
             alt: false,
             caps: false,
+            num: true,
+            repeat: false,
         }
+    }
+
+    fn keypad_tok(code: u16, num: bool) -> Token {
+        Token { num, ..tok(code) }
+    }
+
+    #[test]
+    fn the_keypads_enter_finishes_the_line() {
+        for num in [false, true] {
+            let mut b = LineBuffer::new();
+            b.set("ls");
+            assert!(matches!(
+                b.feed(keypad_tok(KEY_KPENTER, num), Mode::Prompt),
+                Some(LineEvent::Finished(text)) if text == "ls"
+            ));
+        }
+    }
+
+    #[test]
+    fn keypad_navigation_works_with_numlock_off() {
+        let mut b = LineBuffer::new();
+        b.set("abc");
+        // Kp4 is Left, Kp6 Right, Kp7 Home, Kp1 End, Kp. Delete.
+        assert!(matches!(
+            b.feed(keypad_tok(KEY_KP4, false), Mode::Prompt),
+            Some(LineEvent::CursorMoved)
+        ));
+        assert_eq!(b.cursor(), 2);
+        assert!(matches!(
+            b.feed(keypad_tok(KEY_KP7, false), Mode::Prompt),
+            Some(LineEvent::CursorMoved)
+        ));
+        assert_eq!(b.cursor(), 0);
+        assert!(matches!(
+            b.feed(keypad_tok(KEY_KPDOT, false), Mode::Prompt),
+            Some(LineEvent::Changed)
+        ));
+        assert_eq!(b.as_str(), "bc");
+        assert!(matches!(
+            b.feed(keypad_tok(KEY_KP1, false), Mode::Prompt),
+            Some(LineEvent::CursorMoved)
+        ));
+        assert_eq!(b.cursor(), 2);
+        assert!(matches!(
+            b.feed(keypad_tok(KEY_KP4, false), Mode::Prompt),
+            Some(LineEvent::CursorMoved)
+        ));
+        assert_eq!(b.cursor(), 1);
+        assert!(matches!(
+            b.feed(keypad_tok(KEY_KP6, false), Mode::Prompt),
+            Some(LineEvent::CursorMoved)
+        ));
+        assert_eq!(b.cursor(), 2);
+    }
+
+    #[test]
+    fn keypad_keys_type_their_characters_with_numlock_on() {
+        let mut b = LineBuffer::new();
+        for code in [KEY_KP4, KEY_KP2, KEY_KPDOT, KEY_KPPLUS] {
+            assert!(matches!(
+                b.feed(keypad_tok(code, true), Mode::Prompt),
+                Some(LineEvent::Changed)
+            ));
+        }
+        assert_eq!(b.as_str(), "42.+");
     }
 
     #[test]
