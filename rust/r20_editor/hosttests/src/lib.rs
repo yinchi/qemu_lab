@@ -96,3 +96,15 @@ pub mod spell;
 pub mod stamp;
 #[path = "../../../user/progs_r19/src/table.rs"]
 pub mod table;
+#[path = "../../../user/progs_r20/src/width.rs"]
+pub mod width;
+#[path = "../../../user/progs_r20/src/editrc.rs"]
+pub mod editrc;
+#[path = "../../../user/progs_r20/src/buffer.rs"]
+pub mod buffer;
+#[path = "../../../user/progs_r20/src/layout.rs"]
+pub mod layout;
+#[path = "../../../user/progs_r20/src/region.rs"]
+pub mod region;
+#[path = "../../../user/progs_r20/src/scroll.rs"]
+pub mod scroll;
