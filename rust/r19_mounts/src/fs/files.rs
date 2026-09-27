@@ -125,7 +125,7 @@ impl OpenFile {
         match core::mem::replace(&mut self.kind, Kind::Closed) {
             Kind::Writer(writer) => match writer.finish() {
                 Ok(()) => 0,
-                Err(_) => EIO,
+                Err(e) => map_fat_err(e),
             },
             _ => 0,
         }
@@ -313,7 +313,7 @@ pub fn write(file: &FileRef, bytes: &[u8]) -> isize {
     match &mut file.borrow_mut().kind {
         Kind::Writer(writer) => match writer.write(bytes) {
             Ok(n) => n as isize,
-            Err(_) => EIO,
+            Err(e) => map_fat_err(e), // a full volume is `ENOSPC`, not a generic I/O error
         },
         _ => EBADF,
     }
@@ -471,7 +471,8 @@ pub fn unlink(path: &str, remove_dir: bool) -> isize {
 ///   `EBUSY`.
 ///
 /// On FAT the replacement is not atomic: the old destination is removed and the source then renamed, so a failure or a
-/// crash between the two costs only the file that was to be replaced -- the source is still where it was.
+/// crash between the two costs only the file that was to be replaced -- the source is still where it was. A rename keeps
+/// the entry's modify and access times (`hadris` would stamp it with the clock; POSIX leaves them alone).
 /// Deliberately does not implement "move into an existing directory": that is `mv`(1), layered in userspace.
 pub fn rename(old: &str, new: &str) -> isize {
     let table = mounts::table();
@@ -515,7 +516,12 @@ pub fn rename(old: &str, new: &str) -> isize {
         }
     }
     match vol(dev).rename(&old_entry.entry, &new_parent, new_leaf) {
-        Ok(_) => 0,
+        Ok(moved) => {
+            // `hadris` stamps a renamed entry with the clock; a move is not a modification (POSIX leaves the times
+            // alone), so put the old ones back. Failing to is not failing the rename, which has happened.
+            let _ = vol(dev).set_times(&moved, Some(old_entry.entry.modified()), Some(old_entry.entry.accessed_date()), None);
+            0
+        }
         Err(e) => map_fat_err(e),
     }
 }

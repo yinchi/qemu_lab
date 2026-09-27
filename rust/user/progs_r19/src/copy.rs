@@ -15,7 +15,7 @@ use core::fmt::Write;
 use abi::errno::{EISDIR, ENOENT};
 use progs::{CHUNK, Fd, diag, write_all};
 use userlib::{
-    ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, O_RDONLY, O_WRONLY, Stat, TimeSet, chmod, close, mkdir, open, read, stat, utimens,
+    ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, O_RDONLY, O_WRONLY, Stat, TimeSet, chmod, close, mkdir, open, read, stat, unlink, utimens,
 };
 
 use crate::stamp::fat_to_unix;
@@ -215,5 +215,43 @@ impl Copier {
             }
             _ => self.file(src, target),
         }
+    }
+}
+
+/// Removes `path` and everything under it, contents before their directory (a file is just unlinked). With `report`, each
+/// entry that cannot be removed is reported under `prog` (`cannot remove 'x': reason`) and the rest are still tried; without
+/// it (cleaning up after a failure, where there is nobody to tell) nothing is said. `Err` if anything was left.
+pub fn remove_tree(prog: &str, path: &str, report: bool) -> Result<(), Reported> {
+    let fail = |path: &str, code: isize| -> Result<(), Reported> {
+        if report {
+            diag::cannot(prog, "remove", path, code);
+        }
+        Err(Reported)
+    };
+    match stat(path) {
+        Ok(info) if info.attrs & ATTR_DIRECTORY != 0 => {
+            let entries = match read_dir(path) {
+                Ok(entries) => entries,
+                Err(e) => return fail(path, e.errno()),
+            };
+            let mut clean = true;
+            for ent in entries {
+                clean &= remove_tree(prog, &join(path, &ent.name), report).is_ok();
+            }
+            // A directory that still has something in it would be refused (`Directory not empty`) on top of the failure
+            // already reported for what is in it, so it is left alone.
+            if !clean {
+                return Err(Reported);
+            }
+            match unlink(path, true) {
+                r if r < 0 => fail(path, r),
+                _ => Ok(()),
+            }
+        }
+        Ok(_) => match unlink(path, false) {
+            r if r < 0 => fail(path, r),
+            _ => Ok(()),
+        },
+        Err(e) => fail(path, e),
     }
 }

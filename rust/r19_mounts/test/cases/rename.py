@@ -38,6 +38,20 @@ def run(ctx):
     check("...the destination holds the source's content", s.run("cat b"), "cat b\nnew\n")
     check("...and nothing else was left behind", s.run("ls"), "ls\nb\n")
 
+    # --- a rename is not a modification: the times stay ---
+    sh("echo t > t1")
+    sh("touch -d '2005-05-05 05:05' t1")
+    stamp = s.run("stat t1").split("\n")[4]
+    check("rename a file", rename("t1", "t2"), 0)
+    check("...its modify time is what it was", s.run("stat t2").split("\n")[4], stamp)
+    sh("mkdir td")
+    sh("touch -d '2006-06-06 06:06' td")
+    stamp = s.run("stat td").split("\n")[4]
+    check("rename a directory", rename("td", "td2"), 0)
+    check("...its modify time is what it was", s.run("stat td2").split("\n")[4], stamp)
+    sh("rm t2")
+    sh("rmdir td2")
+
     # --- a read-only destination is replaced too (deletion is governed by the directory) ---
     sh("echo again > c")
     sh("chmod -w b")

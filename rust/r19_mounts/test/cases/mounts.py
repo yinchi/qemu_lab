@@ -1,4 +1,4 @@
-"""Last updated: Stage 19, Step 2.
+"""Last updated: Stage 19, Step 4c (moves between volumes moved out).
 
 Mounting a volume on a directory, by hand: the `mount` and `umount` programs over the `mount` and `umount` syscalls, and
 the kernel's path resolution through the mount table. Three extra disks are attached -- `HOME` (ID `5E6F-7A8B`), `DATA`
@@ -8,8 +8,7 @@ by device order and the one `LABEL=HOME` finds) -- beside the system image, whic
 What is pinned down: `mount` listing; a mount hiding what was under the directory and uncovering it again; paths through
 a mount (`..` out of it, relative paths from inside, `find`); files created, copied, moved and run on a mounted volume;
 the rules of a mount point (busy to remove, rename or mount over) and of `umount` (not a mount point, the root, another
-mount inside, a working directory inside); every way `mount` can fail; and that a rename across two volumes is refused
-(`EXDEV`) rather than corrupting either. `verify_disk` then reads the extra images from the host: what was written to a
+mount inside, a working directory inside); and every way `mount` can fail. (Moving between two volumes is `rename`'s and `mv_volumes`' business.) `verify_disk` then reads the extra images from the host: what was written to a
 mounted volume reached its own disk, and every image passes `fsck.fat`.
 """
 
@@ -111,13 +110,7 @@ def run(ctx):
     check("mv within the mounted volume", s.run("mv /mnt/a.txt /mnt/d/a.txt"), "mv /mnt/a.txt /mnt/d/a.txt\n")
     check("mv a directory within it", s.run("mv /mnt/d /mnt/dd"), "mv /mnt/d /mnt/dd\n")
     check("...and its contents came along", s.run("cat /mnt/dd/a.txt"), "cat /mnt/dd/a.txt\none\ntwo\n")
-    check("mv across volumes: a file", s.run_status("mv /tests/hello.txt /mnt/hello.txt"),
-          ("mv /tests/hello.txt /mnt/hello.txt\nmv: cannot move '/tests/hello.txt' to '/mnt/hello.txt': Invalid cross-device link\n", 1))
-    check("mv across volumes: the other way", s.run_status("mv /mnt/dd/a.txt /a.txt"),
-          ("mv /mnt/dd/a.txt /a.txt\nmv: cannot move '/mnt/dd/a.txt' to '/a.txt': Invalid cross-device link\n", 1))
-    check("mv across volumes: a directory", s.run_status("mv /mnt/dd /dd"),
-          ("mv /mnt/dd /dd\nmv: cannot move '/mnt/dd' to '/dd': Invalid cross-device link\n", 1))
-    check("nothing moved, nothing lost", s.run("find /mnt/dd"), "find /mnt/dd\n/mnt/dd\n/mnt/dd/a.txt\n/mnt/dd/e\n")
+    # (Moving between two volumes -- `mv` copying and removing where `rename` says `EXDEV` -- is `mv_volumes`' and `rename`'s.)
     check("rm on the mounted volume", s.run("rm /mnt/echo"), "rm /mnt/echo\n")
     check("rm -r a tree there", s.run("rm -r /mnt/tree"), "rm -r /mnt/tree\n")
     check("what is left", s.run("ls /mnt"), "ls /mnt\ndd\n")
@@ -126,7 +119,6 @@ def run(ctx):
     cmd("rmdir /mnt", f"rmdir: failed to remove '/mnt': {BUSY}\n", 1)
     cmd("rm -d /mnt", f"rm: cannot remove '/mnt': {BUSY}\n", 1)
     cmd("mv /mnt /elsewhere", f"mv: cannot move '/mnt' to '/elsewhere': {BUSY}\n", 1)
-    cmd("mv /tests /mnt", "mv: cannot move '/tests' to '/mnt/tests': Invalid cross-device link\n", 1)  # a directory: it goes *into* /mnt
     check("ls /: the mount point is still an entry", "mnt" in s.run("ls /").split("\n"), True)
 
     # ---------------------------------------------------------------- every way `mount` can fail
