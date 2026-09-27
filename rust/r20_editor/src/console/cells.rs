@@ -25,6 +25,10 @@ pub enum Cell {
     WideRight,
 }
 
+/// `Clone` (from Stage 20) is for the console's own "alternate screen": a program's saved-and-restored
+/// view of the console needs this alongside its saved pixels, since the pixels alone don't say which
+/// cells are half a wide glyph -- see `console/mod.rs`'s `SavedScreen`.
+#[derive(Clone)]
 pub struct CellGrid {
     cols: usize,
     rows: usize,

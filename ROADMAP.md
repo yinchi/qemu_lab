@@ -1248,6 +1248,12 @@ keeps the parts that are the same either way: the buffer, the view, file I/O and
   `write()` bytes, so "rewrite the page's cells, then one `flush()`" needs a call. The program passes a grid of cells
   (a character and an attribute byte: *inverse* and *dim*, mapped onto the console's existing colours) and the cursor
   position; the kernel draws them all and flushes once. The whole frame is redrawn on every key.
+- **The console's own alternate screen.** A real terminal gives a full-screen program its own saved-and-restored view
+  (`smcup`/`rmcup`); with no terminal emulator to do that here, the console does it directly, at the pixel level, since it
+  keeps no character-level memory of what it drew. A program's first `CONSOLE_DRAW` call saves the framebuffer's pixels
+  plus the console's cursor and wide-glyph bookkeeping; exiting -- however it happens, normally, faulted or killed, since
+  the kernel's own per-launch cleanup runs on every path -- restores them and forgets the save. A program that never draws
+  its own screen is untouched, so only a full-screen one like the editor ever triggers it.
 
 **Two fixes in the keyboard layer, made here because the editor is their first real consumer:**
 - **NumLock now does something.** It was tracked but never read, so the keypad produced nothing anywhere. With NumLock on

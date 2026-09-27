@@ -43,6 +43,9 @@
 //!                      (never blocking: a bad pointer is refused before the keyboard is touched)
 //!   probe draw           `CONSOLE_DRAW` a full, valid, distinctive frame (a repeating letter pattern, row 0
 //!                      inverse, row 1 dim, cursor at (2,3)) and print `draw: RET`
+//!   probe draw-hold       as `draw`, but blocks on a key (no argument to it: any key releases it) before printing
+//!                      `draw-hold: RET` and exiting -- for inspecting the drawn frame before this program's own
+//!                      exit makes it disappear again (Stage 20's console "alternate screen")
 //!   probe draw-bad-size   the same frame under a header claiming one extra row -- must be `-22` (`EINVAL`), nothing drawn
 //!   probe draw-bad-char   the same frame with one cell holding a surrogate (not a valid character) -- `-22`, nothing drawn
 //!   probe draw-wide-edge  a fullwidth character (中) in the last column of a row -- `-22` (no room for its second column)
@@ -302,24 +305,21 @@ fn run(
         }
         Some("draw") => {
             let (rows, cols) = console_size();
-            let mut cells = vec![Cell::plain(' '); rows * cols];
-            for row in 0..rows {
-                for col in 0..cols {
-                    // Rows 0-2 are all 'X', differing only in `attr`, so a QEMU test can compare their
-                    // pixels directly to confirm INVERSE and DIM actually change what is drawn (not
-                    // just that the syscall returns 0); the rest cycle through the alphabet, just to
-                    // fill the screen with something visibly non-blank everywhere.
-                    let (c, attr) = match row {
-                        0 => ('X', ATTR_INVERSE),
-                        1 => ('X', ATTR_DIM),
-                        2 => ('X', 0),
-                        _ => ((b'A' + ((row + col) % 26) as u8) as char, 0),
-                    };
-                    cells[row * cols + col] = Cell { ch: c as u32, attr };
-                }
-            }
-            let ret = draw(rows, cols, 2, 3, &cells);
+            let ret = draw(rows, cols, 2, 3, &draw_pattern(rows, cols));
             let _ = writeln!(out, "draw: {ret}");
+            0
+        }
+        Some("draw-hold") => {
+            // As "draw", but blocks on a key before printing anything or exiting -- so a QEMU test
+            // can inspect the drawn frame exactly as `draw` left it (an ordinary `write` to stdout
+            // would draw text at the cursor, over part of the pattern) before releasing it, at which
+            // point this program exits and Stage 20's console "alternate screen" (Step 5b) makes the
+            // frame disappear again, same as it would for any other program that called
+            // `CONSOLE_DRAW`.
+            let (rows, cols) = console_size();
+            let ret = draw(rows, cols, 2, 3, &draw_pattern(rows, cols));
+            let _ = userlib::read_key(0);
+            let _ = writeln!(out, "draw-hold: {ret}");
             0
         }
         Some("draw-bad-size") => {
@@ -864,6 +864,26 @@ fn user_ptrs(out: &mut Fd) {
 fn console_size() -> (usize, usize) {
     let size = userlib::winsize(1).expect("stdout is not the console");
     (usize::from(size.rows), usize::from(size.cols))
+}
+
+/// The frame `draw` and `draw-hold` draw: rows 0-2 are all `'X'`, differing only in `attr`, so a QEMU
+/// test can compare their pixels directly to confirm `ATTR_INVERSE`/`ATTR_DIM` actually change what
+/// is drawn (not just that the syscall returns 0); the rest cycle through the alphabet, just to fill
+/// the screen with something visibly non-blank everywhere.
+fn draw_pattern(rows: usize, cols: usize) -> Vec<Cell> {
+    let mut cells = vec![Cell::plain(' '); rows * cols];
+    for row in 0..rows {
+        for col in 0..cols {
+            let (c, attr) = match row {
+                0 => ('X', ATTR_INVERSE),
+                1 => ('X', ATTR_DIM),
+                2 => ('X', 0),
+                _ => ((b'A' + ((row + col) % 26) as u8) as char, 0),
+            };
+            cells[row * cols + col] = Cell { ch: c as u32, attr };
+        }
+    }
+    cells
 }
 
 /// Builds a `CONSOLE_DRAW` buffer (a header claiming the real console size, then `cells`) and draws

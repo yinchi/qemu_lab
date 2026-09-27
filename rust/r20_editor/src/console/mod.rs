@@ -12,6 +12,9 @@ pub mod framebuffer;
 pub mod input_layout;
 pub mod utf8;
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use cells::{CellGrid, Cursor};
 use font::{GLYPH_HEIGHT, GLYPH_WIDTH, glyph_for, is_zero_width};
 use framebuffer::Framebuffer;
@@ -44,6 +47,25 @@ pub struct Console {
     /// The cursor, with xterm's deferred wrap: after a glyph fills the last column the cursor waits
     /// there and the wrap happens when the next glyph arrives (see `cells.rs`).
     cursor: Cursor,
+    /// A program's saved-and-restored view of the console -- from Stage 20, the console's own
+    /// "alternate screen" (see `SavedScreen`'s doc comment). `None` except while a program that has
+    /// called `CONSOLE_DRAW` is running.
+    saved: Option<SavedScreen>,
+}
+
+/// What `Console::snapshot_once` saves and `Console::restore_saved` gives back: a real terminal's
+/// `smcup`/`rmcup` give a full-screen program (vim, nano, less) its own screen, saved and restored by
+/// the terminal *emulator* around it; with no emulator here; the console does this itself, at the
+/// pixel level, since it keeps no character-level record of what it drew (`cells.rs`'s own doc
+/// comment: "the console draws pixels and forgets what it drew"). The pixels alone are not enough --
+/// `grid` and `cursor` have to come back with them, or the shell's very next `write_char` after the
+/// program exits would place text by cursor and wide-glyph bookkeeping that no longer match what is
+/// actually on screen underneath it.
+struct SavedScreen {
+    /// A byte-for-byte copy of the framebuffer's own memory (`fb.stride * fb.height` bytes).
+    pixels: Vec<u8>,
+    grid: CellGrid,
+    cursor: Cursor,
 }
 
 impl Console {
@@ -56,7 +78,59 @@ impl Console {
             cols,
             rows,
             cursor: Cursor::new(),
+            saved: None,
         }
+    }
+
+    /// Saves the console's current pixels, grid and cursor, unless this program already has done
+    /// (idempotent: only a program's *first* `CONSOLE_DRAW` call of its run takes one) -- from
+    /// `syscall/fd.rs`'s `draw_frame`, after a frame is validated but before anything of it is drawn,
+    /// so a refused (`EINVAL`/`EFAULT`) call never takes a snapshot it would have no reason to.
+    pub fn snapshot_once(&mut self) {
+        if self.saved.is_some() {
+            return;
+        }
+        let len = self.fb.stride * self.fb.height;
+        let mut pixels = vec![0u8; len];
+        // SAFETY: `self.fb.ptr` is the GPU's own mapped framebuffer memory, valid for `len` bytes
+        // for as long as the kernel runs -- the same memory `Framebuffer::get_pixel` already reads
+        // one pixel at a time, just copied here in bulk; `pixels` is a freshly allocated buffer of
+        // exactly that length, so the two ranges cannot overlap.
+        unsafe { core::ptr::copy_nonoverlapping(self.fb.ptr, pixels.as_mut_ptr(), len) };
+        self.saved = Some(SavedScreen {
+            pixels,
+            grid: self.grid.clone(),
+            cursor: self.cursor,
+        });
+    }
+
+    /// Restores whatever `snapshot_once` saved, if anything was, and forgets it. Called from
+    /// `syscall/fd.rs`'s `end_launch`, the one hook `exec::process::run` already calls on *every*
+    /// exit path (normal, faulted or killed), so a full-screen program's drawing never lingers once
+    /// the shell has the console back. A program that never called `CONSOLE_DRAW` -- every ordinary
+    /// one -- never took a snapshot, so this does nothing for it, and its own output stays on screen
+    /// exactly as it always has. Returns whether anything was actually restored, so the caller knows
+    /// whether a flush is needed.
+    pub fn restore_saved(&mut self) -> bool {
+        let Some(saved) = self.saved.take() else {
+            return false;
+        };
+        // SAFETY: the reverse of `snapshot_once` -- `saved.pixels.len()` is exactly what was copied
+        // out of `self.fb.ptr` there, so it fits back into it exactly, and the two ranges (a
+        // heap-allocated buffer and the GPU's own memory) cannot overlap.
+        unsafe {
+            core::ptr::copy_nonoverlapping(saved.pixels.as_ptr(), self.fb.ptr, saved.pixels.len())
+        };
+        self.grid = saved.grid;
+        self.cursor = saved.cursor;
+        true
+    }
+
+    /// Discards any saved screen without restoring it -- `syscall/fd.rs`'s `reset_for_launch`, so a
+    /// launch never starts with a snapshot left over from a previous program (there should never be
+    /// one, since `end_launch` always takes it, but a launch starts clean regardless).
+    pub fn forget_saved(&mut self) {
+        self.saved = None;
     }
 
     /// Draws `glyph` (`width` cells wide) with its left edge at (`row`, `col`), without moving the

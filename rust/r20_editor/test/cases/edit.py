@@ -131,3 +131,24 @@ def run(ctx):
     s.wait_prompt()
 
     check("shell alive after edit", s.run("echo alive"), "echo alive\nalive\n")
+
+    # --- Stage 20, Step 5b: the console's own "alternate screen" -- quitting restores the screen ---
+    # `edit` draws a full screen of its own (twelve lines of hello.txt); once it exits, none of that
+    # should still be visible. Checked by *row count*, not exact row positions or pixels: by this
+    # point in the session the console has already scrolled some number of times, so which absolute
+    # rows are in use depends on exactly when a screendump happens to be taken, but the count is
+    # simple arithmetic either way. Right before typing the launch command, the console shows some
+    # number of non-blank rows; typing it adds exactly one more (the echoed command line itself,
+    # counted the moment before `edit` draws its own first frame -- the very thing its snapshot
+    # captures and its exit restores). If restoring genuinely brings that back, and nothing of
+    # `edit`'s own drawing survives, the count after quitting is that same "one more," not twelve-plus
+    # more for hello.txt's own lines.
+    before_count = len(text_bands(s.screendump_settled()))
+    s.type("edit tests/hello.txt\n")
+    s.screendump_settled()  # let it actually draw its first frame before doing anything else
+    s.keys(["down", "right", "right"])  # move around; Step 5b restores whatever state edit ends in
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+    after_count = len(text_bands(s.screendump_settled()))
+    check("edit: quitting restores exactly one more row than before launching it",
+          after_count, before_count + 1)

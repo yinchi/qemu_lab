@@ -58,6 +58,8 @@ fn table() -> &'static mut [Option<FileDescriptor>; MAX_FDS] {
 /// when that program ended, on every path (exit or fault).
 pub fn reset_for_launch() {
     stdin::reset();
+    // SAFETY: as `console_draw`.
+    unsafe { static_mut_ref!(CONSOLE).forget_saved() };
     let table = table();
     *table = [const { None }; MAX_FDS];
     // Each standard stream is whatever the shell's current frame binds it to: a file shares the
@@ -80,6 +82,16 @@ pub fn end_launch() {
     // A character the program left half-written becomes one U+FFFD now, not the first byte of the
     // next program's output.
     console_finish_stream();
+    // The console's own "alternate screen" (Step 5b): give back whatever was on screen before this
+    // program's first `CONSOLE_DRAW`, if it ever made one -- on every exit path, since `run` always
+    // calls this. A program that never drew its own screen never took a snapshot, so this does
+    // nothing for it.
+    // SAFETY: as `console_draw`.
+    unsafe {
+        if static_mut_ref!(CONSOLE).restore_saved() {
+            static_mut_ref!(GPU).flush();
+        }
+    }
     #[cfg(feature = "testhooks")]
     testhooks::report_and_reset();
 }
@@ -418,6 +430,10 @@ fn draw_frame(ptr: usize) -> isize {
     // Pass 2: draw, now that nothing in the frame can panic `Console::put_char_at`.
     // SAFETY: as above.
     let console = unsafe { static_mut_ref!(CONSOLE) };
+    // The console's own "alternate screen" (Step 5b): a program's *first* successful `CONSOLE_DRAW`
+    // saves what was on screen before it, so `end_launch` can give it back on exit -- idempotent, so
+    // every later call this launch is a no-op.
+    console.snapshot_once();
     for row in 0..rows {
         let mut col = 0;
         while col < cols {

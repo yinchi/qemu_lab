@@ -133,6 +133,12 @@ def run(ctx):
     # --- Stage 20, Step 3: CONSOLE_DRAW -- one whole frame per call, from the program's own cells ---
     check("draw: a full, valid frame succeeds", s.run("tests/probe draw"), "tests/probe draw\ndraw: 0\n")
 
+    # `draw-hold` draws the same frame and then blocks on a key instead of exiting at once: since Step
+    # 5b, exiting is when the console's own "alternate screen" gives the pre-draw screen back, so a
+    # check that wants to see the drawn frame itself has to look before releasing it, not after (as
+    # `s.run`, which waits for the *shell's* prompt to return, would).
+    s.type("tests/probe draw-hold\n")
+
     # Rows 0/1/2 are all the glyph 'X', differing only in `attr` (see probe.rs's "draw" subcommand), so
     # their pixel bands are directly comparable: INVERSE and DIM must each look different from plain,
     # and from each other.
@@ -143,6 +149,9 @@ def run(ctx):
     check("draw: ATTR_INVERSE changes the row's colors", bands[0] != bands[2], True)
     check("draw: ATTR_DIM changes the row's colors", bands[1] != bands[2], True)
     check("draw: INVERSE and DIM don't look alike", bands[0] != bands[1], True)
+
+    s.keys(["ret"])  # release draw-hold
+    check("draw-hold: prints its result once released", s.wait_prompt(), "tests/probe draw-hold\ndraw-hold: 0\n")
 
     # --- A cursor one past the last row/column is clamped, not refused ---
     check("draw: an out-of-range cursor is clamped, not refused", s.run("tests/probe draw-cursor-oob"),
