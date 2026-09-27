@@ -86,3 +86,46 @@ def run(ctx):
         check(f"winsize: bad output pointer {addr:#x} is EFAULT", s.run(f"tests/probe winsize-ptr 1 {addr}"),
               f"tests/probe winsize-ptr 1 {addr}\nwinsize-ptr(1, {addr}): -14\n")
     check("winsize: shell alive after the bad pointers", s.run("echo alive"), "echo alive\nalive\n")
+
+    # --- Stage 20, Step 2: CONSOLE_READ_KEY -- one key event per call, bypassing the line discipline ---
+    # NumLock starts on, so every event's mods include 16 (MOD_NUM) even for a non-keypad key (`Token.num`
+    # is the lock state at the time, not something the keypad alone carries).
+    s.type("tests/probe read-key 0\n")
+    s.keys(["a"])
+    check("read-key: a plain key (code 30 'a', mods 16 NUM, ch 97 'a')", s.wait_prompt(),
+          "tests/probe read-key 0\nread-key(0): 30 16 97\n")
+
+    s.type("tests/probe read-key 0\n")
+    s.keys(["shift-a"])
+    check("read-key: Shift sets bit 1 and capitalizes ch ('A' = 65)", s.wait_prompt(),
+          "tests/probe read-key 0\nread-key(0): 30 17 65\n")
+
+    s.type("tests/probe read-key 0\n")
+    s.keys(["ctrl-left"])
+    check("read-key: Ctrl+Left is code 105 (KEY_LEFT), mods 18 (NUM+CTRL), no character",
+          s.wait_prompt(), "tests/probe read-key 0\nread-key(0): 105 18 0\n")
+
+    s.type("tests/probe read-key 0\n")
+    s.keys(["ret"])
+    check("read-key: Enter is code 28, no character of its own", s.wait_prompt(),
+          "tests/probe read-key 0\nread-key(0): 28 16 0\n")
+
+    check("read-key: an fd that is not open is EBADF", s.run("tests/probe read-key 3"),
+          "tests/probe read-key 3\nread-key(3): -9\n")
+    check("read-key: stdout is not the keyboard, ENOTTY", s.run("tests/probe read-key 1"),
+          "tests/probe read-key 1\nread-key(1): -25\n")
+    s.run("tests/probe winsize 1 > /tmp/rk")  # anything, just to have a file to redirect from
+    check("read-key: redirected stdin is ENOTTY, same as TIOCGWINSZ", s.run("tests/probe read-key 0 < /tmp/rk"),
+          "tests/probe read-key 0 < /tmp/rk\nread-key(0): -25\n")
+    s.run("rm /tmp/rk")
+
+    # A bad output pointer is refused *before* blocking for a key -- never a kernel fault, and the shell is
+    # never left waiting for a keypress that could never be delivered anywhere.
+    for addr in (0, 1, 0x4400_0000, 0x4600_0000 - 4, 0x4600_0000, 2**64 - 4):
+        check(f"read-key: bad output pointer {addr:#x} is EFAULT, without blocking",
+              s.run(f"tests/probe read-key-ptr 0 {addr}"),
+              f"tests/probe read-key-ptr 0 {addr}\nread-key-ptr(0, {addr}): -14\n")
+
+    # --- read(0) is untouched by CONSOLE_READ_KEY: the next program's line-based read still works ---
+    check("read(0) still works normally after CONSOLE_READ_KEY was used", s.run("echo alive"),
+          "echo alive\nalive\n")

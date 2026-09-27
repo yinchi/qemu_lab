@@ -14,6 +14,14 @@ pub const CONSOLE_CLEAR: usize = 1;
 /// display) while they are the console; `ENOTTY` when redirected, `EFAULT` for a bad `arg`.
 pub const TIOCGWINSZ: usize = 0x5413;
 
+/// Blocks until a key is pressed and fills the [`crate::keys::KeyEvent`] `arg` points to with it --
+/// popped straight from the keyboard's token queue, one token per call, bypassing `read(0)`'s line
+/// discipline entirely. Answered for stdin (the keyboard) only; `ENOTTY` on stdout/stderr or a
+/// redirected stdin, `EFAULT` for a bad `arg`. This and `read(0)` are two independent ways to drain
+/// the one queue -- whichever is called pops the next token -- so a program uses one or the other,
+/// never both, and there is nothing to switch back on exit or on a fault (see `keyboard/stdin.rs`).
+pub const CONSOLE_READ_KEY: usize = 2;
+
 /// Bytes in a [`WinSize`] as the kernel writes it.
 pub const WINSIZE_SIZE: usize = 8;
 
@@ -67,6 +75,7 @@ mod tests {
     fn request_codes_are_pinned() {
         assert_eq!(CONSOLE_CLEAR, 1);
         assert_eq!(TIOCGWINSZ, 0x5413); // Linux's, on every architecture
+        assert_eq!(CONSOLE_READ_KEY, 2);
     }
 
     #[test]

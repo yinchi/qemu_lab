@@ -22,7 +22,8 @@ use crate::platform::uart::{uart_clear_screen, uart_write};
 use crate::static_mut_ref;
 use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY, ERANGE};
 use abi::fs::{AT_REMOVEDIR, O_APPEND, O_RDONLY, O_WRONLY, STAT_SIZE};
-use abi::ioctl::{CONSOLE_CLEAR, TIOCGWINSZ, WINSIZE_SIZE, WinSize};
+use abi::ioctl::{CONSOLE_CLEAR, CONSOLE_READ_KEY, TIOCGWINSZ, WINSIZE_SIZE, WinSize};
+use abi::keys::KEYEVENT_SIZE;
 use abi::time::UTIMES_SIZE;
 
 /// How many fds a program may have open at once, the three standard ones included: every fd above
@@ -290,12 +291,15 @@ pub fn open(ptr: usize, len: usize, flags: usize) -> isize {
 /// understands any today. `CONSOLE_CLEAR` clears the console (stdout/stderr), and the terminal on the
 /// other end of the UART with it. `TIOCGWINSZ` writes the console's size in cells to the user buffer
 /// `arg` and is answered for the keyboard (stdin) as well as the console, so a program learns from any
-/// of its three standard fds whether it is on a terminal and how big it is; `EFAULT` for a bad `arg`. Any
-/// other request, or any other kind of fd, is `ENOTTY`; an fd that isn't open is `EBADF`.
+/// of its three standard fds whether it is on a terminal and how big it is; `EFAULT` for a bad `arg`.
+/// `CONSOLE_READ_KEY` blocks for one key press and writes it to `arg`, answered for the keyboard
+/// (stdin) only -- not the console, since that fd is for drawing, not reading. Any other request, or
+/// any other kind of fd, is `ENOTTY`; an fd that isn't open is `EBADF`.
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> isize {
     match (FileDescriptor::for_fd(fd), request) {
         (None, _) => EBADF,
         (Some(FileDescriptor::Console | FileDescriptor::Keyboard), TIOCGWINSZ) => window_size(arg),
+        (Some(FileDescriptor::Keyboard), CONSOLE_READ_KEY) => read_key(arg),
         (Some(FileDescriptor::Console), CONSOLE_CLEAR) => {
             // SAFETY: as `console_draw`.
             unsafe {
@@ -307,6 +311,22 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> isize {
         }
         _ => ENOTTY,
     }
+}
+
+/// `CONSOLE_READ_KEY`: blocks until a key is pressed and writes it (`abi::keys::KeyEvent`) to the user
+/// buffer `ptr`; `EFAULT` if it is not writable user memory. The pointer is validated *before*
+/// blocking, so a bad one is refused at once rather than after making the caller wait for a keypress
+/// that was never going to be delivered anywhere.
+fn read_key(ptr: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // writes a user buffer: clear PAN while it does
+    if !validate(ptr, KEYEVENT_SIZE, true) {
+        return EFAULT;
+    }
+    let event = stdin::read_key();
+    // SAFETY: validated above to lie entirely within writable user memory.
+    let out = unsafe { core::slice::from_raw_parts_mut(ptr as *mut u8, KEYEVENT_SIZE) };
+    out.copy_from_slice(&event.encode());
+    0
 }
 
 /// `TIOCGWINSZ`: writes the console's rows and columns (`abi::ioctl::WinSize`, pixel fields 0) to the

@@ -19,7 +19,8 @@ pub use abi::fs::{
     AT_REMOVEDIR, ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, DIRENT_SIZE, NAME_MAX, O_APPEND,
     O_RDONLY, O_WRONLY, PATH_MAX, STAT_SIZE,
 };
-pub use abi::ioctl::{CONSOLE_CLEAR, TIOCGWINSZ, WINSIZE_SIZE, WinSize};
+pub use abi::ioctl::{CONSOLE_CLEAR, CONSOLE_READ_KEY, TIOCGWINSZ, WINSIZE_SIZE, WinSize};
+pub use abi::keys::{KEYEVENT_SIZE, KeyEvent};
 
 /// Writes `buf` to the file descriptor `fd`. Returns the number of bytes
 /// written, or a negative value on error (see the kernel's `syscall/fd.rs`
@@ -179,6 +180,21 @@ pub fn winsize(fd: usize) -> Result<WinSize, isize> {
         Err(result)
     } else {
         Ok(WinSize::decode(bytes))
+    }
+}
+
+/// Blocks until a key is pressed on `fd` (the keyboard, stdin while it is the console) and returns it.
+/// `Err(ENOTTY)` if `fd` is not the keyboard (stdout/stderr, or a redirected stdin) -- also how a
+/// program on a real keyboard tells that apart from one whose stdin was redirected. This and `read(0)`
+/// drain the same token queue in two different shapes; a program uses one or the other, never both
+/// (see `keyboard/stdin.rs`).
+pub fn read_key(fd: usize) -> Result<KeyEvent, isize> {
+    let mut bytes = [0u8; KEYEVENT_SIZE];
+    let result = ioctl(fd, CONSOLE_READ_KEY, bytes.as_mut_ptr() as usize);
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(KeyEvent::decode(bytes))
     }
 }
 

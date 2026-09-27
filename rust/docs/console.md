@@ -46,6 +46,14 @@ flowchart TD
 - **No escape sequences.** Input never arrives as a byte stream, so there is no ANSI/CSI decoding anywhere:
   the Left arrow is one `Token` (`KEY_LEFT`), not `ESC [ D`. This is a deliberate departure from a real
   terminal, which has to re-encode structured key events as bytes for a serial-port-shaped device.
+- **A second reader of the token queue, from Stage 20** (`CONSOLE_READ_KEY`, an `ioctl` on stdin): where
+  `read(0)` (`keyboard/stdin.rs`'s `read_line`) feeds each popped `Token` to the line discipline and hands
+  back a finished line, `CONSOLE_READ_KEY` (`stdin::read_key`) hands back one token's worth of the queue at
+  a time, as `abi::keys::KeyEvent` (`Token::to_key_event`) -- the raw code, every field packed into one
+  `mods` byte, and the resolved character. Both readers pop the same queue in the same order; a program
+  calls one or the other, never both. Nothing is toggled to get this: there is no raw-mode switch on
+  `read(0)`, so nothing needs restoring on exit or on a fault -- the roadmap's original plan for this was a
+  `termios`-style toggle, which this design replaces.
 - **The token queue** (`keyboard/queue.rs`). A 256-token ring buffer (16 in the `testhooks` test build; see [`tests.md`](tests.md)) between whoever learns of a key press
   and whoever reads it. The keyboard interrupt handler only *fills* it, so no shell code can be re-entered
   from an interrupt, which is what lets programs run with interrupts enabled: a key pressed while one runs

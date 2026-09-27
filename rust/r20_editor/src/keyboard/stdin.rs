@@ -19,6 +19,7 @@ use super::line_discipline::{LINE_DISCIPLINE, LineOutcome, Mode};
 use super::queue;
 use crate::platform::globals::{CONSOLE, GPU};
 use crate::static_mut_ref;
+use abi::keys::KeyEvent;
 
 // SAFETY (every access): single core, syscalls run with IRQs masked -- nothing else touches
 // either one.
@@ -60,6 +61,27 @@ pub fn read(buf: &mut [u8]) -> isize {
     buf[..n].copy_from_slice(&pending[*pos..*pos + n]);
     *pos += n;
     n as isize
+}
+
+/// `CONSOLE_READ_KEY`: blocks until one token is queued and returns it as a `KeyEvent`, bypassing the
+/// line discipline entirely -- no Enter-wait, no Backspace-absorption, no echo, and nothing of
+/// `read(0)`'s state (`PENDING`) is touched. This and `read`/`read_line` are two independent readers
+/// of the one token queue; whichever is called pops the next token, so a program that mixed the two
+/// calls would simply split the stream between them (unsupported, not guarded against). Because
+/// nothing here is stateful, there is nothing to reset on a launch, an exit or a fault, unlike a
+/// termios-style raw-mode toggle on `read(0)` would need.
+pub fn read_key() -> KeyEvent {
+    loop {
+        // IRQs are masked inside a syscall, so the device's events wait here until we fetch them --
+        // same reasoning as `read_line`'s loop below.
+        queue::drain_keyboard();
+        if let Some(token) = queue::pop() {
+            return token.to_key_event();
+        }
+        // Nothing queued yet: sleep until an interrupt line goes up, same as `read_line`.
+        // SAFETY: plain `wfi`, no memory or register effects.
+        unsafe { core::arch::asm!("wfi") };
+    }
 }
 
 /// Blocks until Enter finishes a line, or Ctrl+D delivers what's typed so far -- either way, what's

@@ -26,7 +26,8 @@ use super::keymap::{KEY_NAMES, KeyState, LockState};
 // become tokens, are named privately below.
 use abi::keys::{
     KEY_KP0, KEY_KP1, KEY_KP2, KEY_KP3, KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP7, KEY_KP8, KEY_KP9,
-    KEY_KPASTERISK, KEY_KPDOT, KEY_KPMINUS, KEY_KPPLUS, KEY_KPSLASH,
+    KEY_KPASTERISK, KEY_KPDOT, KEY_KPMINUS, KEY_KPPLUS, KEY_KPSLASH, KeyEvent, MOD_ALT, MOD_CAPS,
+    MOD_CTRL, MOD_NUM, MOD_REPEAT, MOD_SHIFT,
 };
 use abi::keys::{KEY_SPACE, KEY_TAB, effective_code};
 
@@ -126,6 +127,36 @@ impl Token {
     /// commands and navigation on (`abi::keys::effective_code`); `code` stays the raw evdev code.
     pub fn effective_code(&self) -> u16 {
         effective_code(self.code, self.num)
+    }
+
+    /// The record `CONSOLE_READ_KEY` hands to a program (`abi::keys::KeyEvent`): the raw `code`, every
+    /// field packed into `mods`, and `char()` -- or 0, `KeyEvent::char()`'s "no character" -- computed
+    /// here rather than by the reader, since only this module (via `KEY_NAMES`) can resolve it.
+    pub fn to_key_event(&self) -> KeyEvent {
+        let mut mods = 0;
+        if self.shift {
+            mods |= MOD_SHIFT;
+        }
+        if self.ctrl {
+            mods |= MOD_CTRL;
+        }
+        if self.alt {
+            mods |= MOD_ALT;
+        }
+        if self.caps {
+            mods |= MOD_CAPS;
+        }
+        if self.num {
+            mods |= MOD_NUM;
+        }
+        if self.repeat {
+            mods |= MOD_REPEAT;
+        }
+        KeyEvent {
+            code: self.code,
+            mods,
+            ch: self.char().map_or(0, |c| c as u32),
+        }
     }
 
     /// The printable character this key resolves to, given Shift/CapsLock (and NumLock, for the
@@ -369,5 +400,50 @@ mod tests {
         assert!(admits(&repeat, 0));
         assert!(!admits(&repeat, 1));
         assert!(!admits(&repeat, 255));
+    }
+    #[test]
+    fn to_key_event_packs_the_code_mods_and_character() {
+        // KEY_TAB, not a letter: `char()` resolves it without `KEY_NAMES`, which these host tests
+        // don't populate (see `an_unbound_ctrl_combination_is_ignored`'s doc comment).
+        let t = token(KEY_TAB, true, false);
+        let e = t.to_key_event();
+        assert_eq!(e.code, KEY_TAB);
+        assert_eq!(e.mods, abi::keys::MOD_NUM);
+        assert_eq!(e.char(), Some('\t'));
+    }
+
+    #[test]
+    fn to_key_event_sets_every_modifier_and_lock_bit() {
+        let mut t = token(KEY_TAB, true, true);
+        t.shift = true;
+        t.ctrl = true;
+        t.alt = true;
+        t.caps = true;
+        let e = t.to_key_event();
+        assert_eq!(
+            e.mods,
+            abi::keys::MOD_SHIFT
+                | abi::keys::MOD_CTRL
+                | abi::keys::MOD_ALT
+                | abi::keys::MOD_CAPS
+                | abi::keys::MOD_NUM
+                | abi::keys::MOD_REPEAT
+        );
+    }
+
+    #[test]
+    fn to_key_event_carries_a_resolved_keypad_character() {
+        // NumLock off (no character: `Kp4` is Left) isn't exercised via `char()`/`to_key_event()` here --
+        // it would fall through `keypad_char` into the `KEY_NAMES` lookup and panic, same as a letter key
+        // (see `an_unbound_ctrl_combination_is_ignored`'s doc comment); `keypad_char`'s own tests cover it.
+        let t = token(KEY_KP4, true, false); // NumLock on: '4'
+        assert_eq!(t.to_key_event().char(), Some('4'));
+    }
+
+    #[test]
+    fn to_key_event_round_trips_through_the_wire_encoding() {
+        let t = token(KEY_KPPLUS, true, true);
+        let event = t.to_key_event();
+        assert_eq!(KeyEvent::decode(event.encode()), event);
     }
 }

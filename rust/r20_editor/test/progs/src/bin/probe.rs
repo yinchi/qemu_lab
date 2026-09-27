@@ -37,6 +37,10 @@
 //!                      keyboard and 1 the console, both of which answer; a redirected fd is -25, one that isn't open -9)
 //!   probe winsize-ptr FD ADDR  `TIOCGWINSZ` on FD with ADDR (decimal) as the output pointer -- for the bad ones (0, the
 //!                      guard, read-only code, a wrapping address): each must be -14, never a kernel fault
+//!   probe read-key FD   `CONSOLE_READ_KEY` on FD, once: blocks for one key press and prints `read-key(FD): CODE MODS CH`
+//!                      (MODS as a bare number: SHIFT=1 CTRL=2 ALT=4 CAPS=8 NUM=16 REPEAT=32), or `read-key(FD): ERRNO`
+//!   probe read-key-ptr FD ADDR  `CONSOLE_READ_KEY` on FD with ADDR (decimal) as the output pointer -- for the bad ones
+//!                      (never blocking: a bad pointer is refused before the keyboard is touched)
 //!   probe getcwd N     the `getcwd` syscall with an N-byte buffer (N <= 4096): prints its return value and,
 //!                      if it succeeded, the path
 //!   probe utimens PATH ASEC ANSEC MSEC MNSEC  the `utimensat` syscall with those two `timespec`s (`nsec` may be `now` or `omit`
@@ -228,6 +232,36 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
             }
             None => usage_exit("probe winsize FD"),
         },
+        Some("read-key") => match args.next().and_then(progs::atoi) {
+            Some(fd) => {
+                match userlib::read_key(fd) {
+                    Ok(event) => {
+                        let _ = writeln!(out, "read-key({fd}): {} {} {}", event.code, event.mods, event.ch);
+                    }
+                    Err(e) => {
+                        let _ = writeln!(out, "read-key({fd}): {e}");
+                    }
+                }
+                0
+            }
+            None => usage_exit("probe read-key FD"),
+        },
+        Some("read-key-ptr") => {
+            match (
+                args.next().and_then(progs::atoi),
+                args.next().and_then(progs::atoi),
+            ) {
+                (Some(fd), Some(addr)) => {
+                    let _ = writeln!(
+                        out,
+                        "read-key-ptr({fd}, {addr}): {}",
+                        userlib::ioctl(fd, userlib::CONSOLE_READ_KEY, addr)
+                    );
+                    0
+                }
+                _ => usage_exit("probe read-key-ptr FD ADDR"),
+            }
+        }
         Some("winsize-ptr") => {
             match (
                 args.next().and_then(progs::atoi),

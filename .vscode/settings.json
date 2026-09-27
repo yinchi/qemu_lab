@@ -1,21 +1,10 @@
 {
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
     "rust-analyzer.linkedProjects": [
-        "rust/r01_hello/Cargo.toml",
-        "rust/r02_interrupts/Cargo.toml",
-        "rust/r03_timer/Cargo.toml",
-        "rust/r04_alloc/Cargo.toml",
-        "rust/r05_lineedit/Cargo.toml",
-        "rust/r06_virtio/Cargo.toml",
-        "rust/r07_keydetect/Cargo.toml",
-        "rust/r08_fs/Cargo.toml",
-        "rust/r09_userspace/Cargo.toml",
-        "rust/r10_repl/Cargo.toml",
-        "rust/r11_busybox/Cargo.toml",
         "rust/user/abi/Cargo.toml",
-        "rust/user/progs/Cargo.toml",
+        "rust/user/progs_r19/Cargo.toml",
         "rust/user/userlib/Cargo.toml",
-        "rust/r12_shell/Cargo.toml"
+        "rust/r20_editor/Cargo.toml"
     ],
     "rust-analyzer.cargo.target": "aarch64-unknown-none-softfloat",
     "rust-analyzer.checkOnSave.allTargets": false
