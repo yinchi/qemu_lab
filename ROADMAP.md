@@ -3,7 +3,7 @@
 **Target:** a bare-metal AArch64 system, written in Rust, that can load a file
 from a real filesystem, run it as a genuine EL0 user program (separate from
 the kernel via real syscalls, not just a function-pointer table), and -- as a
-capstone -- run a shell and a small vi-like full-screen editor as user
+capstone -- run a shell and a small nano-style full-screen editor as user
 programs, driven by a real VirtIO GPU display and a real VirtIO keyboard
 rather than a serial terminal. Still single-threaded throughout: one program
 loaded and
@@ -695,7 +695,8 @@ unchanged.
 | 17 | Environment variables, `$VAR`, `$?` | 16 |
 | 18 | More utilities: new programs and flags | (new) |
 | 19 | Persistent storage: a second disk, mounts, `/etc/fstab` | (new) |
-| 20 | The vi-like editor (**Capstone 1**) | 13 |
+| 20 | The nano-style editor, `edit` (**Capstone 1**) | 13 |
+| 20b | `column` and `ls` in columns (split out of the editor stage) | (new) |
 
 Stages 18 and 19 were inserted after this table was written, which moved every stage from the editor onward up by two
 (so the editor is 20 and the job-control block is 21-26). The sources of completed stages and `Stage12.md` still carry the
@@ -1192,84 +1193,99 @@ design settled (mounting by hand came before `fstab`; the host side folded into 
 
 ---
 
-## Stage 20 (Capstone 1): a vi-like full-screen editor -- `r20_editor`
+## Stage 20 (Capstone 1): a nano-style full-screen editor -- `r20_editor`
 
-**Goal:** genuinely harder than the shell's line editing, not just a bigger
-version of it -- a full-screen editor needs a multi-line buffer and modal
-editing on top of everything Stage 12 already has, even though Stage 6/7's
-`virtio-gpu`+keyboard architecture removes what would otherwise have been
-this stage's hardest problems: there's no terminal-size query needed (the
-display's dimensions are fixed and known up front by this project's own
-design, unlike a real serial terminal's `ESC[18t` round-trip), and no blind,
-escape-code-driven redraw needed (the CPU can read back and rewrite any cell
-in the framebuffer directly, so there's no ANSI vocabulary to speak in
-either direction).
+`Stage20.md` carries the full plan (decisions, steps, the key table, the ABI); this section is the summary.
 
-**New features specific to this stage:**
-- A multi-line in-memory buffer, and modal editing (insert vs. command mode,
-  at minimum) -- the genuinely new state this stage introduces; both are
-  independent of the I/O model and would have been needed however Stages 6/7
-  turned out.
-- Screen redraw: rewriting the entire visible page's worth of character
-  cells on every edit via Stage 6's console, then one `flush()` call to push
-  it to the display -- no differential/region-tracking logic required, since
-  a full-page rewrite plus a single flush is cheap regardless. Worth naming
-  explicitly: unlike real VGA VRAM, `virtio-gpu` writes aren't automatically
-  visible on screen -- `flush()` is what actually transfers the framebuffer
-  to the display, one extra step real memory-mapped VRAM wouldn't have
-  needed, though still just one cheap call per edit, not something to
-  optimize.
-- A visible cursor needs drawing ourselves, same as Stage 12's: rendered as
-  an ordinary glyph via `put_char`, since `virtio-gpu`'s only cursor
-  primitive is a 64x64 ARGB mouse-pointer overlay, not a character cell.
-- [`kilo`](http://viewsourcecode.org/snaptoken/kilo/) (and its Rust ports,
-  `kiro-editor`/`kilo-rs`) remains a useful design reference for the
-  multi-line-buffer-plus-modal-editing structure itself -- around 1000 lines,
-  easy to read end to end -- even though its terminal I/O layer (built on
-  `termios`/ANSI escapes) isn't something this stage needs or borrows from.
-- File access reuses the `open`/`read`/`write`/`close` syscalls already
-  established in Stage 11 -- nothing new needed on that front, and the
-  editor is launched the same way as any other program via Stage 12's shell.
-  What the stages before it give it: a real heap for the buffer (Stage 16, on Stage 15's
-  growable window) so a file's size is not capped by a fixed array, real timestamps on
-  save (Stage 14), and, with Stage 12, a shell whose diagnostics and options it can lean on.
-- A toggleable raw-mode switch on fd 0 -- the one genuinely new syscall
-  surface this stage needs. Off by default (Stage 10/11's canonical,
-  line-buffered mode); once this editor switches it on, its own `read()` calls pop `Token`s straight from the token queue Stage 12 introduced, bypassing the line discipline entirely -- no
-  Enter-wait, no Backspace-absorption, since the editor decides what
-  Backspace means itself (delete-under-cursor, not "edit the pending
-  line"). Switched back off on exit, restoring Stage 12's shell to
-  canonical mode. Not `termios`/ANSI raw mode -- just this project's own
-  version of the same cooked-vs-raw distinction, since Stage 7's
-  `virtio-keyboard` already delivers discrete key events with nothing
-  escape-sequence-shaped to negotiate. Nothing before this stage has
-  anything to toggle it; the switch itself is worth having now regardless,
-  so `tokens.rs`'s `Token` (already carrying raw evdev codes and modifier
-  flags, not just resolved characters) has a real consumer to have been
-  designed for.
-- Flipping this switch on needs no interrupt-mask changes. Stages 10-11 masked every DAIF bit for a
-  program's whole time at EL0 to close a reentrancy hazard (a keyboard IRQ re-entering
-  `handle_keyboard_irq` while `run_program` was still on the stack), but Stage 12 removes the hazard
-  instead of masking around it: the keyboard IRQ only enqueues `Token`s, the shell's loop runs outside
-  IRQ context, and programs run with interrupts enabled. Raw mode is then purely a routing switch on
-  that queue -- who consumes each `Token`, the shell's line discipline or this editor directly -- and
-  keystrokes typed while a program isn't reading wait in the queue instead of being lost.
+**Goal:** genuinely harder than the shell's line editing, not just a bigger version of it -- a full-screen editor needs a
+multi-line buffer, a cursor and scroll model, cut and paste, prompts and a save path, on top of everything Stage 12 already
+has. Stage 6/7's `virtio-gpu` + keyboard architecture still removes what would otherwise have been this stage's hardest
+problems: there is no terminal-size query round trip (the display's size is known to the kernel), and no blind,
+escape-code-driven redraw (the console's cells can be rewritten directly, so there is no ANSI vocabulary to speak in either
+direction).
 
-- **The screen size becomes visible to programs: a console `ioctl`.** The editor needs the display's dimensions, and today only the kernel knows
-  them. The console's `ioctl` (the one `clear` already uses, whose `ENOTTY` already means "not the console") gains Linux's `TIOCGWINSZ` -- the same
-  request number and `struct winsize` (rows, columns, and two pixel fields left 0) -- answered for fd 0, 1 and 2 whenever they are still the console
-  and `ENOTTY` when redirected. The source of truth is then the fd itself, as on Linux, so a program learns both that it is on a terminal and how big
-  it is with one call and no help from the shell; `COLUMNS` and `LINES` in the environment stay an optional convenience for scripts and prompts
-  (the shell's start-up may export them), never something a program has to depend on. The same call unblocks two things Stage 18 deliberately left
-  out: **`column`** (`-t` to align a table, and filling columns to the width) and **`ls` in columns when its output is a terminal** (as GNU's does),
-  which needs display widths for wide characters and rewrites the `ls` expectations of the test suite in one pass.
+**Shaped like GNU nano, not vi.** Every key arrives as a discrete event and the keyboard has real arrow, Home/End, PgUp/PgDn
+and Delete keys, so the reasons vi exists (few keys, a serial line) do not apply here. A modeless editor drops what would
+otherwise be this stage's largest pile of new state -- modes, operators and counts, registers, a `:` command parser -- and
+keeps the parts that are the same either way: the buffer, the view, file I/O and drawing. The program is called `edit`.
 
-**Demo:** launch the editor from Stage 12's shell against a file already
-present on the disk image, edit its text on Stage 6's display using
-Stage 7's keyboard, save it, then -- to prove persistence, not just an
-in-memory illusion -- restart QEMU against the same `home.img` (Stage 19's persistent
-disk, mounted at `/root`, where the file lives) with a *rebuilt* system image, and confirm
-the edit is still there.
+**The editor:**
+- A multi-line in-memory buffer (a `Vec` of UTF-8 lines on Stage 16's heap, so a file's size is not capped by a fixed
+  array) and a cursor with a remembered column. **Long lines soft-wrap** at the screen edge: a pure layout module maps
+  between buffer positions and screen cells in both directions (Up and Down move by screen row; the view scrolls by whole
+  lines, except while the cursor is in a line taller than the screen, where it scrolls by screen row). Tabs are stored as `\t` and drawn to the next tab
+  stop; wide glyphs take two cells and never straddle a row edge. Files are read and written whole, with the Stage 11 syscalls; a save
+  truncates and rewrites in place and stamps the file with Stage 14's real time. Contents are handled **LF-only and lossy**:
+  carriage returns are dropped and invalid UTF-8 replaced, so saving a CRLF or binary file rewrites it.
+- nano's key set, in three tiers. **Core:** typing, Enter, Backspace/Delete, arrows, Home/End, PgUp/PgDn, word moves, first
+  and last line, `^S` save, `^O` save as, `^X` exit (asking first when modified), `^G` a help screen listing the keys, `^C`
+  the cursor position. **Cut, search, goto:** `^K` cut a line, `Alt+6` copy, `^U` paste, `^W` search, `Alt+W` next match,
+  `Alt+G` go to a line. **Also in scope:** `Alt+A` sets a mark, after which cut, copy and paste act on the marked region;
+  `Alt+N` toggles a line-number gutter; `Alt+I` toggles auto-indent. A status bar, a two-row help footer, a message line
+  and one single-line prompt widget (save-as, search, goto) make up the rest of the screen.
+- **`~/.editrc`** (in `$HOME`, so `/root/.editrc` on the home disk), in the `/etc/environment` format: `TABSIZE=<1..16>`
+  (default 4), `LINENOS=<0|1>` (default 0) and `AUTOINDENT=<0|1>` (default 0) set the starting state. Read once at start-up;
+  a missing file is silent, a bad value gets one message-line note and that name's default.
+- [`kilo`](http://viewsourcecode.org/snaptoken/kilo/) (about 1000 lines of C), its Rust port `kiro-editor`, and `nanorust`
+  are useful design references for the buffer / redraw / key-dispatch structure and for nano's key set. All of them are
+  built on `termios` and ANSI escapes, which this stage neither needs nor borrows.
+- A visible cursor is drawn by the program as an ordinary cell (inverse video), since `virtio-gpu`'s only cursor primitive
+  is a 64x64 ARGB mouse-pointer overlay, not a character cell.
+
+**What the kernel gains: three console `ioctl`s.** Every editor-facing operation is a request on the console fd (the
+`ioctl` `clear` already uses), each answering `ENOTTY` when the fd is not the console -- which is also how a program asks
+"am I on a terminal?".
+- **`TIOCGWINSZ`** -- Linux's request number and `struct winsize` (rows, columns, two pixel fields left 0), answered for
+  fd 0, 1 and 2 while they are the console. The source of truth is the fd itself, as on Linux; `COLUMNS` and `LINES` stay an
+  optional convenience, never something a program depends on.
+- **`CONSOLE_READ_KEY`** -- blocks until a key press is queued and returns one 8-byte record: the raw evdev code, a byte of
+  modifier and lock bits (Shift, Ctrl, Alt, CapsLock, NumLock, and a *repeat* bit), and the character the key produces, if
+  any. It replaces the raw-mode switch this section once planned: `read(0)` and `CONSOLE_READ_KEY` are two ways to drain the
+  one token queue Stage 12 introduced (`read(0)` through the line discipline, into a line; `CONSOLE_READ_KEY`, one token at
+  a time), so there is no mode to switch back on exit or on a fault, and keys typed while no program is reading still wait
+  in the queue. Needs no interrupt-mask change: the keyboard IRQ only enqueues, and programs run with interrupts enabled.
+- **`CONSOLE_DRAW`** -- the piece the earlier plan left out: the console lives in the kernel and a program can only
+  `write()` bytes, so "rewrite the page's cells, then one `flush()`" needs a call. The program passes a grid of cells
+  (a character and an attribute byte: *inverse* and *dim*, mapped onto the console's existing colours) and the cursor
+  position; the kernel draws them all and flushes once. The whole frame is redrawn on every key.
+
+**Two fixes in the keyboard layer, made here because the editor is their first real consumer:**
+- **NumLock now does something.** It was tracked but never read, so the keypad produced nothing anywhere. With NumLock on
+  (the new boot state) the keypad types its characters and, for command matching, counts as its main-block twin (so
+  `Alt+Numpad6` is `Alt+6`); with it off the keypad keys are Home/Up/PgUp/Left/Right/End/Down/PgDn/Insert/Delete. One pure
+  function, `effective_code`, in the shared `abi` crate, decides; the shell's line discipline uses it too.
+- **Key repeat.** The kernel today swallows a held key's repeated presses. The device's own repeat is passed through,
+  marked with a *repeat* bit and coalesced (dropped while the queue is not empty, so a slow redraw cannot build a backlog);
+  the editor ignores repeats of command keys, so holding `^S` cannot save twice. A kernel timer is the fallback only if
+  QEMU turns out to send no repeats.
+
+**Not in this stage:** undo and redo, search-and-replace, wrapping at blanks (lines wrap at the edge), inserting a file, syntax highlighting, spell
+check, justify, multiple buffers, the mouse. `column` and `ls` in columns, which the screen size unblocks, are Stage 20b.
+
+**Tests** state this stage's behavior: host tests for the buffer, the `.editrc` parser and the keyboard layer, and the QEMU
+suite typing on the virtio keyboard (open, edit, save, exit with unsaved changes, cut and paste, search, mark, the gutter,
+the keypad). Every test builds its own scratch disk images; **nothing may touch the repository's `home.img`**, the user's
+real home disk, and the harness fails if a drive path resolves to it.
+
+**Demo:** launch `edit` from Stage 12's shell against a file on a scratch home disk (built from a copy of
+`disk-home-seed/`), edit its text on Stage 6's display with Stage 7's keyboard, save it, then -- to prove persistence, not
+just an in-memory illusion -- restart QEMU against the same scratch home disk with a *rebuilt* system image, and confirm the
+edit is still there.
+
+---
+
+## Stage 20b: `column` and `ls` in columns
+
+Split out of Stage 20 to keep the editor's plan focused. It needs only what Stage 20 leaves behind: `TIOCGWINSZ`, and a pure
+display-width function (tabs and wide glyphs; written in the editor, kept free of editor types so it can move into
+`userlib`).
+
+**Features (as Stage 18 deliberately left them out):**
+- **`column`** -- `-t` to align a table, and filling columns to the width.
+- **`ls` in columns when its output is a terminal**, as GNU's does; when it is redirected, one entry per line as today. This
+  needs display widths for wide characters, and rewrites the `ls` expectations of the test suite in one pass.
+
+Whether this is a further copy of the crate or the last steps of `r20_editor` is decided when Stage 20 is done.
 
 ---
 
@@ -1370,9 +1386,10 @@ from outside, rather than something it calls voluntarily (`exit`) or synchronous
   exists**: real vim does *not* intercept `Ctrl+Z` -- it lets the terminal driver suspend it
   normally, the simpler and more common default. Real nano *does* intercept it (its own `SIGTSTP`
   handling), and has to provide `^T^Z` as an explicit escape hatch to actually suspend despite
-  that. Stage 20's editor, vi-like by its own stated design reference, follows vim's precedent: it
-  never reads `Ctrl+Z` as an editing keystroke, so this stage's kernel-level interception is the
-  only thing that ever sees it, and no editor-side change is needed at all.
+  that. Stage 20's editor, nano-style in its keys but not in this respect, follows vim's precedent:
+  `Ctrl+Z` is simply unbound in its key set (it reads keys through `CONSOLE_READ_KEY`, and no
+  command uses that one), so this stage's kernel-level interception is the only thing that ever
+  sees it, and no editor-side change is needed at all.
 - **A second, closely-related signal, needed for correctness rather than authenticity: the
   `SIGTTIN` equivalent for background stdin.** Stage 7's keyboard driver only ever has one
   legitimate destination for "the current keystroke," so once Stage 21 lets a second program be
@@ -1456,7 +1473,7 @@ the mechanism already exists, this stage is purely the shell-level interface to 
   (Stage 9's default, untouched unless explicitly redirected), and nothing suspends or buffers its
   writes -- the same behavior real terminals have by default (`TOSTOP` off), where a background
   job's output is simply allowed to interleave with whatever else is on screen. On a real Linux
-  terminal running vim, this is exactly what happens when an unredirected background job writes
+  terminal running vim or nano, this is exactly what happens when an unredirected background job writes
   output: it splices visually into vim's own display, purely cosmetically, and disappears the next
   time vim redraws from its own internal buffer. The same property holds here for free: Stage 20's
   editor already does a full-page rewrite from its in-memory buffer on every single edit, so any

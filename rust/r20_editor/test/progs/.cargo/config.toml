@@ -1,0 +1,12 @@
+[build]
+target = "aarch64-unknown-none-softfloat"
+
+[target.aarch64-unknown-none-softfloat]
+rustflags = [
+    "-C", "link-arg=-Tlink.ld",
+    "-C", "force-unwind-tables=no",
+    # The default linker page-size assumption (64 KiB) pads every PT_LOAD segment's file offset
+    # out to a 64 KiB boundary, bloating even a tiny binary to 60+ KiB on disk for no reason --
+    # this project's own MMU uses a real 4 KiB granule, so that's the alignment worth asking for.
+    "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000",
+]

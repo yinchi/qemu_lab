@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Generates the test fixtures that are derived from built programs, so no binary blobs are checked in:
+malformed and oversized ELF files (including segments in the stack guard and sharing a page), made by corrupting `echo`/`hello`, and `bigenv.sh`, a script whose exports overflow a program's
+argument-and-environment limit. Run by `just disk`, after `disk/bin/` is staged.
+
+Usage: mkfixtures.py <bin-dir> <tests-dir>
+
+Every output is an executable (no extension) under `disk/tests/` (gitignored, like the test programs), except `biglines.txt`, a text file the `tail` tests read, and `bigenv.sh` (both gitignored too). The kernel must refuse
+each malformed one with `cannot execute: Exec format error` rather than panic -- see
+`cases/launch.py` -- and run `bigpad` (a valid program followed by 3 MiB of zeros, which the
+loader ignores) as it would `hello`.
+"""
+
+import struct
+import sys
+from pathlib import Path
+
+# ELF64 header / program header field offsets.
+E_ENTRY, E_PHOFF, E_PHENTSIZE, E_PHNUM = 24, 32, 54, 56
+P_TYPE, P_OFFSET, P_VADDR, P_FILESZ, P_MEMSZ = 0, 8, 16, 32, 40
+
+
+def u16(b, off):
+    return struct.unpack_from("<H", b, off)[0]
+
+
+def u64(b, off):
+    return struct.unpack_from("<Q", b, off)[0]
+
+
+def patch(b, off, fmt, value):
+    struct.pack_into(fmt, b, off, value)
+
+
+def phdrs(b):
+    """Offsets of every program header of `b`."""
+    off, size, n = u64(b, E_PHOFF), u16(b, E_PHENTSIZE), u16(b, E_PHNUM)
+    return [off + i * size for i in range(n)]
+
+
+def first_load(b):
+    return next(p for p in phdrs(b) if struct.unpack_from("<I", b, p + P_TYPE)[0] == 1)
+
+
+def main():
+    bin_dir, out = Path(sys.argv[1]), Path(sys.argv[2])
+    echo = (bin_dir / "echo").read_bytes()
+    hello = (bin_dir / "hello").read_bytes()
+
+    def write(name, data):
+        (out / name).write_bytes(bytes(data))
+
+    write("bigpad", hello + bytes(3 * 1024 * 1024))
+    # A text file of 100000 short lines (about 1 MB): `tail` reading it from stdin must keep working past the old
+    # 512 KiB buffer, and trim what it can no longer print.
+    write("biglines.txt", "".join(f"line {i}\n" for i in range(1, 100_001)).encode())
+    # Five 30000-byte variables: 150000 bytes of environment, past the 128 KiB `ARG_MAX` that arguments and environment
+    # share, so nothing can be launched until they are unset (`cases/env.py`).
+    write("bigenv.sh", "".join(f"export BIG{i}={'x' * 30000}\n" for i in range(1, 6)).encode())
+    # The whole file is read into the kernel heap before it is looked at, so a file past half the 16 MiB heap is
+    # refused outright (`MAX_PROGRAM_SIZE`), however valid the program at its start.
+    write("elf-toolargefile", hello + bytes(9 * 1024 * 1024))
+    write("elf-trunc", echo[:100])
+
+    b = bytearray(echo)
+    patch(b, first_load(b) + P_VADDR, "<Q", 0x5000_0000)  # segment far above the user window
+    write("elf-badseg", b)
+
+    b = bytearray(echo)
+    patch(b, E_PHOFF, "<Q", 1 << 40)  # program header table nowhere near the file
+    write("elf-badphoff", b)
+
+    b = bytearray(echo)
+    for p in phdrs(b):
+        patch(b, p + P_TYPE, "<I", 0)  # PT_NULL: nothing to load
+    write("elf-noload", b)
+
+    b = bytearray(echo)
+    patch(b, E_ENTRY, "<Q", 0)  # entry point in no segment
+    write("elf-badentry", b)
+
+    b = bytearray(echo)
+    patch(b, first_load(b) + P_OFFSET, "<Q", len(echo) + 1000)  # file bytes past the end of the file
+    write("elf-badoffset", b)
+
+    b = bytearray(echo)
+    p = first_load(b)
+    patch(b, p + P_MEMSZ, "<Q", u64(b, p + P_FILESZ) - 1)  # memsz < filesz
+    write("elf-memlt", b)
+
+    # The user window is: image (up to 0x45ef0000), 64 KiB guard, 1 MiB stack from 0x45f00000 (see
+    # `platform/base_addresses.rs`). A segment may not reach into the guard or the stack...
+    b = bytearray(echo)
+    patch(b, first_load(b) + P_VADDR, "<Q", 0x45EF_F000)
+    write("elf-inguard", b)
+
+    b = bytearray(echo)
+    patch(b, first_load(b) + P_VADDR, "<Q", 0x45F0_0000)
+    write("elf-instack", b)
+
+    # ...nor may a segment's *memory* (`.bss` is memsz beyond filesz) run past the end of the image area, however
+    # small the file is: 40 MiB of it, from the base, cannot fit under a 32 MiB window.
+    b = bytearray(echo)
+    loads = [p for p in phdrs(b) if struct.unpack_from("<I", b, p + P_TYPE)[0] == 1]
+    patch(b, loads[-1] + P_MEMSZ, "<Q", 40 * 1024 * 1024)
+    write("elf-hugebss", b)
+
+    # ...and two segments may not share a page (permissions are per page): move the second loadable
+    # segment to start inside the first one's last page.
+    b = bytearray(echo)
+    loads = [p for p in phdrs(b) if struct.unpack_from("<I", b, p + P_TYPE)[0] == 1]
+    patch(b, loads[1] + P_VADDR, "<Q", u64(b, loads[0] + P_VADDR) + 0x10)
+    write("elf-sharepage", b)
+
+
+if __name__ == "__main__":
+    main()

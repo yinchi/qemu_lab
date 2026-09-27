@@ -1,0 +1,588 @@
+//! The kernel side of `open`/`close`/`getdents`/`chmod` and the per-file half of `read`/
+//! `write`: turns a path from a user program into an open file on Stage 8's FAT filesystem.
+//! `syscall/fd.rs` owns the small fd numbers a program sees; this module owns what they refer to.
+//!
+//! An open file is shared, not owned by one fd: `open` returns a `FileRef` (a reference-counted
+//! `OpenFile`), and every fd slot or stream binding (`2>&1`, a frame's redirect) that refers to it holds
+//! a clone. `close` drops one reference; the file is really closed -- a writer's size committed to disk --
+//! when the last one goes, whether that is an explicit `close` (which can report `EIO`) or the implicit
+//! drop of a program's fd table when it exits (which cannot).
+//!
+//! The paths this module takes are absolute and normalized (`fs::path::abspath` produces them from what a
+//! user typed and the working directory): `/`, or `/` and components. Which volume a path is on is the mount
+//! table's answer (`mounts::table().resolve`, from Stage 19: the mount with the longest matching point, and the rest
+//! of the path within it); every function below starts from that, and an open file remembers its volume. Components are matched exactly
+//! (case-sensitively, same as `find_entry_checked`); `.`/`..` never appear, having been resolved
+//! lexically already.
+//!
+//! Opening for write creates the file if it's missing; it starts from offset 0 (truncating) unless
+//! `append` positions it at the file's current end instead (`hadris-fat`'s `FileWriter::new_append`).
+//! Either way, `close` (`FileWriter::finish`) is what commits the final size to disk. There's no
+//! seek, and no separate truncate-without-writing flag.
+
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::cell::RefCell;
+
+use hadris_fat::raw::DirEntryAttrFlags;
+use hadris_fat::sync::read::FileReader;
+use hadris_fat::sync::write::FileWriter;
+use hadris_fat::sync::{DirectoryEntry, FatDateTime, FatDir, FatVolume, FatVolumeReadExt, FatVolumeWriteExt};
+
+use super::blkio::BlkIo;
+use super::fattime::{TimeChoice, checked_fields};
+use super::{find_entry_checked, mounts, read_file_checked};
+use crate::drivers::virtio::blk::MAX_BLK;
+use abi::errno::{
+    EACCES, EBADF, EBUSY, EEXIST, EINVAL, EIO, EISDIR, EMFILE, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EXDEV,
+};
+use abi::fs::{ATTR_DIRECTORY, ATTR_EXEC, ATTR_READ_ONLY, ATTR_VOLUME_LABEL, DIRENT_SIZE, NAME_MAX};
+
+/// The only attribute bits `chmod` may change: the two this project exposes as permissions.
+const CHMOD_BITS: u8 = ATTR_EXEC | ATTR_READ_ONLY;
+
+/// How many files/directories may be open at once, counting each file once however many fds refer to it,
+/// and the shell's own redirect files too. The fd table (`syscall/fd.rs`) is sized from this (it adds the
+/// three standard fds), so `open` fails with `EMFILE` at exactly this many, whichever would have run out
+/// first.
+pub const MAX_OPEN_FILES: usize = 13;
+
+type Dir = FatDir<'static, BlkIo>;
+
+/// One directory entry as `getdents` reports it, captured when the directory was opened.
+struct DirRec {
+    name: String,
+    size: u32,
+    attrs: u8,
+}
+
+/// What an open file is.
+enum Kind {
+    /// A file opened for reading, represented by its `FileReader`.
+    Reader(FileReader<'static, BlkIo>),
+
+    /// A file opened for writing, represented by its `FileWriter`.
+    Writer(FileWriter<'static, BlkIo>),
+
+    /// A directory. `recs` holds the directory's entries as `DirRec`.
+    Dir { recs: Vec<DirRec>, next: usize },
+
+    /// A writer that `OpenFile::finish` has already finished; only ever seen while it is being dropped.
+    Closed,
+}
+
+/// One open file, which may be a reader, a writer, or a directory. Counted in `LIVE_FILES` from its
+/// creation to its drop, which also finishes a writer that was never finished explicitly.
+pub struct OpenFile {
+    kind: Kind,
+    /// The device (volume) the file is on: `umount` refuses while any file is open on it.
+    dev: usize,
+}
+
+/// A shared open file: what an fd slot or a stream binding holds. Single core, so no atomics; the
+/// `RefCell` is borrowed only for the duration of one `read`/`write`/`getdents`.
+pub type FileRef = Rc<RefCell<OpenFile>>;
+
+/// How many `OpenFile`s exist. `open` refuses (`EMFILE`) at `MAX_OPEN_FILES`.
+///
+/// SAFETY (every access, via `live_files`): single core, and every syscall runs with IRQs masked, so
+/// nothing else can touch this while a call is in progress; the shell runs outside interrupts.
+static mut LIVE_FILES: usize = 0;
+
+/// How many `OpenFile`s exist on each device (same safety argument as `LIVE_FILES`).
+static mut OPEN_ON: [usize; MAX_BLK] = [0; MAX_BLK];
+
+/// How many files are open on device `dev`.
+#[allow(clippy::deref_addrof)]
+pub fn open_on(dev: usize) -> usize {
+    // SAFETY: see LIVE_FILES.
+    unsafe { (*(&raw const OPEN_ON))[dev] }
+}
+
+#[allow(clippy::deref_addrof)]
+fn open_on_mut(dev: usize) -> &'static mut usize {
+    // SAFETY: see LIVE_FILES.
+    unsafe { &mut (*(&raw mut OPEN_ON))[dev] }
+}
+
+/// Accessor for `LIVE_FILES`.
+#[allow(clippy::deref_addrof)]
+fn live_files() -> &'static mut usize {
+    // SAFETY: see LIVE_FILES.
+    unsafe { &mut *(&raw mut LIVE_FILES) }
+}
+
+impl OpenFile {
+    fn new(kind: Kind, dev: usize) -> FileRef {
+        *live_files() += 1;
+        *open_on_mut(dev) += 1;
+        Rc::new(RefCell::new(Self { kind, dev }))
+    }
+
+    /// Commits a writer's final size to disk (a no-op for anything else), reporting failure as `EIO`.
+    fn finish(&mut self) -> isize {
+        match core::mem::replace(&mut self.kind, Kind::Closed) {
+            Kind::Writer(writer) => match writer.finish() {
+                Ok(()) => 0,
+                Err(e) => map_fat_err(e),
+            },
+            _ => 0,
+        }
+    }
+}
+
+impl Drop for OpenFile {
+    /// The implicit close: the last reference went without an explicit `close` (a program exited holding
+    /// the file). Any error is dropped, as there is nobody to tell.
+    fn drop(&mut self) {
+        let _ = self.finish();
+        *live_files() -= 1;
+        *open_on_mut(self.dev) -= 1;
+    }
+}
+
+/// The volume on device `dev`, which the mount table said a path is on.
+fn vol(dev: usize) -> &'static FatVolume<BlkIo> {
+    mounts::volume(dev)
+}
+
+/// Splits a path into the device it is on and its components within that volume (ignoring empty components caused
+/// by consecutive slashes): none for the volume's own root, which is what a mount point resolves to.
+fn locate(path: &str) -> (usize, Vec<&str>) {
+    let (dev, rest) = mounts::table().resolve(path);
+    (dev, rest.split('/').filter(|c| !c.is_empty()).collect())
+}
+
+/// Resolve a directory on device `dev` from its root, given a slice of path components: each one must name a
+/// directory inside the previous. An empty slice resolves to the root itself.
+fn resolve(dev: usize, dirs: &[&str]) -> Result<Dir, isize> {
+    let mut dir = vol(dev).root_dir();
+    for name in dirs {
+        let entry = find_entry_checked(&dir, name)?.ok_or(ENOENT)?;
+        if !entry.is_directory() {
+            return Err(ENOTDIR);
+        }
+        dir = dir.open_entry(&entry).map_err(|_| EIO)?;
+    }
+    Ok(dir)
+}
+
+/// Whether `path` names a directory that exists: `Ok(())`, or `ENOENT`/`ENOTDIR`/`EIO`. The root is one.
+/// What `cd` checks before it moves.
+pub fn check_directory(path: &str) -> Result<(), isize> {
+    let (dev, comps) = locate(path);
+    resolve(dev, &comps).map(|_| ())
+}
+
+/// Finds the file or directory entry at `path`, without opening it --
+/// what the launcher uses to locate a program. `EISDIR` for the root itself, which has no entry.
+pub fn lookup(path: &str) -> Result<Located, isize> {
+    let (dev, comps) = locate(path);
+    let (leaf, parents) = comps.split_last().ok_or(EISDIR)?;
+    let parent = resolve(dev, parents)?;
+    let entry = find_entry_checked(&parent, leaf)?.ok_or(ENOENT)?;
+    Ok(Located { entry, dev })
+}
+
+/// A directory entry found by `lookup`, and the device (volume) it is on. It dereferences to the entry, so its
+/// kind, attributes and size read as before; `read_all` is the one thing that needs the volume.
+pub struct Located {
+    entry: hadris_fat::sync::FileEntry,
+    dev: usize,
+}
+
+impl core::ops::Deref for Located {
+    type Target = hadris_fat::sync::FileEntry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entry
+    }
+}
+
+impl Located {
+    /// The whole file, read into memory (the caller has bounded its size). `EIO` if the volume cannot deliver it.
+    pub fn read_all(&self) -> Result<Vec<u8>, isize> {
+        read_file_checked(vol(self.dev), &self.entry)
+    }
+}
+
+/// Lists the contents of the given directory, returning a vector of `DirRec` entries. Skips
+/// the `.` and `..` entries, as well as volume labels. Returns `EIO` on an I/O error.
+fn list(dir: &Dir) -> Result<Vec<DirRec>, isize> {
+    let mut recs = Vec::new();
+    for item in dir.entries() {
+        let DirectoryEntry::Entry(entry) = item.map_err(|_| EIO)?;
+        let name = entry.name();
+        let attrs = entry.attributes().bits();
+        if name == "." || name == ".." || attrs & ATTR_VOLUME_LABEL != 0 {
+            continue;
+        }
+        recs.push(DirRec {
+            name: String::from(name),
+            size: entry.len() as u32,
+            attrs,
+        });
+    }
+    Ok(recs)
+}
+
+/// Opens a file for reading. If the path points to a directory, it opens the directory instead,
+/// e.g., for listing its contents via `getdents`.
+fn open_read(dev: usize, comps: &[&str]) -> Result<Kind, isize> {
+    let Some((leaf, parents)) = comps.split_last() else {
+        // No components at all: the volume's root directory itself.
+        return Ok(Kind::Dir {
+            recs: list(&vol(dev).root_dir())?,
+            next: 0,
+        });
+    };
+    let parent = resolve(dev, parents)?;
+    let entry = find_entry_checked(&parent, leaf)?.ok_or(ENOENT)?;
+    if entry.is_directory() {
+        let dir = parent.open_entry(&entry).map_err(|_| EIO)?;
+        Ok(Kind::Dir {
+            recs: list(&dir)?,
+            next: 0,
+        })
+    } else {
+        Ok(Kind::Reader(vol(dev).read_file(&entry).map_err(|_| EIO)?))
+    }
+}
+
+/// Opens a file for writing. If the file does not exist, it is created. `append` positions the
+/// writer at the file's current end instead of truncating it. Returns a `Kind::Writer`.
+/// If the path points to a directory, it returns `EISDIR`. If the file is read-only, it returns
+/// `EACCES`.
+fn open_write(dev: usize, comps: &[&str], append: bool) -> Result<Kind, isize> {
+    let (leaf, parents) = comps.split_last().ok_or(EISDIR)?;
+    let parent = resolve(dev, parents)?;
+    let entry = match find_entry_checked(&parent, leaf)? {
+        Some(entry) => {
+            if entry.is_directory() {
+                return Err(EISDIR);
+            }
+            if entry.attributes().bits() & ATTR_READ_ONLY != 0 {
+                return Err(EACCES);
+            }
+            entry
+        }
+        None => vol(dev).create_file(&parent, leaf).map_err(|_| EIO)?,
+    };
+    // A second writer on the same file is rejected by hadris-fat itself, which surfaces here.
+    let writer = if append {
+        FileWriter::new_append(vol(dev), &entry).map_err(|_| EIO)?
+    } else {
+        vol(dev).write_file(&entry).map_err(|_| EIO)?
+    };
+    Ok(Kind::Writer(writer))
+}
+
+/// Opens `path` and returns the new file. Read mode (`write: false`) opens a file, or a directory (for
+/// `getdents`); write mode creates the file if needed, starting it empty or (`append`) from its
+/// current end. `append` is ignored in read mode. `EMFILE` if `MAX_OPEN_FILES` files are already open.
+pub fn open(path: &str, write: bool, append: bool) -> Result<FileRef, isize> {
+    if *live_files() >= MAX_OPEN_FILES {
+        return Err(EMFILE);
+    }
+    let (dev, comps) = locate(path);
+    let kind = if write {
+        open_write(dev, &comps, append)?
+    } else {
+        open_read(dev, &comps)?
+    };
+    Ok(OpenFile::new(kind, dev))
+}
+
+/// Reads from `file` into `buf`. Returns the number of bytes read, EBADF if it is not open for reading,
+/// EISDIR if it is a directory, or EIO on an I/O error.
+pub fn read(file: &FileRef, buf: &mut [u8]) -> isize {
+    match &mut file.borrow_mut().kind {
+        Kind::Reader(reader) => match reader.read(buf) {
+            Ok(n) => n as isize,
+            Err(_) => EIO,
+        },
+        Kind::Dir { .. } => EISDIR,
+        _ => EBADF,
+    }
+}
+
+/// Writes `bytes` to `file`. Returns the number of bytes written, EBADF if it is not open for writing,
+/// or EIO on an I/O error.
+pub fn write(file: &FileRef, bytes: &[u8]) -> isize {
+    match &mut file.borrow_mut().kind {
+        Kind::Writer(writer) => match writer.write(bytes) {
+            Ok(n) => n as isize,
+            Err(e) => map_fat_err(e), // a full volume is `ENOSPC`, not a generic I/O error
+        },
+        _ => EBADF,
+    }
+}
+
+/// Batched reading of directory entries. Fills `buf` with as many directory entries as can fit in
+/// one call. Returns the number of bytes written to `buf` (`0` once the listing is exhausted), moving
+/// the `next` index in the directory `file` accordingly; `ENOTDIR` if `file` is not a directory, and
+/// `EINVAL` if `buf` cannot hold even one `DIRENT_SIZE` record -- otherwise the `0` it would return
+/// could not be told apart from the end of the listing.
+pub fn getdents(file: &FileRef, buf: &mut [u8]) -> isize {
+    let mut file = file.borrow_mut();
+    let Kind::Dir { recs, next } = &mut file.kind else {
+        // If the file is not a directory, return `ENOTDIR`.
+        return ENOTDIR;
+    };
+    if buf.len() < DIRENT_SIZE {
+        return EINVAL;
+    }
+
+    let mut off = 0;
+    while *next < recs.len() && off + DIRENT_SIZE <= buf.len() {
+        let rec = &recs[*next];
+        let name = rec.name.as_bytes();
+        let n = name.len().min(NAME_MAX);
+
+        // Each entry is a fixed-size `DIRENT_SIZE` byte array.
+        let out = &mut buf[off..off + DIRENT_SIZE];
+
+        // File size (4 bytes, little-endian)
+        out[0..4].copy_from_slice(&rec.size.to_le_bytes());
+
+        // Attributes (1 byte)
+        out[4] = rec.attrs;
+
+        // Name length (1 byte)
+        out[5] = n as u8;
+
+        // Name, null-padded to `NAME_MAX` bytes
+        out[6..6 + n].copy_from_slice(&name[..n]);
+        out[6 + n..].fill(0);
+
+        off += DIRENT_SIZE;
+        *next += 1;
+    }
+    off as isize
+}
+
+/// Drops the caller's reference to `file`. If it was the last one, the file is really closed, and for a
+/// writer that is what commits its final size to disk (so this can return `EIO`); otherwise the file
+/// stays open for whoever else holds it, and this is `0`.
+pub fn close(file: FileRef) -> isize {
+    match Rc::try_unwrap(file) {
+        Ok(cell) => cell.into_inner().finish(),
+        Err(_shared) => 0,
+    }
+}
+
+/// Sets the `set` bits and clears the `clear` bits in `path`'s FAT attribute byte. Only
+/// `CHMOD_BITS` may be named in either mask -- the directory/volume-label/etc. bits describe
+/// what an entry *is*, not a permission.
+pub fn chmod(path: &str, set: u8, clear: u8) -> isize {
+    if (set | clear) & !CHMOD_BITS != 0 {
+        return EINVAL;
+    }
+    let (dev, comps) = locate(path);
+    let Some((leaf, parents)) = comps.split_last() else {
+        return EINVAL; // a volume's root directory has no attribute byte
+    };
+    let entry = match resolve(dev, parents)
+        .and_then(|parent| find_entry_checked(&parent, leaf)?.ok_or(ENOENT))
+    {
+        Ok(entry) => entry,
+        Err(e) => return e,
+    };
+    let attrs = (entry.attributes().bits() | set) & !clear;
+    match vol(dev).set_attributes(&entry, DirEntryAttrFlags::from_bits_retain(attrs)) {
+        Ok(()) => 0,
+        Err(_) => EIO,
+    }
+}
+
+/// Maps a `hadris-fat` write-path error to an errno. Everything not named here (`NotAFile`,
+/// `NotADirectory`, `EntryNotFound`, `StaleEntry`, `ClusterLoop`, `CorruptFilesystem`, ...) falls
+/// back to `EIO`, matching how every other write path in this file already reports an unexpected
+/// `hadris-fat` failure.
+fn map_fat_err(e: hadris_fat::Error) -> isize {
+    use hadris_fat::Error;
+    match e {
+        Error::AlreadyExists => EEXIST,
+        Error::DirectoryNotEmpty => ENOTEMPTY,
+        Error::InvalidPath | Error::InvalidFilename => EINVAL,
+        Error::NoFreeSpace | Error::DirectoryFull => ENOSPC,
+        _ => EIO,
+    }
+}
+
+/// Creates an empty directory at `path`. `path`'s parent must already exist; `path` itself must
+/// not.
+pub fn mkdir(path: &str) -> isize {
+    let (dev, comps) = locate(path);
+    let Some((leaf, parents)) = comps.split_last() else {
+        return EEXIST; // "/", and every mount point, always exists
+    };
+    let parent = match resolve(dev, parents) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    match vol(dev).create_dir(&parent, leaf) {
+        Ok(_) => 0,
+        Err(e) => map_fat_err(e),
+    }
+}
+
+/// Removes the file, or (`remove_dir`) the empty directory, at `path`. Deletion is governed by the
+/// containing directory alone -- deliberately no read-only check here, matching real POSIX unlink
+/// semantics for a privileged process; the read-only bit still gates `open_write`, just not this.
+pub fn unlink(path: &str, remove_dir: bool) -> isize {
+    if path != "/" && mounts::table().is_mount_point(path) {
+        return EBUSY; // something is mounted there
+    }
+    let (dev, comps) = locate(path);
+    let Some((leaf, parents)) = comps.split_last() else {
+        return EINVAL; // can't unlink "/"
+    };
+    let parent = match resolve(dev, parents) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let entry = match find_entry_checked(&parent, leaf) {
+        Ok(Some(e)) => e,
+        Ok(None) => return ENOENT,
+        Err(e) => return e,
+    };
+    match (entry.is_directory(), remove_dir) {
+        (true, false) => return EISDIR,
+        (false, true) => return ENOTDIR,
+        _ => {}
+    }
+    match vol(dev).delete(&entry) {
+        Ok(()) => 0,
+        Err(e) => map_fat_err(e),
+    }
+}
+
+/// Renames or moves the entry at `old` to `new`, within the same volume, replacing what is at `new` as POSIX's
+/// `rename` does (from Stage 19; before it, an existing destination was `EEXIST` and `mv` unlinked it first, which
+/// across two volumes deleted it and then failed):
+///
+/// - a file replaces a file; a directory replaces an **empty** directory (`ENOTEMPTY` if it has anything in it);
+/// - a file onto a directory is `EISDIR`, a directory onto a file `ENOTDIR`;
+/// - the same path for both does nothing (`0`); a directory into its own subtree is `EINVAL`, checked before anything is
+///   removed;
+/// - two volumes are `EXDEV` (nothing is copied here; a program copies and removes), and a mount point on either side is
+///   `EBUSY`.
+///
+/// On FAT the replacement is not atomic: the old destination is removed and the source then renamed, so a failure or a
+/// crash between the two costs only the file that was to be replaced -- the source is still where it was. A rename keeps
+/// the entry's modify time (`hadris` would stamp it with the clock; POSIX leaves it alone).
+/// Deliberately does not implement "move into an existing directory": that is `mv`(1), layered in userspace.
+pub fn rename(old: &str, new: &str) -> isize {
+    let table = mounts::table();
+    if (old != "/" && table.is_mount_point(old)) || (new != "/" && table.is_mount_point(new)) {
+        return EBUSY;
+    }
+    let old_entry = match lookup(old) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let (dev, new_comps) = locate(new);
+    let Some((new_leaf, new_parents)) = new_comps.split_last() else {
+        return EISDIR; // can't rename onto "/"
+    };
+    let new_parent = match resolve(dev, new_parents) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    if old_entry.dev != dev {
+        return EXDEV;
+    }
+    if old == new {
+        return 0;
+    }
+    // Into its own subtree: refused before anything is removed. (Paths are normalized, so this is a prefix test.)
+    if old_entry.is_directory() && new.strip_prefix(old).is_some_and(|rest| rest.starts_with('/')) {
+        return EINVAL;
+    }
+    let existing = match find_entry_checked(&new_parent, new_leaf) {
+        Ok(existing) => existing,
+        Err(e) => return e,
+    };
+    if let Some(existing) = existing {
+        match (old_entry.is_directory(), existing.is_directory()) {
+            (false, true) => return EISDIR,
+            (true, false) => return ENOTDIR,
+            _ => {}
+        }
+        if let Err(e) = vol(dev).delete(&existing) {
+            return map_fat_err(e); // a directory with contents: `ENOTEMPTY`
+        }
+    }
+    match vol(dev).rename(&old_entry.entry, &new_parent, new_leaf) {
+        Ok(moved) => {
+            // `hadris` stamps a renamed entry with the clock; a move is not a modification (POSIX leaves the time
+            // alone), so put the old one back. Failing to is not failing the rename, which has happened.
+            let _ = vol(dev).set_times(&moved, Some(old_entry.entry.modified()), None, None);
+            0
+        }
+        Err(e) => map_fat_err(e),
+    }
+}
+
+/// Sets the modify time of the file or directory at `path` (`utimensat`): the current time, left alone, or a Unix time in
+/// UTC that FAT can hold (1980-2107, else `EINVAL`), to 2 seconds. **The access time is accepted and ignored**: FAT stores an access
+/// *date* only, nothing here reads it or sets it (a file's is its modify date from when it was created or written), and a
+/// timestamp that coarse is not worth a behavior. The creation time is not touched. A volume's root has no directory entry
+/// to hold a time (`EINVAL`).
+pub fn set_times(path: &str, _atime: TimeChoice, mtime: TimeChoice) -> isize {
+    use hadris_fat::time::TimeProvider;
+    let modified = match mtime {
+        TimeChoice::Omit => None,
+        TimeChoice::Now => Some(super::rtc_time::RTC_TIME.now()),
+        TimeChoice::At(unix) => match checked_fields(unix) {
+            Some(f) => Some(FatDateTime::new(f.year, f.month, f.day, f.hour, f.minute, f.second)),
+            None => return EINVAL,
+        },
+    };
+    if locate(path).1.is_empty() {
+        return EINVAL;
+    }
+    let found = match lookup(path) {
+        Ok(found) => found,
+        Err(e) => return e,
+    };
+    match vol(found.dev).set_times(&found.entry, modified, None, None) {
+        Ok(()) => 0,
+        Err(_) => EIO,
+    }
+}
+
+/// Every field a FAT directory entry actually stores, as `stat` reports it: raw, packed FAT
+/// date/time (see `abi::fs::STAT_SIZE`'s doc comment), not calendar values -- unpacking is left to
+/// whichever program displays them.
+pub struct StatInfo {
+    pub size: u32,
+    pub attrs: u8,
+    pub created: FatDateTime,
+    pub modified: FatDateTime,
+    pub accessed_date: u16,
+}
+
+/// Reads `path`'s size, attributes, and timestamps. A volume's root (`/`, or a mount point) has no directory entry of its
+/// own, so it's special-cased: size 0, `ATTR_DIRECTORY`, and the FAT epoch for every timestamp.
+pub fn stat(path: &str) -> Result<StatInfo, isize> {
+    if locate(path).1.is_empty() {
+        return Ok(StatInfo {
+            size: 0,
+            attrs: ATTR_DIRECTORY,
+            created: FatDateTime::EPOCH,
+            modified: FatDateTime::EPOCH,
+            accessed_date: FatDateTime::EPOCH.date,
+        });
+    }
+    let entry = lookup(path)?;
+    Ok(StatInfo {
+        size: entry.len() as u32,
+        attrs: entry.attributes().bits(),
+        created: entry.created(),
+        modified: entry.modified(),
+        accessed_date: entry.accessed_date(),
+    })
+}
