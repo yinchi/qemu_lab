@@ -1,4 +1,4 @@
-"""Last updated: Stage 12, Step 12.
+"""Last updated: Stage 20, Step 1b (the readline-style keys).
 
 Cursor-aware editing (arrows, Home/End/Delete, Ctrl+A/E/U/K) and command history (Up/Down) at the
 shell's prompt (`Mode::Prompt`); a program's `read(0)` (`Mode::Canonical`) stays the simpler
@@ -175,10 +175,78 @@ def run(ctx):
     check("lines read by a program are not recorded in the prompt's history",
           s.wait_prompt(), "echo cat\ncat\n")
 
-    # --- T12.4b: Ctrl+D still does nothing at the prompt ---
+    # --- T12.4b: Ctrl+D at the end of the prompt's line does nothing (from Stage 20 it deletes *under* the cursor:
+    # see below; at the end there is nothing under it, and the shell is init and never exits on end-of-file) ---
     s.type("echo x")
     s.keys([CTRL_D])
     s.type("y\n")
-    check("Ctrl+D at the prompt does nothing", s.wait_prompt(), "echo xy\nxy\n")
+    check("Ctrl+D at the end of the prompt's line does nothing", s.wait_prompt(), "echo xy\nxy\n")
+
+    # --- Stage 20, Step 1b: readline's keys at the prompt ---
+    s.type("echo ac")
+    s.keys(["ctrl-b"])
+    s.type("b\n")
+    check("Ctrl+B moves left one character", s.wait_prompt(), "echo abc\nabc\n")
+
+    s.type("echo bc")
+    s.keys([CTRL_A] + ["ctrl-f"] * 5)  # Home, then past 'echo '
+    s.type("a\n")
+    check("Ctrl+F moves right one character", s.wait_prompt(), "echo abc\nabc\n")
+
+    s.type("echo abcX")
+    s.keys(["ctrl-h"])
+    s.type("\n")
+    check("Ctrl+H is Backspace", s.wait_prompt(), "echo abc\nabc\n")
+
+    s.type("echo aXbc")
+    s.keys(["ctrl-b"] * 3 + [CTRL_D])  # before the X, then delete it
+    s.type("\n")
+    check("Ctrl+D deletes under the cursor", s.wait_prompt(), "echo abc\nabc\n")
+
+    s.type("echo one two")
+    s.keys(["ctrl-w"])
+    s.type("\n")
+    # The word goes, the blank before it stays (readline's unix-word-rubout), so the line echoes as `echo one `.
+    check("Ctrl+W deletes the word before the cursor", s.wait_prompt(), "echo one \none\n")
+
+    s.type("echo one two")
+    s.keys(["ctrl-left"])
+    s.type("X\n")
+    check("Ctrl+Left moves back a word", s.wait_prompt(), "echo one Xtwo\none Xtwo\n")
+
+    s.type("echo one two")
+    s.keys(["alt-b", "alt-b"])
+    s.type("Y\n")
+    check("Alt+B twice moves back two words", s.wait_prompt(), "echo Yone two\nYone two\n")
+
+    s.type("echo one two")
+    s.keys([CTRL_A, "ctrl-right", "ctrl-right"])  # end of 'echo', end of 'one'
+    s.type("1\n")
+    check("Ctrl+Right moves forward by words", s.wait_prompt(), "echo one1 two\none1 two\n")
+
+    s.type("echo one two")
+    s.keys([CTRL_A, "alt-f", "alt-f"])
+    s.type("2\n")
+    check("Alt+F moves forward by words", s.wait_prompt(), "echo one2 two\none2 two\n")
+
+    s.type("echo p1\n")
+    s.wait_prompt()
+    s.type("echo p2\n")
+    s.wait_prompt()
+    s.keys(["ctrl-p", "ctrl-p", "ctrl-n", "ctrl-n", "ctrl-p", "ctrl-p"])  # p2, p1, p2, back to the empty line, p2, p1
+    s.type("\n")
+    check("Ctrl+P and Ctrl+N walk the history like Up and Down", s.wait_prompt(), "echo p1\np1\n")
+
+    # A program's line has no cursor movement, but Ctrl+W (the tty's WERASE) erases a word there too.
+    s.type("cat\n")
+    s.type("one two")
+    s.keys(["ctrl-w"])
+    s.type("x\n")
+    s.type("ac")
+    s.keys(["ctrl-b"])  # unbound in a program's line: ignored, not a cursor move
+    s.type("b\n")
+    s.keys([CTRL_D])
+    check("Ctrl+W erases a word in a program's line; Ctrl+B is ignored there", s.wait_prompt(),
+          "cat\none x\none x\nacb\nacb\n")
 
     check("shell alive after everything above", s.run("echo ok"), "echo ok\nok\n")

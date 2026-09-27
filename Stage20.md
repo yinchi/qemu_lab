@@ -8,6 +8,7 @@
 | 0 | Plain copy of `r19_mounts` as `r20_editor` | done |
 | 1 | `TIOCGWINSZ` on the console `ioctl`, and a test program that prints the size | done |
 | 1a | Keyboard layer: the held-key repeat check, `Token.num` and NumLock (on at boot), keypad characters, `abi::keys` with `effective_code`, the repeat bit with coalescing, lock flips gated on the down edge | done, except the live held-key check (see its notes) |
+| 1b | Readline-style keys in the shell's line editor: Ctrl+B/F/P/N/H/D/W, word movement (Ctrl+Left/Right, Alt+B/F) | done |
 | 2 | `CONSOLE_READ_KEY`: one key event per call, blocking; a test program that echoes events | todo |
 | 3 | `CONSOLE_DRAW`: draw a grid of cells (inverse, dim) and place the cursor; a test program that draws a frame | todo |
 | 4 | The editor's pure modules, host-tested: buffer, soft-wrap layout (buffer position <-> screen cell), cursor and scroll math, display width, region and cut buffer, auto-indent, `.editrc` parser | todo |
@@ -111,6 +112,26 @@ Done before `CONSOLE_READ_KEY` so the record never changes. (1) The empirical re
 - **Tests:** 9 in `abi::keys`; 9 in `tokens.rs` (keypad characters and NumLock, `effective_code`, `emit`'s fields and modifiers, modifier keys never becoming tokens, `admits`); 3 in `line.rs` (keypad Enter, keypad navigation with NumLock off, keypad characters with it on). A new QEMU group `cases/keypad.py`, run as its own group: NumLock on types digits, dot and operators and the keypad's Enter is Enter; off, 4/7/1/dot are Left/Home/End/Delete, 8 and 2 are history Up and Down (a check that fails if Down does nothing), other digits type nothing, operators still type; one NumLock press toggles once; and `read(0)` in a program gets the keypad.
 - **Not done here: the live held-key check.** The harness injects keys through the monitor's `sendkey`, which presses and releases once, and QEMU's host-side auto-repeat exists only in a real window, so a headless test cannot produce a repeat and none is claimed. The change assumes what `events.rs`'s old comment reported (a held key resends plain presses, or `value == 2`); either becomes a `repeat` token. **To confirm:** run `just run`, hold an arrow key or a letter at the prompt, and it should keep moving/typing. If nothing repeats, the fallback in Decisions (a kernel timer) is the next piece of work. The rules a repeat follows are host-tested; that they reach a consumer is not tested end to end.
 - **Regression** (`just test` in `r20_editor`): docs check, 328 host tests (316 + 12), 32 `abi` tests (23 + 9) and 1979 QEMU-suite checks (1969 + the ten of `keypad`) all passed, no compiler warnings; after a formatting-only pass the keyboard-related groups (`keypad`, `line_editing`, `line_discipline`, `token_queue`, `console`) were re-run on a rebuilt test kernel and passed. New and touched files are `rustfmt`-clean as they were (`line_discipline.rs` and `userlib/src/io.rs` keep the formatting differences they already had).
+
+## Step 1b -- readline-style keys at the shell prompt
+Added because Step 1a already reworked the keyboard module and these belong in it, and because the editor's planned bindings (`^B` `^F` `^P` `^N` `^H` `^D`, word moves) are readline's, so the prompt and `edit` now behave alike. Kept to what is clean inside `keyboard/` alone; what is not is listed under "Left for later".
+
+**Keys** (`Mode::Prompt` unless noted; matched on `effective_code`, so they hold for the keypad's navigation keys too):
+
+| Key | Action |
+|---|---|
+| Ctrl+B, Ctrl+F | one character left / right |
+| Ctrl+P, Ctrl+N | previous / next history entry (the same two moves as Up and Down) |
+| Ctrl+H | Backspace |
+| Ctrl+D | delete the character under the cursor; nothing at the end of the line (the shell is init and never exits on end-of-file). In `read(0)` it stays end-of-file, and a held Ctrl+D there is still ignored (Step 1a) |
+| Ctrl+W | erase the blank-delimited word before the cursor (readline's unix-word-rubout: `ls /tmp/x` loses `/tmp/x` whole; the blank before the word stays). **Both modes**: it is the tty's WERASE, like Ctrl+U |
+| Ctrl+Left, Alt+B / Ctrl+Right, Alt+F | back to the start of the previous word / forward to the end of the next; a word is a run of letters and digits (readline's rule; wide characters count), so `a/b-c` has three |
+
+Ctrl and Alt combinations that are still unbound are ignored, as before. Held keys repeat by the rules of Step 1a (Ctrl+B/F/P/N/H/D/W all repeat, as in bash).
+
+**As built (Step 1b).** `line.rs`: `LineBuffer` gained `move_word_left`/`move_word_right`, `kill_word_back` and the two scanning helpers (`back_while`, `forward_while`, char-boundary safe), and `feed` the arms above; the Ctrl+Left/Right arms sit *before* the plain arrows, which ignore Ctrl. `line_discipline.rs`: Ctrl+P/N share the Up/Down history code (`history_prev`/`history_next`). `abi::keys` gained `KEY_B`, `KEY_F`, `KEY_H`, `KEY_N`, `KEY_P`, `KEY_W` (`KEY_D` was there). `docs/console.md`'s token table lists them. **Tests:** 9 new host tests in `line.rs` (character moves with a wide character, Ctrl+H, Ctrl+D at the prompt and in `read(0)`, Ctrl+W in both modes, word moves over punctuation and wide characters, Ctrl+Left/Right against the plain arrows, and that none of the cursor keys exist in a program's line); 11 new QEMU checks in `line_editing.py` (each key, Ctrl+P/N walking history including back to the empty line, and Ctrl+W erasing a word in a `cat` line while Ctrl+B there is ignored); one existing check renamed to say Ctrl+D does nothing *at the end* of the line. **Regression** (`just test` in `r20_editor`): docs check, 337 host tests (328 + 9), 32 `abi` tests and 1990 QEMU-suite checks (1979 + 11) passed, no compiler warnings.
+
+**Left for later** (not keyboard-only, or not this stage): Tab completion (needs `$PATH`, the working directory and the filesystem: a hook into `shell/` and `fs/`); Ctrl+R history search (its own sub-mode, prompt line and redraw); Ctrl+L (clears the console and the UART mirror and redraws the prompt: reaches into `console/` and `platform/uart`); Ctrl+C (Stage 22); the kill ring (Ctrl+Y), Ctrl+T, Ctrl+V.
 
 ## Step 2 -- `CONSOLE_READ_KEY`
 An `ioctl` on the console fd filling one record; blocking follows `stdin.rs`'s pattern (drain the device into `keyboard/queue.rs`, pop a `Token`, oldest first), bypassing the line discipline. Test program: echoes each event's code, modifiers and character. QEMU test: type keys, check the events, then check that `read(0)` is still canonical afterwards.

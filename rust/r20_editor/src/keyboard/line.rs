@@ -13,8 +13,8 @@ use alloc::string::String;
 
 use super::tokens::Token;
 use abi::keys::{
-    KEY_A, KEY_BACKSPACE, KEY_DELETE, KEY_E, KEY_END, KEY_ENTER, KEY_HOME, KEY_K, KEY_LEFT,
-    KEY_RIGHT, KEY_U,
+    KEY_A, KEY_B, KEY_BACKSPACE, KEY_D, KEY_DELETE, KEY_E, KEY_END, KEY_ENTER, KEY_F, KEY_H,
+    KEY_HOME, KEY_K, KEY_LEFT, KEY_RIGHT, KEY_U, KEY_W,
 };
 #[cfg(test)]
 use abi::keys::{KEY_KP1, KEY_KP2, KEY_KP4, KEY_KP6, KEY_KP7, KEY_KPDOT, KEY_KPENTER, KEY_KPPLUS};
@@ -46,6 +46,11 @@ pub enum LineEvent {
 pub struct LineBuffer {
     text: String,
     cursor: usize,
+}
+
+/// A character of a "word" for word movement: a letter or a digit (readline's rule).
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric()
 }
 
 impl LineBuffer {
@@ -182,6 +187,64 @@ impl LineBuffer {
         true
     }
 
+    /// The byte offset reached by moving back from `from` over the characters `pred` accepts.
+    fn back_while(&self, mut from: usize, pred: impl Fn(char) -> bool) -> usize {
+        while let Some((i, c)) = self.text[..from].char_indices().next_back() {
+            if !pred(c) {
+                break;
+            }
+            from = i;
+        }
+        from
+    }
+
+    /// The byte offset reached by moving forward from `from` over the characters `pred` accepts.
+    fn forward_while(&self, mut from: usize, pred: impl Fn(char) -> bool) -> usize {
+        while let Some(c) = self.text[from..].chars().next() {
+            if !pred(c) {
+                break;
+            }
+            from += c.len_utf8();
+        }
+        from
+    }
+
+    /// Moves to the start of the word before the cursor (readline's backward-word: skip anything that is
+    /// not part of a word, then the word itself; a word is a run of letters and digits).
+    fn move_word_left(&mut self) -> bool {
+        let start = self.back_while(self.back_while(self.cursor, |c| !is_word(c)), is_word);
+        self.move_to(start)
+    }
+
+    /// Moves to the end of the next word (readline's forward-word).
+    fn move_word_right(&mut self) -> bool {
+        let end = self.forward_while(self.forward_while(self.cursor, |c| !is_word(c)), is_word);
+        self.move_to(end)
+    }
+
+    fn move_to(&mut self, offset: usize) -> bool {
+        if offset == self.cursor {
+            return false;
+        }
+        self.cursor = offset;
+        true
+    }
+
+    /// Removes the blank-delimited word before the cursor and the blanks between it and the cursor (the
+    /// tty's WERASE and readline's unix-word-rubout: unlike `move_word_left`, a word here is anything that
+    /// is not whitespace, so `ls /tmp/x` loses `/tmp/x` whole).
+    fn kill_word_back(&mut self) -> bool {
+        let start = self.back_while(self.back_while(self.cursor, char::is_whitespace), |c| {
+            !c.is_whitespace()
+        });
+        if start == self.cursor {
+            return false;
+        }
+        self.text.replace_range(start..self.cursor, "");
+        self.cursor = start;
+        true
+    }
+
     /// Removes `text[cursor..]`; the cursor doesn't move. Prompt-only -- POSIX canonical mode has no
     /// kill-to-end character.
     fn kill_to_end(&mut self) -> bool {
@@ -193,7 +256,7 @@ impl LineBuffer {
     }
 
     /// Feeds one token into the buffer, returning what happened, if anything. `mode` gates the
-    /// keys that only mean something in `Mode::Prompt` (movement, Ctrl+A/E/K): each returns `None`
+    /// keys that only mean something in `Mode::Prompt` (movement, Ctrl+A/E/K/B/F/H/D, the word keys): each returns `None`
     /// directly when `mode` is wrong, rather than falling through to the character-insertion arm
     /// below -- both because they aren't characters (avoids depending on `Token::char()`, which
     /// needs live kernel key-name state `line.rs`'s own host tests don't have) and because it
@@ -213,6 +276,61 @@ impl LineBuffer {
                 }
                 self.delete_forward().then_some(LineEvent::Changed)
             }
+            // The readline bindings, Prompt only (a `read(0)` line has no cursor movement), and before the
+            // plain arrows because those arms ignore Ctrl: Ctrl+Left/Right and Alt+B/F move by word.
+            KEY_LEFT if token.ctrl => {
+                if mode != Mode::Prompt {
+                    return None;
+                }
+                self.move_word_left().then_some(LineEvent::CursorMoved)
+            }
+            KEY_RIGHT if token.ctrl => {
+                if mode != Mode::Prompt {
+                    return None;
+                }
+                self.move_word_right().then_some(LineEvent::CursorMoved)
+            }
+            KEY_B if token.alt => {
+                if mode != Mode::Prompt {
+                    return None;
+                }
+                self.move_word_left().then_some(LineEvent::CursorMoved)
+            }
+            KEY_F if token.alt => {
+                if mode != Mode::Prompt {
+                    return None;
+                }
+                self.move_word_right().then_some(LineEvent::CursorMoved)
+            }
+            KEY_B if token.ctrl => {
+                if mode != Mode::Prompt {
+                    return None;
+                }
+                self.move_left().then_some(LineEvent::CursorMoved)
+            }
+            KEY_F if token.ctrl => {
+                if mode != Mode::Prompt {
+                    return None;
+                }
+                self.move_right().then_some(LineEvent::CursorMoved)
+            }
+            KEY_H if token.ctrl => {
+                if mode != Mode::Prompt {
+                    return None;
+                }
+                self.backspace().then_some(LineEvent::Changed)
+            }
+            // Ctrl+D deletes under the cursor at the prompt (bash's, with text on the line; on an empty
+            // one bash exits, and the shell here is init). In `Mode::Canonical` it is end-of-file, which
+            // `line_discipline.rs` handles before a token gets here.
+            KEY_D if token.ctrl => {
+                if mode != Mode::Prompt {
+                    return None;
+                }
+                self.delete_forward().then_some(LineEvent::Changed)
+            }
+            // Ctrl+W: no mode guard, like Ctrl+U -- it is the tty's WERASE, correct in both.
+            KEY_W if token.ctrl => self.kill_word_back().then_some(LineEvent::Changed),
             KEY_LEFT => {
                 if mode != Mode::Prompt {
                     return None;
@@ -370,6 +488,168 @@ mod tests {
             ));
         }
         assert_eq!(b.as_str(), "42.+");
+    }
+
+    fn alt_tok(code: u16) -> Token {
+        Token {
+            alt: true,
+            ..tok(code)
+        }
+    }
+
+    /// A buffer holding `text`, the cursor at its end (as after typing it).
+    fn buffer(text: &str) -> LineBuffer {
+        let mut b = LineBuffer::new();
+        b.set(text);
+        b
+    }
+
+    fn moved(event: Option<LineEvent>) -> bool {
+        matches!(event, Some(LineEvent::CursorMoved))
+    }
+
+    fn changed(event: Option<LineEvent>) -> bool {
+        matches!(event, Some(LineEvent::Changed))
+    }
+
+    #[test]
+    fn ctrl_b_and_ctrl_f_move_one_character() {
+        let mut b = buffer("a日c");
+        assert!(moved(b.feed(ctrl_tok(KEY_B), Mode::Prompt)));
+        assert_eq!(b.cursor(), "a日".len());
+        assert!(moved(b.feed(ctrl_tok(KEY_B), Mode::Prompt)));
+        assert_eq!(b.cursor(), 1);
+        assert!(moved(b.feed(ctrl_tok(KEY_F), Mode::Prompt)));
+        assert_eq!(b.cursor(), "a日".len());
+        assert!(moved(b.feed(ctrl_tok(KEY_F), Mode::Prompt)));
+        assert!(b.feed(ctrl_tok(KEY_F), Mode::Prompt).is_none()); // at the end
+        assert!(buffer("").feed(ctrl_tok(KEY_B), Mode::Prompt).is_none()); // at the start
+    }
+
+    #[test]
+    fn ctrl_h_is_backspace() {
+        let mut b = buffer("abc");
+        assert!(changed(b.feed(ctrl_tok(KEY_H), Mode::Prompt)));
+        assert_eq!(b.as_str(), "ab");
+        assert!(buffer("").feed(ctrl_tok(KEY_H), Mode::Prompt).is_none());
+    }
+
+    #[test]
+    fn ctrl_d_deletes_under_the_cursor_at_the_prompt() {
+        let mut b = buffer("aXbc");
+        b.cursor = 1;
+        assert!(changed(b.feed(ctrl_tok(KEY_D), Mode::Prompt)));
+        assert_eq!(b.as_str(), "abc");
+        assert_eq!(b.cursor(), 1);
+        b.cursor = 3; // at the end: nothing under the cursor (and the shell never exits on EOF)
+        assert!(b.feed(ctrl_tok(KEY_D), Mode::Prompt).is_none());
+        assert_eq!(b.as_str(), "abc");
+        // In `Canonical` it is end-of-file, which `line_discipline.rs` handles first: the buffer never edits.
+        b.cursor = 1;
+        assert!(b.feed(ctrl_tok(KEY_D), Mode::Canonical).is_none());
+        assert_eq!(b.as_str(), "abc");
+    }
+
+    #[test]
+    fn ctrl_w_removes_the_blank_delimited_word_before_the_cursor() {
+        let mut b = buffer("ls /tmp/x ");
+        assert!(changed(b.feed(ctrl_tok(KEY_W), Mode::Prompt)));
+        assert_eq!(b.as_str(), "ls "); // the trailing blank and the whole path
+        assert!(changed(b.feed(ctrl_tok(KEY_W), Mode::Prompt)));
+        assert_eq!(b.as_str(), "");
+        assert!(b.feed(ctrl_tok(KEY_W), Mode::Prompt).is_none());
+
+        let mut b = buffer("echo one two");
+        b.cursor = "echo one".len();
+        assert!(changed(b.feed(ctrl_tok(KEY_W), Mode::Prompt)));
+        assert_eq!(b.as_str(), "echo  two");
+        assert_eq!(b.cursor(), "echo ".len());
+    }
+
+    #[test]
+    fn ctrl_w_works_in_a_programs_line_too() {
+        // The tty's WERASE: unlike the cursor keys it is not a Prompt-only binding.
+        let mut b = buffer("one two");
+        assert!(changed(b.feed(ctrl_tok(KEY_W), Mode::Canonical)));
+        assert_eq!(b.as_str(), "one ");
+    }
+
+    #[test]
+    fn word_keys_move_over_words_of_letters_and_digits() {
+        let mut b = buffer("a/b-c");
+        for want in [4, 2, 0] {
+            assert!(moved(b.feed(alt_tok(KEY_B), Mode::Prompt)));
+            assert_eq!(b.cursor(), want);
+        }
+        assert!(b.feed(alt_tok(KEY_B), Mode::Prompt).is_none());
+        for want in [1, 3, 5] {
+            assert!(moved(b.feed(alt_tok(KEY_F), Mode::Prompt)));
+            assert_eq!(b.cursor(), want);
+        }
+        assert!(b.feed(alt_tok(KEY_F), Mode::Prompt).is_none());
+    }
+
+    #[test]
+    fn ctrl_left_and_right_are_the_same_word_moves() {
+        let mut b = buffer("one two");
+        assert!(moved(b.feed(
+            Token {
+                ctrl: true,
+                ..tok(KEY_LEFT)
+            },
+            Mode::Prompt
+        )));
+        assert_eq!(b.cursor(), 4);
+        assert!(moved(b.feed(
+            Token {
+                ctrl: true,
+                ..tok(KEY_LEFT)
+            },
+            Mode::Prompt
+        )));
+        assert_eq!(b.cursor(), 0);
+        assert!(moved(b.feed(
+            Token {
+                ctrl: true,
+                ..tok(KEY_RIGHT)
+            },
+            Mode::Prompt
+        )));
+        assert_eq!(b.cursor(), 3);
+        // ...while the plain arrow is still one character
+        assert!(moved(b.feed(tok(KEY_RIGHT), Mode::Prompt)));
+        assert_eq!(b.cursor(), 4);
+    }
+
+    #[test]
+    fn words_may_be_wide_characters() {
+        let mut b = buffer("日本語 abc");
+        assert!(moved(b.feed(alt_tok(KEY_B), Mode::Prompt)));
+        assert_eq!(b.cursor(), "日本語 ".len());
+        assert!(moved(b.feed(alt_tok(KEY_B), Mode::Prompt)));
+        assert_eq!(b.cursor(), 0);
+        assert!(moved(b.feed(alt_tok(KEY_F), Mode::Prompt)));
+        assert_eq!(b.cursor(), "日本語".len());
+    }
+
+    #[test]
+    fn the_readline_keys_are_absent_from_a_programs_line() {
+        // A `read(0)` line has no cursor movement: these are not "recognised then blocked", they are unbound.
+        for token in [
+            ctrl_tok(KEY_B),
+            ctrl_tok(KEY_F),
+            ctrl_tok(KEY_H),
+            alt_tok(KEY_B),
+            alt_tok(KEY_F),
+            Token {
+                ctrl: true,
+                ..tok(KEY_LEFT)
+            },
+        ] {
+            let mut b = buffer("one two");
+            assert!(b.feed(token, Mode::Canonical).is_none());
+            assert_eq!((b.as_str(), b.cursor()), ("one two", 7));
+        }
     }
 
     #[test]

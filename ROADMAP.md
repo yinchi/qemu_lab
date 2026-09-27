@@ -1259,6 +1259,8 @@ keeps the parts that are the same either way: the buffer, the view, file I/O and
   the editor ignores repeats of command keys, so holding `^S` cannot save twice. A kernel timer is the fallback only if
   QEMU turns out to send no repeats.
 
+**And, in the same module, readline-style keys at the shell's prompt** -- Ctrl+B/F/P/N/H/D/W, and word movement on Ctrl+Left/Right and Alt+B/F -- because the editor's key set is readline's and the prompt should behave the same. Tab completion, Ctrl+R and Ctrl+L, which reach beyond the keyboard module, are left for a shell-usability stage.
+
 **Not in this stage:** undo and redo, search-and-replace, wrapping at blanks (lines wrap at the edge), inserting a file, syntax highlighting, spell
 check, justify, multiple buffers, the mouse. `column` and `ls` in columns, which the screen size unblocks, are Stage 20b.
 

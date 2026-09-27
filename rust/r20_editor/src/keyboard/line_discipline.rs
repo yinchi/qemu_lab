@@ -39,7 +39,7 @@ use super::tokens::Token;
 use crate::console::input_layout::{cursor_position, fits_on_screen, rows_needed};
 use crate::console::{BG, Console, FG};
 use crate::platform::uart::uart_write;
-use abi::keys::{KEY_D, KEY_DOWN, KEY_UP};
+use abi::keys::{KEY_D, KEY_DOWN, KEY_N, KEY_P, KEY_UP};
 
 /// What handling one token did.
 pub enum LineOutcome {
@@ -191,12 +191,19 @@ impl LineDiscipline {
             };
         }
 
-        if self.mode == Mode::Prompt
-            && !token.ctrl
-            && !token.alt
-            && (token.effective_code() == KEY_UP || token.effective_code() == KEY_DOWN)
-        {
-            let recalled = if token.effective_code() == KEY_UP {
+        // History: Up/Down, and readline's Ctrl+P/Ctrl+N, which are the same two moves.
+        let history_prev = match token.effective_code() {
+            KEY_UP => !token.ctrl && !token.alt,
+            KEY_P => token.ctrl && !token.alt,
+            _ => false,
+        };
+        let history_next = match token.effective_code() {
+            KEY_DOWN => !token.ctrl && !token.alt,
+            KEY_N => token.ctrl && !token.alt,
+            _ => false,
+        };
+        if self.mode == Mode::Prompt && (history_prev || history_next) {
+            let recalled = if history_prev {
                 self.history.recall_prev(self.buffer.as_str())
             } else {
                 self.history.recall_next()

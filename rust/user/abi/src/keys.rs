@@ -21,18 +21,30 @@ pub const KEY_MINUS: u16 = 12;
 pub const KEY_EQUAL: u16 = 13;
 pub const KEY_BACKSPACE: u16 = 14;
 pub const KEY_TAB: u16 = 15;
+/// Ctrl+W: erase the word before the cursor.
+pub const KEY_W: u16 = 17;
 /// Ctrl+E: move to the end of the line (in the shell's line editor).
 pub const KEY_E: u16 = 18;
 /// Ctrl+U: erase from the cursor to the start of the line.
 pub const KEY_U: u16 = 22;
+/// Ctrl+P: the previous history entry, as Up.
+pub const KEY_P: u16 = 25;
 pub const KEY_ENTER: u16 = 28;
 /// Ctrl+A: move to the start of the line.
 pub const KEY_A: u16 = 30;
 /// Ctrl+D on an empty line is `read(0)`'s end-of-file.
 pub const KEY_D: u16 = 32;
+/// Ctrl+F: one character right (Alt+F: one word right).
+pub const KEY_F: u16 = 33;
+/// Ctrl+H: Backspace.
+pub const KEY_H: u16 = 35;
 /// Ctrl+K: erase from the cursor to the end of the line.
 pub const KEY_K: u16 = 37;
 pub const KEY_BACKSLASH: u16 = 43;
+/// Ctrl+B: one character left (Alt+B: one word left).
+pub const KEY_B: u16 = 48;
+/// Ctrl+N: the next history entry, as Down.
+pub const KEY_N: u16 = 49;
 pub const KEY_DOT: u16 = 52;
 pub const KEY_SLASH: u16 = 53;
 pub const KEY_KPASTERISK: u16 = 55;
@@ -253,6 +265,11 @@ mod tests {
             (102, 103, 105, 107, 111)
         );
         assert_eq!((KEY_PAGEUP, KEY_PAGEDOWN, KEY_INSERT), (104, 109, 110));
+        // The Ctrl-letter keys the line editor binds.
+        assert_eq!(
+            (KEY_W, KEY_P, KEY_F, KEY_H, KEY_B, KEY_N),
+            (17, 25, 33, 35, 48, 49)
+        );
     }
 
     #[test]

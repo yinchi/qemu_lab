@@ -112,19 +112,22 @@ forward-delete or kill-to-end in canonical mode).
 |---|---|---|
 | Printable character | insert at the cursor | insert at the cursor (append &mdash; the cursor is always at the end here) |
 | Enter | finish the line, run it | finish the line, deliver it to the reading program |
-| Backspace | erase the character before the cursor | same operation &mdash; erases the last character, since the cursor is always at the end here |
+| Backspace, Ctrl+H | erase the character before the cursor | same operation &mdash; erases the last character, since the cursor is always at the end here |
 | Delete | erase the character at/after the cursor | nothing &mdash; no forward-delete in POSIX canonical mode (and nothing past the cursor to erase anyway) |
-| Left | move the cursor left one character | nothing |
-| Right | move the cursor right one character | nothing |
+| Left, Ctrl+B | move the cursor left one character | nothing |
+| Right, Ctrl+F | move the cursor right one character | nothing |
 | Home | move the cursor to the start of the line | nothing |
 | End | move the cursor to the end of the line | nothing |
-| Up | recall the previous history entry | nothing |
-| Down | recall the next history entry, or return to the in-progress line | nothing |
+| Up, Ctrl+P | recall the previous history entry | nothing |
+| Down, Ctrl+N | recall the next history entry, or return to the in-progress line | nothing |
 | Ctrl+A | move the cursor to the start of the line | nothing |
 | Ctrl+E | move the cursor to the end of the line | nothing |
 | Ctrl+U | erase from the cursor to the start of the line | POSIX KILL: discard the whole line &mdash; the same operation as Prompt's, since the cursor is always at the end here |
 | Ctrl+K | erase from the cursor to the end of the line | nothing &mdash; no POSIX KILL-to-end character |
-| Ctrl+D | nothing &mdash; the shell is init and never exits on EOF | end-of-file if the line is empty; on a non-empty line, delivers what's typed so far *without* a newline instead (a further Ctrl+D on the now-empty line is then EOF) |
+| Ctrl+D | erase the character under the cursor (from Stage 20; nothing at the end of the line, since the shell is init and never exits on EOF) | end-of-file if the line is empty; on a non-empty line, delivers what's typed so far *without* a newline instead (a further Ctrl+D on the now-empty line is then EOF) |
+| Ctrl+W | erase the blank-delimited word before the cursor, and any blanks between it and the cursor (readline's unix-word-rubout; from Stage 20) | the same &mdash; the tty's WERASE, correct here as it is for Ctrl+U |
+| Ctrl+Left, Alt+B | move back to the start of the previous word (a word is a run of letters and digits; from Stage 20) | nothing |
+| Ctrl+Right, Alt+F | move forward to the end of the next word (from Stage 20) | nothing |
 
 Home and End (and `Ctrl+A`/`Ctrl+E`) move to the start and end of the *logical* line, not of the current
 screen row, as in bash: on a line wrapped over several rows they jump across rows.
