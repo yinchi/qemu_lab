@@ -1,4 +1,4 @@
-# The programs Stage 19 adds: `lsblk` (and, in later steps, `mount`, `umount` and the `mv` that copes with two volumes). A tier of
+# The programs Stage 19 adds: `lsblk`, `mount` and `umount`, and (over `utimensat`) `touch -d/-t/-r` and `cp -p`, and later the `mv` that copes with two volumes. A tier of
 # its own, as the scheme in `../progs_r12/Cargo.toml` describes (a stage `rNN` builds the base tier and every `progs_rMM` with
 # MM <= NN, highest tier wins a name).
 [package]
@@ -13,6 +13,10 @@ progs = { path = "../progs" }
 progs_r12 = { path = "../progs_r12" }
 # `human_size`, the sizes `ls -h` prints.
 progs_r18 = { path = "../progs_r18" }
+# `touch -d`/`-t` read wall-clock times, which are in the local zone (`$TZ`) like `date`'s: the zone database `date` links.
+progs_r17 = { path = "../progs_r17" }
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+chrono-tz = { version = "0.10", default-features = false }
 getargs = { version = "0.5", default-features = false }
 
 [profile.dev]

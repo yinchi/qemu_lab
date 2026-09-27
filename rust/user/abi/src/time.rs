@@ -11,6 +11,14 @@ pub const CLOCK_REALTIME: usize = 0;
 /// Size of the `timespec` `clock_gettime` fills in.
 pub const TIMESPEC_SIZE: usize = 16;
 
+/// `tv_nsec` values that are not a time: `utimensat` takes the current time for that timestamp (`UTIME_NOW`) or leaves it
+/// alone (`UTIME_OMIT`). Linux's values.
+pub const UTIME_NOW: i64 = (1 << 30) - 1;
+pub const UTIME_OMIT: i64 = (1 << 30) - 2;
+
+/// Size of the two `timespec`s `utimensat` reads: the access time, then the modify time.
+pub const UTIMES_SIZE: usize = 2 * TIMESPEC_SIZE;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -19,5 +27,6 @@ mod tests {
     #[test]
     fn values_are_linuxs() {
         assert_eq!((CLOCK_REALTIME, TIMESPEC_SIZE), (0, 16));
+        assert_eq!((UTIME_NOW, UTIME_OMIT, UTIMES_SIZE), (0x3fff_ffff, 0x3fff_fffe, 32));
     }
 }

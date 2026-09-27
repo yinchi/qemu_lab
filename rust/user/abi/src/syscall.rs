@@ -71,6 +71,14 @@ pub const SYS_MOUNT: usize = 40;
 /// point, `EBUSY` for the root, for a mount with another mounted inside it, and for a volume with open files or a working
 /// directory inside it. Linux's number for `umount2`, minus its flags argument.
 pub const SYS_UMOUNT2: usize = 39;
+/// `utimensat(path, path_len, times)`: sets a file's or directory's access and modify times. `times` points to two
+/// `timespec`s (`abi::time::UTIMES_SIZE`), access then modify; a `tv_nsec` of `UTIME_NOW` takes the current time for that one
+/// and `UTIME_OMIT` leaves it, and a null `times` is both `UTIME_NOW`. Linux's number and `timespec` pair, the rest simplified as
+/// for every path syscall (no dirfd, no flags). FAT keeps the modify time to 2 seconds and the access time as a date only, so
+/// sub-second parts are dropped; a time outside 1980-2107 is `EINVAL` (as is a `tv_nsec` that is neither in range nor one of the two
+/// special values, and the root of a volume, which has no entry to hold times); the creation time cannot be set, nor can it
+/// on Linux. `ENOENT`/`ENOTDIR` for the path, `EFAULT` for a bad pointer.
+pub const SYS_UTIMENSAT: usize = 88;
 /// `blkinfo(index, out)`: describes block device `index` (0-based, in the order the kernel found them) by writing
 /// `abi::blk::BLKINFO_SIZE` bytes to `out`: its size, whether it holds a FAT volume and is the root, and the volume's
 /// label and ID. `ENODEV` for an index past the last device (so a caller counts devices by asking until it does),
@@ -132,7 +140,7 @@ mod tests {
 
     #[test]
     fn mount_numbers_are_linuxs_numbers() {
-        assert_eq!([SYS_MOUNT, SYS_UMOUNT2], [40, 39]);
+        assert_eq!([SYS_MOUNT, SYS_UMOUNT2, SYS_UTIMENSAT], [40, 39, 88]);
     }
 
     #[test]

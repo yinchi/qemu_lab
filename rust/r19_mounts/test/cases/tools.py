@@ -1,10 +1,11 @@
-"""Last updated: Stage 18, Step 1.
+"""Last updated: Stage 19, Step 4b.
 
 The small programs Stage 18 adds: `rmdir` (empty directories only), `touch` (create a file, or make an existing file's
 modify time now without touching its contents), `seq` (integer sequences) and `cmp` (byte-compare two files).
 
-`touch` has no syscall to set a time, so it opens the file for append and closes it; that this really moves the modify
-time of a file that already has data (and changes nothing else) is what the first checks below pin down -- the FAT
+Stage 18's `touch` had no syscall to set a time, so it opened the file for append and closed it; from Stage 19 it uses
+`utimensat` (the time options are in `times`), and it can touch a read-only file and a directory too. That it really moves
+the modify time of a file that already has data (and changes nothing else) is what the first checks below pin down -- the FAT
 timestamp has 2-second resolution, so the test waits a few seconds of real time between the two `stat`s (the guest's
 clock follows the host's). The time zone is UTC here so the two stamps compare as plain text.
 """
@@ -54,17 +55,18 @@ def run(ctx):
     status("touch -c tests/ta tests/tno", "", 0)
     s.run("echo x > tests/tro")
     s.run("chmod -w tests/tro")
-    status("touch tests/tro", "touch: cannot touch 'tests/tro': Permission denied\n", 1)
+    status("touch tests/tro", "", 0)  # setting a time does not need the file to be writable, as on Linux
     s.run("chmod +w tests/tro")
     status("touch tests/nodir/x", "touch: cannot touch 'tests/nodir/x': No such file or directory\n", 1)
-    out = s.run_status("touch tests/docs")
-    check("touch a directory is refused", out[1], 1)
-    check("...with the reason", out[0].startswith("touch tests/docs\ntouch: cannot touch 'tests/docs': "), True)
+    status("touch tests/docs", "", 0)  # a directory can be touched (before Stage 19 it was refused)
     status("touch tests/tro tests/nodir/x tests/tc2", "touch: cannot touch 'tests/nodir/x': No such file or directory\n", 1)
     check("...the operands around a failing one are still done", s.run_status("stat tests/tc2")[1], 0)
     status("touch", "touch: missing file operand\n" + TRY("touch"), 1)
     status("touch -x", "touch: invalid option -- 'x'\n" + TRY("touch"), 1)
-    check("touch --help", s.run("touch --help"), "touch --help\nusage: touch [-c] FILE...\n  -c  do not create a file that does not exist\n")
+    check("touch --help", s.run("touch --help"),
+          "touch --help\nusage: touch [-c] [-d STRING | -t STAMP | -r FILE] FILE...\n  -c  do not create a file that does not exist\n"
+          "  -d STRING  use this time instead of now: @SECONDS, YYYY-MM-DD, or YYYY-MM-DD HH:MM[:SS] (T for the space, Z for UTC)\n"
+          "  -t STAMP  use [[CC]YY]MMDDhhmm[.ss] instead of now\n  -r FILE  use FILE's times instead of now\n")
 
     # ================================================================= rmdir
     s.run("mkdir tests/rd1 tests/rd3 tests/rd4")

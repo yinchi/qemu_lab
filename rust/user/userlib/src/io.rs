@@ -9,7 +9,7 @@
 
 use abi::syscall::{
     SYS_CHMOD, SYS_CLOSE, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT, SYS_NEWFSTATAT,
-    SYS_MOUNT, SYS_OPEN, SYS_READ, SYS_RENAMEAT, SYS_UMOUNT2, SYS_UNLINKAT, SYS_WRITE,
+    SYS_MOUNT, SYS_OPEN, SYS_READ, SYS_RENAMEAT, SYS_UMOUNT2, SYS_UNLINKAT, SYS_UTIMENSAT, SYS_WRITE,
 };
 
 // `O_*` flags, directory-record layout and attribute bits: the definitions live in the shared `abi`
@@ -210,6 +210,33 @@ pub fn mount(source: &str, target: &str) -> isize {
 /// Unmounts the volume mounted at `target`. Returns `0`, or a negative error -- see `abi::syscall::SYS_UMOUNT2`.
 pub fn umount(target: &str) -> isize {
     syscall!(SYS_UMOUNT2, target.as_ptr() as usize, target.len())
+}
+
+/// What `utimens` does with one of the two timestamps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeSet {
+    /// The current time.
+    Now,
+    /// Leave it as it is.
+    Omit,
+    /// This many seconds since 1970-01-01 00:00:00 UTC (FAT drops odd seconds, and the access time keeps only its date).
+    At(i64),
+}
+
+/// Sets the access and modify times of the file or directory at `path` -- see `abi::syscall::SYS_UTIMENSAT` for what
+/// FAT can hold. Returns `0`, or a negative error.
+pub fn utimens(path: &str, atime: TimeSet, mtime: TimeSet) -> isize {
+    let mut times = [0u8; abi::time::UTIMES_SIZE];
+    for (i, set) in [atime, mtime].into_iter().enumerate() {
+        let (sec, nsec) = match set {
+            TimeSet::Now => (0, abi::time::UTIME_NOW),
+            TimeSet::Omit => (0, abi::time::UTIME_OMIT),
+            TimeSet::At(sec) => (sec, 0),
+        };
+        times[i * 16..i * 16 + 8].copy_from_slice(&sec.to_le_bytes());
+        times[i * 16 + 8..i * 16 + 16].copy_from_slice(&nsec.to_le_bytes());
+    }
+    syscall!(SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), times.as_ptr() as usize)
 }
 
 /// A path's size, attributes, and timestamps, as `stat` reports them -- the raw fields a FAT

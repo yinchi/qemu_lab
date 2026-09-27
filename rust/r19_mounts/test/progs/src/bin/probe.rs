@@ -32,6 +32,9 @@
 //!                      (0 is the keyboard, 3 is not open, 1 is the console, whose CLEAR would clear the screen)
 //!   probe getcwd N     the `getcwd` syscall with an N-byte buffer (N <= 4096): prints its return value and,
 //!                      if it succeeded, the path
+//!   probe utimens PATH ASEC ANSEC MSEC MNSEC  the `utimensat` syscall with those two `timespec`s (`nsec` may be `now` or `omit`
+//!                      for `UTIME_NOW`/`UTIME_OMIT`); `probe utimens-null PATH` passes a null array and `probe utimens-bad PATH`
+//!                      a bad pointer: prints the return value
 //!   probe rename OLD NEW  the `rename` syscall itself, with no `mv` rules on top: prints its return value (0 or the negative
 //!                      errno) -- for what it replaces and what it refuses
 //!   probe sp            prints the stack pointer `main` runs with
@@ -200,6 +203,46 @@ fn run(mut args: userlib::Args, argc: usize, argv: *const *const u8, envp: *cons
                 0
             }
             _ => usage_exit("probe getcwd N (N <= 4096)"),
+        },
+        Some("utimens") => {
+            let mut next = || args.next();
+            match (next(), next(), next(), next(), next()) {
+                (Some(path), Some(asec), Some(ansec), Some(msec), Some(mnsec)) => {
+                    let sec = |text: &str| text.parse::<i64>().unwrap_or(0);
+                    let nsec = |text: &str| match text {
+                        "now" => abi::time::UTIME_NOW,
+                        "omit" => abi::time::UTIME_OMIT,
+                        other => other.parse::<i64>().unwrap_or(0),
+                    };
+                    let mut times = [0u8; abi::time::UTIMES_SIZE];
+                    for (i, (s, n)) in [(sec(asec), nsec(ansec)), (sec(msec), nsec(mnsec))].into_iter().enumerate() {
+                        times[i * 16..i * 16 + 8].copy_from_slice(&s.to_le_bytes());
+                        times[i * 16 + 8..i * 16 + 16].copy_from_slice(&n.to_le_bytes());
+                    }
+                    let r = raw(abi::syscall::SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), times.as_ptr() as usize, 0);
+                    let _ = writeln!(out, "utimens: {r}");
+                    0
+                }
+                _ => usage_exit("probe utimens PATH ASEC ANSEC MSEC MNSEC"),
+            }
+        }
+        Some("utimens-null") => match args.next() {
+            Some(path) => {
+                let r = raw(abi::syscall::SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), 0, 0);
+                let _ = writeln!(out, "utimens: {r}");
+                0
+            }
+            None => usage_exit("probe utimens-null PATH"),
+        },
+        Some("utimens-bad") => match args.next() {
+            Some(path) => {
+                // The last bytes of the address space, and one inside the kernel's window: neither is readable user memory.
+                let r = raw(abi::syscall::SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), usize::MAX - 8, 0);
+                let low = raw(abi::syscall::SYS_UTIMENSAT, path.as_ptr() as usize, path.len(), 16, 0);
+                let _ = writeln!(out, "utimens: {r} {low}");
+                0
+            }
+            None => usage_exit("probe utimens-bad PATH"),
         },
         Some("rename") => match (args.next(), args.next()) {
             (Some(old), Some(new)) => {

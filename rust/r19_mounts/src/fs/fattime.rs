@@ -51,9 +51,62 @@ pub fn fields(unix: i64) -> Fields {
     }
 }
 
+/// What `utimensat` is asking for one timestamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeChoice {
+    /// The current time (`UTIME_NOW`).
+    Now,
+    /// Leave it (`UTIME_OMIT`).
+    Omit,
+    /// This many seconds since 1970 (UTC).
+    At(i64),
+}
+
+/// Reads one `timespec` of `utimensat`'s array: `UTIME_NOW`/`UTIME_OMIT` in `tv_nsec` are the two special requests,
+/// and otherwise `tv_nsec` must be a real fraction of a second (it is then dropped: FAT has no finer time than 2
+/// seconds). `None` for anything else.
+pub fn choose(sec: i64, nsec: i64) -> Option<TimeChoice> {
+    match nsec {
+        abi::time::UTIME_NOW => Some(TimeChoice::Now),
+        abi::time::UTIME_OMIT => Some(TimeChoice::Omit),
+        0..=999_999_999 => Some(TimeChoice::At(sec)),
+        _ => None,
+    }
+}
+
+/// The fields for `unix` if FAT can hold that time at all (1980-01-01 to 2107-12-31), else `None` -- unlike `fields`,
+/// which clamps, because a program that asks for 1970 should be told no, not given 1980.
+pub fn checked_fields(unix: i64) -> Option<Fields> {
+    let t = DateTime::<Utc>::from_timestamp(unix, 0)?;
+    (1980..=2107).contains(&t.year()).then(|| fields(unix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_two_special_nanosecond_values_and_real_fractions() {
+        assert_eq!(choose(5, abi::time::UTIME_NOW), Some(TimeChoice::Now));
+        assert_eq!(choose(5, abi::time::UTIME_OMIT), Some(TimeChoice::Omit));
+        assert_eq!(choose(1_000_000_000, 0), Some(TimeChoice::At(1_000_000_000)));
+        assert_eq!(choose(7, 999_999_999), Some(TimeChoice::At(7)));
+        assert_eq!(choose(7, 1_000_000_000), None);
+        assert_eq!(choose(7, -1), None);
+        assert_eq!(choose(7, abi::time::UTIME_OMIT - 1), None);
+    }
+
+    #[test]
+    fn only_times_fat_can_hold_are_accepted() {
+        assert_eq!(checked_fields(315_532_800), Some(FAT_EPOCH)); // 1980-01-01
+        assert_eq!(checked_fields(315_532_799), None); // a second before
+        assert_eq!(checked_fields(0), None);
+        assert_eq!(checked_fields(-1), None);
+        assert!(checked_fields(4_354_819_199).is_some()); // 2107-12-31 23:59:59
+        assert_eq!(checked_fields(4_354_819_200), None); // 2108-01-01
+        assert_eq!(checked_fields(i64::MAX), None);
+        assert_eq!(checked_fields(i64::MIN), None);
+    }
 
     fn at(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> Fields {
         Fields { year, month, day, hour, minute, second }

@@ -21,7 +21,7 @@ use crate::platform::uart::uart_ensure_newline;
 // familiarity -- see its module doc), the same ones `userlib` issues them with.
 use abi::errno::ENOSYS;
 use abi::syscall::{
-    SYS_BLKINFO, SYS_BRK, SYS_CHMOD, SYS_MOUNT, SYS_UMOUNT2, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_EXIT, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT,
+    SYS_BLKINFO, SYS_BRK, SYS_CHMOD, SYS_MOUNT, SYS_UMOUNT2, SYS_UTIMENSAT, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_EXIT, SYS_GETCWD, SYS_GETDENTS, SYS_IOCTL, SYS_MKDIRAT,
     SYS_NEWFSTATAT, SYS_OPEN, SYS_READ, SYS_REBOOT, SYS_RENAMEAT, SYS_UNLINKAT, SYS_WRITE,
 };
 
@@ -88,6 +88,7 @@ extern "C" fn sync_el0_handler(regs: *mut TrapFrame) {
                 SYS_RENAMEAT => regs.x[0] = fd::rename(a0, a1, a2, a3) as u64,
                 SYS_NEWFSTATAT => regs.x[0] = fd::stat(a0, a1, a2) as u64,
                 SYS_REBOOT => regs.x[0] = power::reboot(a0) as u64,
+                SYS_UTIMENSAT => regs.x[0] = fd::utimensat(a0, a1, a2) as u64,
                 SYS_MOUNT => regs.x[0] = blk::mount(a0, a1, a2, a3) as u64,
                 SYS_UMOUNT2 => regs.x[0] = blk::umount(a0, a1) as u64,
                 SYS_BLKINFO => regs.x[0] = blk::blkinfo(a0, a1) as u64,

@@ -1,4 +1,4 @@
-"""Last updated: Stage 18, Step 2.
+"""Last updated: Stage 19, Step 4b (`cp --help` gained `-p`).
 
 The flags Stage 18's tier adds to the file-management programs: `mkdir -p -v`, `cp -r -n -v`, `mv -n -v -f`, `rm -v -d`
 and `ls -a -d -R -r -S -t -h` -- with `ls` hiding names that start with `.` unless `-a` is given, and listing a file operand
@@ -94,7 +94,7 @@ def run(ctx):
     status("cp -rn tests/ct tests/cv", "", 0)  # merging into an existing tree, keeping what is there
     status("cp -x tests/cn1 tests/cn6", "cp: invalid option -- 'x'\n" + TRY("cp"), 1)
     check("cp --help", s.run("cp --help"),
-          "cp --help\nusage: cp [-r] [-n] [-v] SRC... DST\n  -r  copy directories recursively\n"
+          "cp --help\nusage: cp [-p] [-r] [-n] [-v] SRC... DST\n  -p  keep the modify time and the executable and read-only bits\n  -r  copy directories recursively\n"
           "  -n  do not overwrite an existing file\n  -v  print what is being copied\n")
 
     # ================================================================= mv -n -v -f

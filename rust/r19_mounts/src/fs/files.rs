@@ -31,6 +31,7 @@ use hadris_fat::sync::write::FileWriter;
 use hadris_fat::sync::{DirectoryEntry, FatDateTime, FatDir, FatVolume, FatVolumeReadExt, FatVolumeWriteExt};
 
 use super::blkio::BlkIo;
+use super::fattime::{TimeChoice, checked_fields};
 use super::{find_entry_checked, mounts, read_file_checked};
 use crate::drivers::virtio::blk::MAX_BLK;
 use abi::errno::{
@@ -516,6 +517,39 @@ pub fn rename(old: &str, new: &str) -> isize {
     match vol(dev).rename(&old_entry.entry, &new_parent, new_leaf) {
         Ok(_) => 0,
         Err(e) => map_fat_err(e),
+    }
+}
+
+/// Sets the modify and access times of the file or directory at `path` (`utimensat`): each is the current time, left
+/// alone, or a Unix time in UTC that FAT can hold (1980-2107, else `EINVAL`). FAT keeps the modify time to 2 seconds and
+/// the access time as a date only, so the access time is the date of what was asked for; the creation time is not touched.
+/// A volume's root has no directory entry to hold times (`EINVAL`).
+pub fn set_times(path: &str, atime: TimeChoice, mtime: TimeChoice) -> isize {
+    use hadris_fat::time::TimeProvider;
+    let stamp = |choice: TimeChoice| -> Result<Option<FatDateTime>, isize> {
+        match choice {
+            TimeChoice::Omit => Ok(None),
+            TimeChoice::Now => Ok(Some(super::rtc_time::RTC_TIME.now())),
+            TimeChoice::At(unix) => {
+                let f = checked_fields(unix).ok_or(EINVAL)?;
+                Ok(Some(FatDateTime::new(f.year, f.month, f.day, f.hour, f.minute, f.second)))
+            }
+        }
+    };
+    let (modified, accessed) = match (stamp(mtime), stamp(atime)) {
+        (Ok(modified), Ok(accessed)) => (modified, accessed),
+        (Err(e), _) | (_, Err(e)) => return e,
+    };
+    if locate(path).1.is_empty() {
+        return EINVAL;
+    }
+    let found = match lookup(path) {
+        Ok(found) => found,
+        Err(e) => return e,
+    };
+    match vol(found.dev).set_times(&found.entry, modified, accessed.map(|t| t.date), None) {
+        Ok(()) => 0,
+        Err(_) => EIO,
     }
 }
 

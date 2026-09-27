@@ -92,5 +92,7 @@ pub mod trset;
 pub mod countspec;
 #[path = "../../../user/progs_r19/src/spell.rs"]
 pub mod spell;
+#[path = "../../../user/progs_r19/src/stamp.rs"]
+pub mod stamp;
 #[path = "../../../user/progs_r19/src/table.rs"]
 pub mod table;

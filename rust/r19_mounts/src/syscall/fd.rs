@@ -13,6 +13,7 @@ use crate::console::utf8::Utf8Decoder;
 use crate::console::{BG, FG};
 use crate::exec::elf;
 use crate::exec::shell_state::{self, Stdio};
+use crate::fs::fattime::{TimeChoice, choose};
 use crate::fs::files::{self, FileRef};
 use crate::keyboard::stdin;
 use crate::platform::base_addresses::{USER_BASE, USER_SIZE};
@@ -22,6 +23,7 @@ use crate::static_mut_ref;
 use abi::errno::{EBADF, EFAULT, EINVAL, EMFILE, ENOTTY, ERANGE};
 use abi::fs::{AT_REMOVEDIR, O_APPEND, O_RDONLY, O_WRONLY, STAT_SIZE};
 use abi::ioctl::CONSOLE_CLEAR;
+use abi::time::UTIMES_SIZE;
 
 /// How many fds a program may have open at once, the three standard ones included: every fd above
 /// them refers to an open file (`files::MAX_OPEN_FILES` of them), so `open` fails with `EMFILE` at
@@ -399,6 +401,35 @@ pub fn rename(old_ptr: usize, old_len: usize, new_ptr: usize, new_len: usize) ->
         Err(e) => return e,
     };
     files::rename(&old, &new)
+}
+
+/// Sets the access and modify times of the user-space path `ptr`/`len` from the two `timespec`s at `times_ptr` (a null
+/// pointer is both `UTIME_NOW`) -- see `files::set_times` and `abi::syscall::SYS_UTIMENSAT`.
+pub fn utimensat(ptr: usize, len: usize, times_ptr: usize) -> isize {
+    let _user = crate::arch::mmu::user_access(); // these touch a user pointer: clear PAN while they do
+    let path = match user_path(ptr, len).and_then(shell_state::absolute) {
+        Ok(path) => path,
+        Err(e) => return e,
+    };
+    let (atime, mtime) = if times_ptr == 0 {
+        (TimeChoice::Now, TimeChoice::Now)
+    } else {
+        if !validate(times_ptr, UTIMES_SIZE, false) {
+            return EFAULT;
+        }
+        // SAFETY: validated above to lie entirely within mapped user memory.
+        let raw = unsafe { core::slice::from_raw_parts(times_ptr as *const u8, UTIMES_SIZE) };
+        let read = |at: usize| {
+            let sec = i64::from_le_bytes(raw[at..at + 8].try_into().unwrap_or([0; 8]));
+            let nsec = i64::from_le_bytes(raw[at + 8..at + 16].try_into().unwrap_or([0; 8]));
+            choose(sec, nsec)
+        };
+        match (read(0), read(16)) {
+            (Some(atime), Some(mtime)) => (atime, mtime),
+            _ => return EINVAL,
+        }
+    };
+    files::set_times(&path, atime, mtime)
 }
 
 /// Writes the size, attributes, and timestamps of the user-space path `ptr`/`len` into the
