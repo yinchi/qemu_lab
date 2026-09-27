@@ -1,10 +1,11 @@
-"""Last updated: Stage 20, Step 6.
+"""Last updated: Stage 20, Step 7.
 
 `edit FILE`: typing and deleting, `^S` save and `^O` save-as, the status bar, `^X` exit (asking first
-if modified), `^G`'s help screen, `^C`'s cursor-position message, and `.editrc`. Since this step the
-text area is only `rows - 2` rows: the last two are reserved for the inverse-video status bar
-(`STATUS_ROW`) and, below it, the help footer / a transient one-frame message / the one-line prompt
-widget (`FOOTER_ROW`), whichever is current.
+if modified), `^G`'s help screen, `^C`'s cursor-position message, `.editrc`, line cut/copy/paste
+(`^K`/`Alt+6`/`^U`), forward search (`^W`, `Alt+W` for find next) and go to line (`^_`/`Alt+G`). Since
+Step 6 the text area is only `rows - 2` rows: the last two are reserved for the inverse-video status
+bar (`STATUS_ROW`) and, below it, the help footer / a transient one-frame message / the one-line
+prompt widget (`FOOTER_ROW`), whichever is current.
 
 `edit` takes over the console entirely (no shell prompt while it runs), so a case types the launch
 command, then sends further keys directly with `s.keys(...)` -- the same pattern the `CONSOLE_READ_KEY`
@@ -490,3 +491,121 @@ def run(ctx):
           [line[:columns] for line in reference])
 
     check("shell alive after Stage 20 Step 6's edit checks", s.run("echo alive"), "echo alive\nalive\n")
+
+    # ================================================================================================
+    # Stage 20, Step 7
+    # ================================================================================================
+
+    # --- `^K` cuts the whole current line into the cut buffer; `^U` pastes it back above the cursor.
+    # The cut buffer is this *program's own* memory, gone the moment `edit` exits (nano's is too), so
+    # a cut and its paste have to happen in the same session -- not across a save-quit-reopen. ---
+    dump = open_editor(s, "tests/edit-cut.txt")  # missing -- new, empty buffer
+    s.type("one")
+    s.keys(["ret"])
+    s.type("two")
+    s.keys(["ret"])
+    s.type("three")
+    s.keys(["home", "up", "up"])  # back to "one" (^K cuts the *current* line, whatever the column)
+    s.keys(["ctrl-k"])
+    dump = s.screendump_settled()
+    check("edit: ^K's cursor lands on the line that took the cut one's place", is_inverse(dump, 0, 0), True)
+    s.keys(["ctrl-u"])  # paste it straight back, same session -- the round trip is the identity
+    dump = s.screendump_settled()
+    check("edit: ^U pastes it back above the cursor -- back to (0,0) on it again", is_inverse(dump, 0, 0), True)
+    s.keys(["ctrl-s"])
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+    check("edit: cut then paste reproduces the original file exactly", s.run("cat tests/edit-cut.txt"),
+          "cat tests/edit-cut.txt\none\ntwo\nthree\n")
+
+    # --- consecutive `^K`s accumulate into one cut buffer, in order; anything else ends the streak ---
+    dump = open_editor(s, "tests/edit-cut.txt")  # "one\ntwo\nthree\n"
+    s.keys(["ctrl-k", "ctrl-k"])  # cuts "one", then "two" (now the current line after "one" left)
+    dump = s.screendump_settled()
+    check("edit: two ^K's leave only 'three'", is_inverse(dump, 0, 0), True)
+    s.keys(["right"])  # any other key first: ends the streak, so this ^K would start a *new* cut
+    s.keys(["home"])
+    s.keys(["ctrl-u"])  # paste the accumulated two-line cut back above "three"
+    dump = s.screendump_settled()
+    check("edit: ^U pastes both cut lines back, in the order they were cut", is_inverse(dump, 0, 0), True)
+    s.keys(["ctrl-s"])
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+    check("edit: the accumulated cut and its paste also reproduce the file exactly",
+          s.run("cat tests/edit-cut.txt"), "cat tests/edit-cut.txt\none\ntwo\nthree\n")
+    s.run("rm tests/edit-cut.txt")
+
+    # --- `Alt+6` copies the line without removing it (and isn't part of any `^K` streak) ---
+    dump = open_editor(s, "tests/edit-copy.txt")
+    s.type("keep me")
+    s.keys(["alt-6"])
+    s.keys(["ret"])
+    s.type("second line")
+    s.keys(["ctrl-u"])  # pastes the *copy* above the cursor -- "keep me" is still there too
+    s.keys(["ctrl-s"])
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+    check("edit: Alt+6 copies without removing, ^U pastes the copy", s.run("cat tests/edit-copy.txt"),
+          "cat tests/edit-copy.txt\nkeep me\nkeep me\nsecond line\n")
+    s.run("rm tests/edit-copy.txt")
+
+    # --- `^W` searches forward, wrapping around; `Alt+W` finds the next match ---
+    dump = open_editor(s, "tests/edit-search.txt")
+    s.type("apple banana")
+    s.keys(["ret"])
+    s.type("banana cherry")
+    s.keys(["home", "up", "home"])  # the very start of the file
+    s.keys(["ctrl-w"])
+    dump = s.screendump_settled()
+    check("edit: ^W opens a prompt (the cursor moves to the footer row)", find_cursor(dump)[0], FOOTER_ROW)
+    type_slowly(s, "banana")
+    s.keys(["ret"])
+    dump = s.screendump_settled(stable_for=0.5)
+    check("edit: ^W finds the first 'banana', landing right after it", is_inverse(dump, 0, 12), True)
+    s.keys(["alt-w"])  # find next: the second 'banana', on the following line
+    dump = s.screendump_settled()
+    check("edit: Alt+W finds the next match", is_inverse(dump, 1, 6), True)
+    s.keys(["alt-w"])  # only two matches -- wraps back around to the first
+    dump = s.screendump_settled()
+    check("edit: Alt+W wraps back around once there's no more", is_inverse(dump, 0, 12), True)
+
+    s.keys(["ctrl-w"])  # the prompt is prefilled with the last term ("banana"); clear it first
+    keys_slowly(s, ["backspace"] * len("banana"))
+    type_slowly(s, "nope")
+    s.keys(["ret"])
+    dump = s.screendump_settled(stable_for=0.5)
+    check("edit: a term that's nowhere in the buffer shows a message",
+          band_of(dump, FOOTER_ROW) != default_footer, True)
+    s.keys(["ctrl-x"])  # typing "apple banana"/"banana cherry" modified the buffer -- asks first
+    s.keys(["n"])  # discarded: this file's saved content was never the point of this check
+    s.wait_prompt()
+
+    # --- `^_` and `Alt+G` both open the same go-to-line prompt; `LINE,COL` positions the column too ---
+    dump = open_editor(s, "tests/edit-lines.txt")  # fifty lines, "L01".."L50"
+    s.keys(["ctrl-shift-minus"])
+    dump = s.screendump_settled()
+    check("edit: ^_ opens the go-to-line prompt", find_cursor(dump)[0], FOOTER_ROW)
+    type_slowly(s, "25")
+    s.keys(["ret"])
+    dump = s.screendump_settled(stable_for=0.5)
+    # `scroll::center_on` (already host-tested) walks back from the target line by about half a
+    # screenful: with a 28-row text area and every one of these lines one screen row tall, line 25
+    # (0-based 24) lands 14 rows from the top -- an exact position, not just "somewhere on screen".
+    check("edit: ^_ 25 jumps there, centering the view on it", find_cursor(dump), (14, 0))
+
+    s.keys(["alt-g"])
+    type_slowly(s, "30,2")
+    s.keys(["ret"])
+    dump = s.screendump_settled(stable_for=0.5)
+    check("edit: Alt+G with LINE,COL positions the column too", find_cursor(dump), (14, 1))
+
+    s.keys(["alt-g"])
+    type_slowly(s, "not-a-number")
+    s.keys(["ret"])
+    dump = s.screendump_settled(stable_for=0.5)
+    check("edit: an unparseable go-to answer shows a message, not a silent no-op",
+          band_of(dump, FOOTER_ROW) != default_footer, True)
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+
+    check("shell alive after Stage 20 Step 7's edit checks", s.run("echo alive"), "echo alive\nalive\n")

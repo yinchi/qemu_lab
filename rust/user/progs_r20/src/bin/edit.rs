@@ -1,7 +1,9 @@
 //! `edit FILE` -- Stage 20's editor. Step 6: typing and deleting, save (`^S`) and save-as (`^O`), the
-//! status bar, the message/prompt row, exiting with unsaved changes, and the `^G` help screen. Rows
-//! 0..R-2 are the text area; row R-2 is the inverse-video status bar; row R-1 is the help footer,
-//! or a transient message, or the one-line prompt widget, whichever is current.
+//! status bar, the message/prompt row, exiting with unsaved changes, and the `^G` help screen. Step
+//! 7: line cut/copy/paste (`^K`/`Alt+6`/`^U`), forward search (`^W`, `Alt+W` for find next) and go
+//! to line (`^_`/`Alt+G`). Rows 0..R-2 are the text area; row R-2 is the inverse-video status bar;
+//! row R-1 is the help footer, or a transient message, or the one-line prompt widget, whichever is
+//! current.
 //!
 //! Reads keys with `CONSOLE_READ_KEY` and draws whole frames with `CONSOLE_DRAW` (see
 //! `abi::ioctl`); nothing here is a raw-mode toggle on `read(0)`; the two are independent readers
@@ -21,17 +23,19 @@ use core::fmt::Write;
 use abi::errno::ENOENT;
 use abi::ioctl::{ATTR_INVERSE, CELL_SIZE, CONSOLE_DRAW_HEADER_SIZE, Cell, ConsoleDraw};
 use abi::keys::{
-    KEY_BACKSLASH, KEY_BACKSPACE, KEY_C, KEY_DELETE, KEY_DOWN, KEY_END, KEY_ENTER, KEY_ESC, KEY_G,
-    KEY_HOME, KEY_LEFT, KEY_O, KEY_PAGEDOWN, KEY_PAGEUP, KEY_RIGHT, KEY_S, KEY_SLASH, KEY_UP,
-    KEY_X,
+    KEY_6, KEY_BACKSLASH, KEY_BACKSPACE, KEY_C, KEY_DELETE, KEY_DOWN, KEY_END, KEY_ENTER, KEY_ESC,
+    KEY_G, KEY_HOME, KEY_K, KEY_LEFT, KEY_MINUS, KEY_O, KEY_PAGEDOWN, KEY_PAGEUP, KEY_RIGHT, KEY_S,
+    KEY_SLASH, KEY_U, KEY_UP, KEY_W, KEY_X,
 };
 use progs::{Fd, fail, write_all};
 use progs_r20::buffer::Buffer;
 use progs_r20::editrc::{self, Config};
 use progs_r20::layout::{self, Row};
 use progs_r20::prompt::Prompt;
+use progs_r20::region;
 use progs_r20::render::render_row;
 use progs_r20::scroll::{self, Top};
+use progs_r20::search;
 use userlib::{
     ExitCode, O_RDONLY, O_WRONLY, close, console_draw, env, open, read, read_key, winsize,
 };
@@ -53,11 +57,20 @@ struct Screen {
     tab_size: usize,
 }
 
+impl Screen {
+    /// Rows left for the text area once the status bar and the footer/message/prompt row are set
+    /// aside -- at least 1, even for a degenerate `rows`.
+    fn text_height(&self) -> usize {
+        self.rows.saturating_sub(RESERVED_ROWS).max(1)
+    }
+}
+
 /// What the bottom row (and, for `Help`, the whole screen) currently shows instead of plain editing.
 enum Overlay {
     /// The help footer, or a transient `message` if one is set.
     None,
-    /// A one-line question -- Save As, so far -- with `Enter` to confirm and `Esc` to cancel.
+    /// A one-line question -- Save As, search, or go to line -- with `Enter` to confirm and `Esc`
+    /// to cancel.
     Prompt(Prompt, PromptPurpose),
     /// "Save modified buffer? (Y/N/Cancel)" -- `^X` on a modified buffer.
     Confirm,
@@ -67,6 +80,10 @@ enum Overlay {
 
 enum PromptPurpose {
     SaveAs,
+    /// `^W`: search forward for the typed term from the cursor, wrapping around once.
+    Search,
+    /// `^_`/`Alt+G`: jump to the typed `LINE` or `LINE,COL` (both 1-based).
+    Goto,
 }
 
 fn run(mut args: userlib::Args) -> ExitCode {
@@ -92,19 +109,22 @@ fn run(mut args: userlib::Args) -> ExitCode {
         return ExitCode(1);
     };
     let (rows, cols) = (usize::from(size.rows), usize::from(size.cols));
-    let text_height = rows.saturating_sub(RESERVED_ROWS).max(1);
     let tab_size = usize::from(config.tab_size);
     let auto_indent = config.auto_indent;
 
     let mut top = Top::default();
     let mut preferred_col: Option<usize> = None;
     let mut overlay = Overlay::None;
+    let mut cut_buffer = String::new();
+    let mut cut_streak = false; // whether the *previous* key was `^K`, so this one extends it
+    let mut last_search: Option<String> = None;
 
     let screen = Screen {
         rows,
         cols,
         tab_size,
     };
+    let text_height = screen.text_height();
 
     loop {
         top = scroll::scroll_to_cursor(&buffer, top, text_height, cols, tab_size);
@@ -122,6 +142,7 @@ fn run(mut args: userlib::Args) -> ExitCode {
         };
         let code = event.effective_code();
         message = None; // a message is shown for exactly one frame, then cleared on the next key
+        let mut is_cut_key = false; // set only by the `^K` arm below, to extend `cut_streak`
 
         match &mut overlay {
             Overlay::Help => {
@@ -164,6 +185,32 @@ fn run(mut args: userlib::Args) -> ExitCode {
                                     }
                                 }
                                 overlay = Overlay::None;
+                            }
+                        }
+                        PromptPurpose::Search => {
+                            overlay = Overlay::None;
+                            if !answer.is_empty() {
+                                message = do_search(&mut buffer, &mut top, screen, &answer);
+                                last_search = Some(answer);
+                            }
+                        }
+                        PromptPurpose::Goto => {
+                            overlay = Overlay::None;
+                            match search::parse_goto(&answer, &buffer) {
+                                Some((line, byte)) => {
+                                    buffer.set_cursor(line, byte);
+                                    top = scroll::center_on(
+                                        &buffer,
+                                        line,
+                                        screen.text_height(),
+                                        cols,
+                                        tab_size,
+                                    );
+                                }
+                                None if !answer.is_empty() => {
+                                    message = Some("Not a line number".to_string());
+                                }
+                                None => {}
                             }
                         }
                     }
@@ -295,6 +342,42 @@ fn run(mut args: userlib::Args) -> ExitCode {
                     KEY_C if event.ctrl() && !event.repeat() => {
                         message = Some(position_message(&buffer));
                     }
+                    KEY_K if event.ctrl() && !event.repeat() => {
+                        is_cut_key = true;
+                        let text = region::cut_line(&mut buffer);
+                        cut_buffer = if cut_streak {
+                            format!("{cut_buffer}\n{text}")
+                        } else {
+                            text
+                        };
+                    }
+                    KEY_6 if event.alt() => {
+                        let (line, _) = buffer.cursor();
+                        cut_buffer = buffer.line(line).to_string();
+                    }
+                    KEY_U if event.ctrl() && !event.repeat() => {
+                        region::paste_line(&mut buffer, &cut_buffer);
+                    }
+                    KEY_W if event.ctrl() && !event.repeat() => {
+                        overlay = Overlay::Prompt(
+                            Prompt::new("Search: ", last_search.as_deref().unwrap_or("")),
+                            PromptPurpose::Search,
+                        );
+                    }
+                    KEY_W if event.alt() => match &last_search {
+                        Some(term) => {
+                            message = do_search(&mut buffer, &mut top, screen, term);
+                        }
+                        None => message = Some("No previous search".to_string()),
+                    },
+                    KEY_MINUS if event.ctrl() && event.shift() => {
+                        overlay =
+                            Overlay::Prompt(Prompt::new("Go To Line: ", ""), PromptPurpose::Goto);
+                    }
+                    KEY_G if event.alt() => {
+                        overlay =
+                            Overlay::Prompt(Prompt::new("Go To Line: ", ""), PromptPurpose::Goto);
+                    }
                     KEY_X if event.ctrl() && !event.repeat() => {
                         if buffer.is_modified() {
                             overlay = Overlay::Confirm;
@@ -313,8 +396,33 @@ fn run(mut args: userlib::Args) -> ExitCode {
                 }
             }
         }
+        cut_streak = is_cut_key; // any key but `^K` itself ends a run of accumulating cuts
     }
     ExitCode(0)
+}
+
+/// Searches for `term` from the cursor (`search::find`'s own rule: inclusive of where the cursor
+/// already is, so a fresh search may match at once, but `Alt+W`'s repeat never re-finds the same
+/// occurrence, because a successful search leaves the cursor at the match's *end*). Re-centers the
+/// view on a match, the same as a go-to-line jump -- both are "the cursor could now be anywhere",
+/// unlike ordinary movement, which `scroll_to_cursor` handles incrementally. Returns `"Not found"` as
+/// a message on failure, `None` (nothing to show) on success.
+fn do_search(buffer: &mut Buffer, top: &mut Top, screen: Screen, term: &str) -> Option<String> {
+    let from = buffer.cursor();
+    match search::find(buffer, from, term) {
+        Some((line, byte)) => {
+            buffer.set_cursor(line, byte + term.len());
+            *top = scroll::center_on(
+                buffer,
+                line,
+                screen.text_height(),
+                screen.cols,
+                screen.tab_size,
+            );
+            None
+        }
+        None => Some("Not found".to_string()),
+    }
 }
 
 /// Moves the cursor a screenful of rows up or down, one row at a time (so it still lands correctly
@@ -429,7 +537,7 @@ fn position_message(buffer: &Buffer) -> String {
     )
 }
 
-const HELP_FOOTER: &str = "^G Help  ^O WriteOut  ^S Save  ^X Exit";
+const HELP_FOOTER: &str = "^G Help  ^O WriteOut  ^S Save  ^X Exit  ^K Cut  ^U Paste  ^W Find";
 
 const HELP_TEXT: &[&str] = &[
     "edit -- A simple text editor",
@@ -445,6 +553,12 @@ const HELP_TEXT: &[&str] = &[
     "^C    Show the cursor's line and column",
     "^G    This help screen",
     "Esc   Cancel a prompt",
+    "",
+    "^K    Cut the line (repeat to cut several as one)",
+    "Alt+6 Copy the line",
+    "^U    Paste",
+    "^W    Search forward (Alt+W: find the next match)",
+    "^_ or Alt+G   Go to a line, or line,column",
     "",
     "Press any key to continue",
 ];

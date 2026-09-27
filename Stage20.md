@@ -15,7 +15,7 @@
 | 5 | `edit`: open, view, scroll, quit; `.editrc` loaded (a new `progs_r20` tier) | done |
 | 5b | The console's own "alternate screen": save on a program's first `CONSOLE_DRAW`, restore on exit | done |
 | 6 | Editing, save and save-as, status bar, prompt widget, exit with unsaved changes, `^G` help screen | done |
-| 7 | Line cut, copy and paste; search; go to line | todo |
+| 7 | Line cut, copy and paste; search; go to line | done |
 | 8 | Mark and region cut/copy, inverse-video selection, the line-number gutter, the auto-indent toggle | todo |
 | 9 | Docs, roadmap "As built", regression sweep, the persistence demo | todo |
 
@@ -262,8 +262,27 @@ Typing and deleting, `^S` save and `^O` save-as, the status bar, exiting with un
 
 **Regression** (`just test` in `r20_editor`): docs check, 441 host tests, 36 `abi` tests and 2096 QEMU-suite checks (2047 + 49) passed, no compiler warnings, `rustfmt --check` clean on every touched file. `home.img` untouched throughout.
 
-## Steps 7 to 8
-7: line cut, copy and paste, search, go to line. 8: the mark and the region operations, the gutter, the auto-indent toggle.
+## Step 7 -- line cut/copy/paste, search, go to line
+`^K` cut and `Alt+6` copy a whole line, `^U` paste it; `^W` forward search (`Alt+W` find next); `^_`/`Alt+G` go to `LINE` or `LINE,COL`. None of this needs a mark -- that, and the region-granular versions of cut/copy/paste it enables, is Step 8's job (`region.rs`'s own doc comment already draws this line: linewise and characterwise are kept genuinely distinct operations, not one written in terms of the other).
+
+**Cut, copy, paste -- `region.rs`'s existing `cut_line`/`paste_line`, plus one bit of state in `edit.rs` itself.** `cut_line` removes the current line and returns its text; `paste_line` splices one or more `\n`-joined lines in *above* the cursor's current line. What's new here is only the dispatch: `^K` cuts, replacing the cut buffer -- unless the *previous* key was also `^K`, in which case it appends (`cut_buffer.push('\n')` then the new line's text), reproducing nano's "several consecutive cuts paste back as one block." A local `cut_streak: bool`, set only inside the `^K` arm and otherwise cleared once every key, is the whole mechanism: any other key, including `Alt+6`'s copy or `^U`'s paste itself, ends a run. `Alt+6` copies the current line into the cut buffer without touching the buffer's text at all. The cut buffer lives in `edit.rs`'s own `run()`, gone the moment the program exits -- exactly like nano's, and exactly why a test has to cut and paste inside one session, never across a save-quit-reopen.
+
+**Search and go to line -- a new pure module, `progs_r20::search`** (host-tested, no `Buffer` mutation of its own): `find(buffer, from, term)` and `parse_goto(input, buffer)`.
+- `find` is a case-sensitive forward substring search, inclusive of `from` itself (so a fresh search can match right where the cursor already sits) and wrapping around the buffer once. Two passes, not one loop indexed mod the line count: pass one covers `from` to the end of the buffer, pass two covers the start up to (not including) `from` again -- the wraparound's own stopping point reads directly this way rather than through a computed index. No case-insensitive or backward search, no search-and-replace (this stage's stated scope).
+- `edit.rs`'s `do_search` calls `find` from the cursor, and -- this is the part that makes `Alt+W` actually advance instead of re-finding the same spot -- leaves the cursor at the match's *end*, not its start, so the next search's `from` is already past it. A match re-centers the view (`scroll::center_on`, the same "the cursor could now be anywhere" jump Step 4 built for exactly this and go-to-line); failure is `"Not found"` as a message, nothing more.
+- `parse_goto` parses `LINE` or `LINE,COL` (both 1-based, matching every other position this editor shows), clamping an out-of-range line to the last one and an out-of-range column to that line's own end -- `Buffer::set_cursor`'s own forgiving rule, not a new one. Only genuinely unparseable input (no leading number, or `0`, which names neither a line nor a column) is `None`; the caller shows a message for a *non-empty* `None` answer and stays silent for an empty one, matching Save As's own "empty cancels quietly" convention.
+- `^_` (`KEY_MINUS` with Ctrl **and** Shift) and `Alt+G` open the same `Goto` prompt -- two bindings, one code path, since nano offers both and neither is more "correct."
+
+**The footer and help screen grow, everything else about them is unchanged.** `HELP_FOOTER` gained `^K Cut  ^U Paste  ^W Find` (65 columns total, comfortably inside 80 -- no need for the plan's "or two" footer rows); `HELP_TEXT` gained the five keys' own lines.
+
+**As built.** Exactly the design above. `Screen` gained a `text_height()` method (`rows.saturating_sub(RESERVED_ROWS).max(1)`, previously written out twice -- in `run()` and in `draw()` -- now also needed a third time by `do_search`, the point at which it was worth naming instead of copying again).
+
+**Tests.** 12 new host tests in `search.rs` (a match at or after the start, crossing lines, wrapping around and stopping before the start again, no occurrence anywhere, an empty term, a wide character as one match unit, go to a bare line, a line and column, clamping a too-large line and a too-large column, rejecting `0` and non-numeric input, ignoring surrounding whitespace) -- 453 host tests in all (441 + 12). `cases/edit.py` grew from 70 checks to 87: cut then paste in one session reproduces the original file exactly (both for one line and for two accumulated by consecutive `^K`s, with an intervening key in between to prove the streak, not the paste, is what that key ends); `Alt+6` copies without removing; `^W` finds a term, `Alt+W` finds the next occurrence and then wraps back around, and a term with no match at all shows a message; `^_` and `Alt+G` both reach the same prompt, `LINE,COL` positions the column too (checked against `scroll::center_on`'s own already-tested arithmetic -- an exact cursor position, not just "somewhere on screen"), and unparseable input shows a message rather than silently doing nothing.
+
+**Regression** (`just test` in `r20_editor`, three consecutive full-suite runs): docs check, 453 host tests, 36 `abi` tests and 2113 QEMU-suite checks (2096 + 17) passed every time, no compiler warnings, `rustfmt --check` clean on every touched file. `home.img` untouched throughout.
+
+## Step 8
+The mark and the region operations, the gutter, the auto-indent toggle.
 
 ## Step 9 -- wrap-up
 The docs under `rust/docs/` (`syscalls.md`, `console.md`, `tests.md`, `progs.md`) updated with the steps that changed what they describe, `test/check_docs.py` passing, the "As built" notes, and the demo: launch `edit` on a file on a scratch home disk (a copy of `disk-home-seed/` built into a scratch image), edit and save, power off, rebuild the system image, boot again against the same scratch home disk, confirm the edit.

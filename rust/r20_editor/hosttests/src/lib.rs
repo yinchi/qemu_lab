@@ -112,3 +112,5 @@ pub mod region;
 pub mod render;
 #[path = "../../../user/progs_r20/src/scroll.rs"]
 pub mod scroll;
+#[path = "../../../user/progs_r20/src/search.rs"]
+pub mod search;

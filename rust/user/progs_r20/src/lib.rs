@@ -14,4 +14,5 @@ pub mod prompt;
 pub mod region;
 pub mod render;
 pub mod scroll;
+pub mod search;
 pub mod width;
