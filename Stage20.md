@@ -17,7 +17,7 @@
 | 6 | Editing, save and save-as, status bar, prompt widget, exit with unsaved changes, `^G` help screen | done |
 | 7 | Line cut, copy and paste; search; go to line | done |
 | 8 | Mark and region cut/copy, inverse-video selection, the line-number gutter, the auto-indent toggle | done |
-| 9 | Docs, roadmap "As built", regression sweep, the persistence demo | todo |
+| 9 | Docs, roadmap "As built", regression sweep, the persistence demo | done |
 
 Stage 20b (`column`, `ls` in columns) is planned separately in `ROADMAP.md` and is not a step of this file.
 
@@ -344,10 +344,9 @@ tests now that they're allowed to look different.
 Step 8 landed): `HELP_TEXT` listed every command Steps 6-8 added but had quietly never listed the
 Core table's own first row -- typing, Enter and Tab -- nor Backspace/Delete, an omission that
 predates Step 8 (it was already missing when Step 6 first wrote the help screen) but was only
-caught once asked to check. Fixed by adding the three lines the Core table's own wording already
-specifies (`printable, Enter, Tab | insert a character / split the line / insert \t`; `Backspace
-(^H), Delete (^D) | delete before / under the cursor`) as a new group, right after the title --
-29 lines now, still one short of the 30-row screen.
+caught once asked to check. Tried as three added lines, then deliberately left out: with the
+screen this size, spelling out keys this basic read as clutter rather than help, so `HELP_TEXT`
+stays as Step 6 wrote it -- the gap is a known, accepted one, not an oversight left unconsidered.
 
 **Tests.** 8 new host tests in `render.rs` (a region within one row, none of it on an unrelated line,
 a whole line strictly between the region's ends highlighting completely, the start line beginning at
@@ -366,3 +365,11 @@ tests, 36 `abi` tests and 2127 QEMU-suite checks (2113 + 14) passed every time, 
 
 ## Step 9 -- wrap-up
 The docs under `rust/docs/` (`syscalls.md`, `console.md`, `tests.md`, `progs.md`) updated with the steps that changed what they describe, `test/check_docs.py` passing, the "As built" notes, and the demo: launch `edit` on a file on a scratch home disk (a copy of `disk-home-seed/` built into a scratch image), edit and save, power off, rebuild the system image, boot again against the same scratch home disk, confirm the edit.
+
+**As built.** `syscalls.md` and `console.md` needed no changes: both already describe the three `ioctl`s and the keyboard-layer facts (`effective_code`, the repeat bit, NumLock) at the kernel level, which Steps 5-8 never touched -- everything since Step 4 lives entirely in `edit`'s own userspace dispatch, not the kernel. `progs.md`'s `edit` row already tracked each step as it landed (Steps 5-8's own commits); nothing more to add here. `tests.md`'s per-module table, though, had never gained an `edit` row at all -- fixed with one covering Steps 5-8's whole scope, plus a new `edit_persist` row (below). `test/README.md` had a stale `Stage12.md` cross-reference (already present before Stage 20 -- `r19_mounts`'s own copy has the identical line, so it predates this stage and was left alone there) and was missing `draw-hold` (Step 5b) from `probe`'s own subcommand list; both fixed in `r20_editor`'s copy, the one under active work.
+
+**The persistence demo is automated, not just performed once by hand:** a new QEMU test group, `edit_persist.py`, follows `persist.py`'s own established pattern exactly (`boot_again`: a fresh copy of the *freshly rebuilt* system image, the *same* scratch home disk, never the repository's real `home.img`) -- `edit` writes a file under `/root` and saves in the first boot; only `cat`, never `edit` again, reads it back in the second, so nothing about the result could be explained by one running kernel's own memory rather than the file genuinely having reached the disk. This is a real, if narrow, addition to what the suite already covered: every other `edit` test runs entirely within one boot, so none of them had actually exercised the save path across a reboot before.
+
+**Regression** (`just test` in `r20_editor`): docs check, 461 host tests, 36 `abi` tests and 2136 QEMU-suite checks (2127 + 9: `edit_persist`'s own 8 plus the harness's standard per-group `fsck.fat` check) passed, no compiler warnings, `rustfmt --check` clean. `home.img` untouched throughout -- confirmed the same way every step has: its modification time unchanged before and after the whole run.
+
+**Left as a deliberate, recorded gap, not an oversight:** `^G`'s help screen was checked for completeness against the Core key table and found to be missing typing, Enter, Tab and Backspace/Delete; adding them was tried and then taken back out, since on this screen's size they read as clutter rather than help (see Step 8's own note on this).

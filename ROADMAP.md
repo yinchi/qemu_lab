@@ -1280,6 +1280,54 @@ real home disk, and the harness fails if a drive path resolves to it.
 just an in-memory illusion -- restart QEMU against the same scratch home disk with a *rebuilt* system image, and confirm the
 edit is still there.
 
+**As built.** `r20_editor` is `r19_mounts` plus a new program tier (`progs_r20`) and the three console `ioctl`s, no other
+kernel change; `Stage20.md` holds the plan, the steps as they were committed and a per-step "As built" note. Everything
+past the three `ioctl`s and the two keyboard-layer fixes lives entirely in `edit`'s own userspace dispatch -- the kernel
+gained nothing further as the editor's own feature set grew.
+- **The three `ioctl`s and the keyboard layer (Steps 1-3, 1a-1b).** `TIOCGWINSZ` on all three standard fds; `CONSOLE_READ_KEY`,
+  a second way to drain the one token queue (`read(0)`'s line discipline is the other); `CONSOLE_DRAW`, a whole-frame draw of
+  `Cell`s (`ATTR_INVERSE`, `ATTR_DIM`) with the cursor placed, validated whole before anything is drawn. NumLock now does
+  something (on at boot, the keypad types and, for command matching, becomes its main-block twin); a held key's own repeat is
+  passed through with a `repeat` bit, coalesced so a slow redraw cannot build a backlog. `effective_code`, the one function
+  that resolves the keypad, lives in a new shared `abi::keys` alongside the `KEY_*` constants and `KeyEvent`; the shell's own
+  line editor gained Ctrl+B/F/P/N/H/D/W and word movement in the same pass, since it is readline's key set too.
+- **The buffer, layout and scroll math, pure and host-tested (Step 4).** A `Vec<String>` buffer with a cursor and a modified
+  flag; soft-wrap (a line breaks at the last cell that fits, never at blanks, a tab to the next stop, a wide glyph never
+  straddling a row edge); the view scrolling by whole logical lines except inside one taller than the screen; the mark/cut
+  buffer and `.editrc` parser, ready before `edit` itself existed to use them.
+- **`edit` -- open, view, save, exit (Step 5), the console's own alternate screen (Step 5b).** A full-frame redraw per key
+  through `CONSOLE_DRAW`; `.editrc`'s `TABSIZE` acted on, `LINENOS`/`AUTOINDENT` parsed ahead of the steps that use them.
+  Quitting a full-screen program restores exactly what was on screen before it started -- pixels, the console's cursor and
+  wide-glyph bookkeeping saved on the program's first `CONSOLE_DRAW`, restored on every exit path -- entirely inside the
+  kernel, no program-side change; `probe` needed a `draw-hold` subcommand once its own drawn frame became subject to the
+  same restore.
+- **Editing, save/save-as, the status bar, `^G` help, `.editrc` onto the message line (Step 6); cut/copy/paste, search, go to
+  line (Step 7); the mark, the gutter, auto-indent's own toggle (Step 8).** One `Overlay` enum (`None`, `Prompt`, `Confirm`,
+  `Help`) drives the whole dispatch; a mark-aware `^K`/`Alt+6`/`^U` reuse the Step 4 region functions unchanged, exactly as
+  planned (linewise and characterwise stay genuinely distinct operations); the line-number gutter's width is recomputed every
+  frame from the current line count, never cached, so it grows a digit and narrows the text area on the very next frame.
+- **Pure, host-tested:** `buffer`, `layout`, `scroll`, `region`, `render`, `editrc`, `width`, `prompt`, `search` -- nine
+  modules in the new `progs_r20` tier, 461 tests in the shared `hosttests` crate (pure kernel modules are unchanged since
+  Stage 19) plus 36 in `abi`.
+- **Tests:** `just test` is **2136 checks** (was 1955). New groups for every step (`console`'s own additions for the three
+  `ioctl`s, `keypad`, `edit`, `edit_persist`); `edit_persist` follows `persist`'s own boot-twice-on-a-rebuilt-image pattern,
+  proving a save survives independent of the kernel that wrote it, not just within one running session. Screen-only state
+  (a prompt, a message, the selected region) is checked structurally -- an entirely inverse status row, the one cursor cell,
+  whether a row's pixels changed between two frames -- rather than by decoding arbitrary text from pixels; what a save
+  actually wrote is checked with `cat`. Typing into `edit` itself turned out to be more exposed to the already-known
+  input-timing flake than typing at the shell, since `edit` redraws the whole screen on every key where the line editor only
+  touches what changed; mitigated with a settle-per-key helper for anything longer than a few characters, not fixed (the real
+  fix is still Stage 26's scheduler).
+- **A bug caught by a QEMU test, not by reading the code:** the status bar's own padding cells were drawn plain, not
+  inverse, because a shared row-building helper's padding loop had quietly dropped the `attr` it was given. **A UX
+  correction, made after testing the plain design:** the cursor's own cell, always drawn `ATTR_INVERSE`, looked identical to
+  the region it was sitting one cell past when a mark was active; it is now drawn dim as well whenever a mark is set, so it
+  reads as the caret, not one more selected character.
+- **Left for later, by decision:** undo and redo, search-and-replace, backward or case-insensitive search, wrapping at
+  blanks, inserting a file, syntax highlighting, spell check, justify, multiple buffers, the mouse -- and, on the help
+  screen itself, spelling out typing/Enter/Tab/Backspace/Delete, tried and taken back out as clutter rather than help at
+  this screen's size. `column` and `ls` in columns, which only need what this stage leaves behind, are Stage 20b.
+
 ---
 
 ## Stage 20b: `column` and `ls` in columns
