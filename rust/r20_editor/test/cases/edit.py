@@ -1,11 +1,13 @@
-"""Last updated: Stage 20, Step 7.
+"""Last updated: Stage 20, Step 8.
 
 `edit FILE`: typing and deleting, `^S` save and `^O` save-as, the status bar, `^X` exit (asking first
 if modified), `^G`'s help screen, `^C`'s cursor-position message, `.editrc`, line cut/copy/paste
-(`^K`/`Alt+6`/`^U`), forward search (`^W`, `Alt+W` for find next) and go to line (`^_`/`Alt+G`). Since
-Step 6 the text area is only `rows - 2` rows: the last two are reserved for the inverse-video status
-bar (`STATUS_ROW`) and, below it, the help footer / a transient one-frame message / the one-line
-prompt widget (`FOOTER_ROW`), whichever is current.
+(`^K`/`Alt+6`/`^U`), forward search (`^W`, `Alt+W` for find next), go to line (`^_`/`Alt+G`), the mark
+(`Alt+A`; with one set, `^K`/`Alt+6`/`^U` act on the region instead of the whole line), the
+line-number gutter (`Alt+N`) and the auto-indent toggle (`Alt+I`). Since Step 6 the text area is only
+`rows - 2` rows: the last two are reserved for the inverse-video status bar (`STATUS_ROW`) and, below
+it, the help footer / a transient one-frame message / the one-line prompt widget (`FOOTER_ROW`),
+whichever is current.
 
 `edit` takes over the console entirely (no shell prompt while it runs), so a case types the launch
 command, then sends further keys directly with `s.keys(...)` -- the same pattern the `CONSOLE_READ_KEY`
@@ -38,6 +40,7 @@ from harness import CELL_H, CELL_W, KEY_NAMES, text_bands
 
 FG = (0x55, 0xFF, 0x55)
 BG = (0x00, 0x00, 0x00)
+DIM_FG = (0x2A, 0x7F, 0x2A)
 
 ROWS, COLS = 30, 80
 STATUS_ROW = ROWS - 2  # 28: the inverse-video status bar
@@ -51,15 +54,27 @@ def is_inverse(dump, row, col):
     return cell.count(FG) > cell.count(BG)
 
 
+def is_cursor(dump, row, col):
+    """Whether (row, col) is drawn as *a* cursor: plain inverse (`ATTR_INVERSE`), or, while a mark
+    is active, inverse *and* dim (`ATTR_INVERSE | ATTR_DIM` -- `syscall/fd.rs`'s own attribute
+    table draws that combination as black on `DIM_FG`, not black on `FG`). The editor uses the dim
+    variant so the cursor still looks distinct from the plain-inverse selected region it can be
+    sitting right next to -- see Step 8's `Stage20.md` note on why the plain cursor color there
+    would otherwise read as "one more selected character."."""
+    _width, _height, pixels = dump
+    cell = [pixels[row * CELL_H + dy][col * CELL_W + dx] for dy in range(CELL_H) for dx in range(CELL_W)]
+    return cell.count(FG) > cell.count(BG) or cell.count(DIM_FG) > cell.count(BG)
+
+
 def find_cursor(dump, rows=ROWS, cols=COLS):
-    """The (row, col) of the one inverse *cursor* cell, or None if there isn't one. Skips
+    """The (row, col) of the one cursor cell (`is_cursor`), or None if there isn't one. Skips
     `STATUS_ROW`: it is entirely inverse by design (see `status_bar_showing`) and the cursor itself
     never lands there, so including it would make every call here find its column 0 instead."""
     for row in range(rows):
         if row == STATUS_ROW:
             continue
         for col in range(cols):
-            if is_inverse(dump, row, col):
+            if is_cursor(dump, row, col):
                 return (row, col)
     return None
 
@@ -609,3 +624,93 @@ def run(ctx):
     s.wait_prompt()
 
     check("shell alive after Stage 20 Step 7's edit checks", s.run("echo alive"), "echo alive\nalive\n")
+
+    # ================================================================================================
+    # Stage 20, Step 8
+    # ================================================================================================
+
+    # --- `Alt+A` sets/clears the mark; the region between it and the cursor is drawn inverse ---
+    dump = open_editor(s, "tests/edit-mark.txt")
+    s.type("hello world")
+    s.keys(["home"])
+    s.keys(["alt-a"])
+    dump = s.screendump_settled()
+    check("edit: Alt+A sets the mark (a message, not the usual footer)",
+          band_of(dump, FOOTER_ROW) != default_footer, True)
+    s.keys(["right", "right", "right", "right", "right"])  # mark (0,0), cursor now (0,5): "hello"
+    dump = s.screendump_settled()
+    check("edit: the region between mark and cursor is drawn inverse",
+          all(is_inverse(dump, 0, col) for col in range(5)), True)
+    # The cursor sits one past the actual region (`[mark, cursor)`, never including the cursor's own
+    # position) but is drawn distinctly (dim as well as inverse -- `is_cursor`) rather than plain
+    # inverse, so it doesn't look like one more selected character.
+    check("edit: the cursor cell itself is drawn distinctly, not as a plain selected cell",
+          (is_cursor(dump, 0, 5), is_inverse(dump, 0, 5)), (True, False))
+    check("edit: the cell after that is plain -- outside the region", is_cursor(dump, 0, 6), False)
+    s.keys(["alt-a"])  # clear the mark: the highlight goes, the cursor doesn't move
+    dump = s.screendump_settled()
+    check("edit: Alt+A again clears the mark -- no highlight left before the cursor",
+          is_inverse(dump, 0, 0), False)
+    check("edit: ...the cursor is still where it was", is_inverse(dump, 0, 5), True)
+    s.keys(["ctrl-x"])
+    s.keys(["n"])
+    s.wait_prompt()
+
+    # --- `^K` with a mark set cuts the *region* (character-granular), not the whole line ---
+    dump = open_editor(s, "tests/edit-region.txt")
+    s.type("hello world")
+    s.keys(["home", "alt-a"])
+    s.keys(["right", "right", "right", "right", "right", "right"])  # mark (0,0), cursor (0,6): "hello "
+    s.keys(["ctrl-k"])
+    dump = s.screendump_settled()
+    check("edit: ^K with a mark cuts the region -- cursor lands at its start", is_inverse(dump, 0, 0), True)
+    s.keys(["ctrl-u"])  # splice it right back in at the cursor -- character-granular, not a new line
+    s.keys(["ctrl-s"])
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+    check("edit: region cut then paste reproduces the original line exactly",
+          s.run("cat tests/edit-region.txt"), "cat tests/edit-region.txt\nhello world\n")
+
+    # --- `Alt+6` with a mark copies the region without removing it ---
+    dump = open_editor(s, "tests/edit-region.txt")  # "hello world\n"
+    s.keys(["home", "alt-a"])
+    s.keys(["right", "right", "right", "right", "right"])  # mark (0,0), cursor (0,5): "hello"
+    s.keys(["alt-6"])
+    s.keys(["end"])
+    s.keys(["ctrl-u"])  # paste the copy at the end of the line
+    s.keys(["ctrl-s"])
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+    check("edit: Alt+6 with a mark copies the region, leaving the original untouched",
+          s.run("cat tests/edit-region.txt"), "cat tests/edit-region.txt\nhello worldhello\n")
+    s.run("rm tests/edit-region.txt")
+
+    # --- `Alt+N` toggles the line-number gutter; the cursor shifts right by its own width ---
+    dump = open_editor(s, "tests/hello.txt")  # twelve lines: gutter width = digits(12) + 1 = 3
+    before = find_cursor(dump)
+    s.keys(["alt-n"])
+    dump = s.screendump_settled()
+    check("edit: Alt+N shifts the cursor right by the gutter's width (digits(12)+1 = 3)",
+          find_cursor(dump), (before[0], before[1] + 3))
+    s.keys(["alt-n"])  # toggle back off
+    dump = s.screendump_settled()
+    check("edit: Alt+N again returns the cursor to where it was", find_cursor(dump), before)
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+
+    # --- `Alt+I` toggles auto-indent at runtime, with no `.editrc` needed ---
+    dump = open_editor(s, "tests/edit-indent2.txt")
+    s.keys(["alt-i"])
+    dump = s.screendump_settled()
+    check("edit: Alt+I shows a message (not the usual footer)", band_of(dump, FOOTER_ROW) != default_footer, True)
+    s.type("  x")
+    s.keys(["ret"])
+    s.type("y")
+    s.keys(["ctrl-s"])
+    s.keys(["ctrl-x"])
+    s.wait_prompt()
+    check("edit: with auto-indent toggled on, Enter copies the leading spaces",
+          s.run("cat tests/edit-indent2.txt"), "cat tests/edit-indent2.txt\n  x\n  y\n")
+    s.run("rm tests/edit-indent2.txt")
+
+    check("shell alive after Stage 20 Step 8's edit checks", s.run("echo alive"), "echo alive\nalive\n")

@@ -25,14 +25,16 @@ pub const KEY_TAB: u16 = 15;
 pub const KEY_W: u16 = 17;
 /// Ctrl+E: move to the end of the line (in the shell's line editor).
 pub const KEY_E: u16 = 18;
-/// Ctrl+U: erase from the cursor to the start of the line.
+/// Ctrl+U: erase from the cursor to the start of the line; `edit`'s paste.
 pub const KEY_U: u16 = 22;
+/// Alt+I: `edit`'s auto-indent toggle.
+pub const KEY_I: u16 = 23;
 /// Ctrl+O: `edit`'s "write out" (Save As).
 pub const KEY_O: u16 = 24;
 /// Ctrl+P: the previous history entry, as Up.
 pub const KEY_P: u16 = 25;
 pub const KEY_ENTER: u16 = 28;
-/// Ctrl+A: move to the start of the line.
+/// Ctrl+A: move to the start of the line; Alt+A: `edit`'s mark toggle.
 pub const KEY_A: u16 = 30;
 /// Ctrl+S: `edit`'s save.
 pub const KEY_S: u16 = 31;
@@ -44,7 +46,7 @@ pub const KEY_F: u16 = 33;
 pub const KEY_G: u16 = 34;
 /// Ctrl+H: Backspace.
 pub const KEY_H: u16 = 35;
-/// Ctrl+K: erase from the cursor to the end of the line.
+/// Ctrl+K: erase from the cursor to the end of the line; `edit`'s cut.
 pub const KEY_K: u16 = 37;
 pub const KEY_BACKSLASH: u16 = 43;
 /// Ctrl+X: `edit`'s exit.
@@ -53,7 +55,7 @@ pub const KEY_X: u16 = 45;
 pub const KEY_C: u16 = 46;
 /// Ctrl+B: one character left (Alt+B: one word left).
 pub const KEY_B: u16 = 48;
-/// Ctrl+N: the next history entry, as Down.
+/// Ctrl+N: the next history entry, as Down; Alt+N: `edit`'s line-number gutter toggle.
 pub const KEY_N: u16 = 49;
 pub const KEY_DOT: u16 = 52;
 pub const KEY_SLASH: u16 = 53;
@@ -283,6 +285,8 @@ mod tests {
         assert_eq!(KEY_X, 45);
         // `edit`'s own Ctrl-letter keys.
         assert_eq!((KEY_O, KEY_S, KEY_G, KEY_C), (24, 31, 34, 46));
+        // `edit`'s Alt-letter keys (Alt+A/N/I: mark, gutter, auto-indent).
+        assert_eq!((KEY_A, KEY_N, KEY_I), (30, 49, 23));
     }
 
     #[test]

@@ -16,7 +16,7 @@
 | 5b | The console's own "alternate screen": save on a program's first `CONSOLE_DRAW`, restore on exit | done |
 | 6 | Editing, save and save-as, status bar, prompt widget, exit with unsaved changes, `^G` help screen | done |
 | 7 | Line cut, copy and paste; search; go to line | done |
-| 8 | Mark and region cut/copy, inverse-video selection, the line-number gutter, the auto-indent toggle | todo |
+| 8 | Mark and region cut/copy, inverse-video selection, the line-number gutter, the auto-indent toggle | done |
 | 9 | Docs, roadmap "As built", regression sweep, the persistence demo | todo |
 
 Stage 20b (`column`, `ls` in columns) is planned separately in `ROADMAP.md` and is not a step of this file.
@@ -281,8 +281,88 @@ Typing and deleting, `^S` save and `^O` save-as, the status bar, exiting with un
 
 **Regression** (`just test` in `r20_editor`, three consecutive full-suite runs): docs check, 453 host tests, 36 `abi` tests and 2113 QEMU-suite checks (2096 + 17) passed every time, no compiler warnings, `rustfmt --check` clean on every touched file. `home.img` untouched throughout.
 
-## Step 8
-The mark and the region operations, the gutter, the auto-indent toggle.
+## Step 8 -- the mark, region cut/copy/paste, the gutter, the auto-indent toggle
+`Alt+A` sets or clears a mark at the cursor; with one set, `^K`/`Alt+6`/`^U` act on the *region*
+between mark and cursor (character-granular, drawn `ATTR_INVERSE`) instead of the whole line. `Alt+N`
+toggles a line-number gutter that narrows the text width the layout wraps to; `Alt+I` toggles
+auto-indent at runtime (Step 6 already had the *behavior*, driven by `.editrc`'s `AUTOINDENT` at
+start-up -- this step adds the key that flips it while running).
+
+**Region cut/copy/paste reuses `region.rs`'s existing linewise/characterwise split exactly as its own
+doc comment always said it would** (Step 4: "the two stay genuinely distinct operations, not one
+written in terms of the other"): `region::ordered`, `region::cut_region`, `region::region_text` and
+`region::paste_region`, none of them new. What Step 8 adds is only the dispatch and one more bit of
+state: `cut_is_region: bool` alongside the existing `cut_buffer`, set by whichever of `^K`/`Alt+6`
+last ran, so `^U` knows which of `paste_region`/`paste_line` to call. A mark-based `^K`/`Alt+6` always
+replaces the cut buffer outright (no accumulation -- that is `^K`-with-no-mark's own behavior, from
+Step 7) and clears the mark, since the region it named is now either gone (cut) or already copied.
+**Any other buffer-mutating key clears a stale mark too** (Backspace, Delete, Enter, typing, and `^U`
+itself) -- not because those keys are expected to run with a mark set, but because a mark left
+pointing at positions an edit has since shifted could no longer name the region the user thinks it
+does, and clearing it is simpler and safer than trying to keep it correct through arbitrary edits.
+
+**The gutter -- `gutter_width`/`text_width`, both recomputed every frame, never cached.** The plan's
+own rule ("the line count gaining a digit... simply changes it and the next frame re-lays-out")
+means the gutter's width can't be a fixed value computed once at start-up: `gutter_width(line_numbers,
+line_count)` is `digits(line_count) + 1` when on, `0` when off, and `text_width(screen, buffer)` is
+`screen.cols` minus that -- what every wrapping, scrolling and cursor-position computation now uses in
+`cols`'s place. `Screen` gained a `line_numbers: bool` field (the one field on it that *can* change,
+unlike `rows`/`cols`/`tab_size` -- its own doc comment now says so), toggled directly by `Alt+N`.
+`render_gutter` draws the line number (1-based, right-aligned, one trailing separator column) on the
+row that starts a line (`row.start == 0`) and blanks on a continuation row of a soft-wrapped one, both
+`ATTR_DIM`; the cursor's own screen column gets `+ gutter_width` once, right after `layout`'s own
+(gutter-unaware) column computation, so every downstream use of it is already correct.
+
+**Selection highlighting is a post-process on already-rendered cells, the same way the cursor's own
+cell already was -- not a parameter threaded into `render_row`.** A new pure function,
+`render::region_columns(text, row, line, start, end, tab_size)`, answers "which screen columns of
+*this* row (already known to be `line`'s row `row`) fall inside the region from `start` to `end`" --
+`None` if none of it does, `Some((from, to))` to OR `ATTR_INVERSE` onto `cells[from..to]` otherwise.
+It deliberately does *not* reuse `layout::position_to_cell` for the region's own end column: at
+exactly a row's own `end` byte, `position_to_cell` reports the *next* row's column `0` (its own
+documented rule for where a row boundary belongs), which is correct for a cursor position but wrong
+for a highlight's own right edge drawn on *this* row -- a new local helper, `column_within_row`, sums
+display width the same way but stays within one row's own coordinates for any byte up to and
+including its `end`.
+
+**A UX correction, made after first landing the plain design and testing it:** the cursor's own cell,
+being unconditionally drawn `ATTR_INVERSE` regardless of mode, looked identical to the region's own
+highlighted cells even though the region is `[mark, cursor)` -- the cursor's position is one *past*
+the last actually-selected character, not itself selected. Since the display has only the one
+`ATTR_INVERSE` bit to distinguish anything with (no separate "selection" color), the fix dims the
+cursor too whenever a mark is active (`ATTR_INVERSE | ATTR_DIM`, already `black on DIM_FG` by
+`syscall/fd.rs`'s own attribute table -- a combination the console already drew correctly, just never
+used for this purpose before): the plain-inverse region and the dim-inverse cursor now read as two
+visibly different things, not one uniform block that looks one cell longer than what `^K`/`Alt+6`
+would actually act on.
+
+**As built.** Exactly the design above, including the UX correction -- `cases/edit.py`'s own
+`is_cursor` helper (inverse *or* dim-inverse) exists specifically to keep telling the two apart in
+tests now that they're allowed to look different.
+
+**A second, separate completeness check on `^G`'s own help screen** (asked for directly, after
+Step 8 landed): `HELP_TEXT` listed every command Steps 6-8 added but had quietly never listed the
+Core table's own first row -- typing, Enter and Tab -- nor Backspace/Delete, an omission that
+predates Step 8 (it was already missing when Step 6 first wrote the help screen) but was only
+caught once asked to check. Fixed by adding the three lines the Core table's own wording already
+specifies (`printable, Enter, Tab | insert a character / split the line / insert \t`; `Backspace
+(^H), Delete (^D) | delete before / under the cursor`) as a new group, right after the title --
+29 lines now, still one short of the 30-row screen.
+
+**Tests.** 8 new host tests in `render.rs` (a region within one row, none of it on an unrelated line,
+a whole line strictly between the region's ends highlighting completely, the start line beginning at
+the mark's own column, the end line stopping at the cursor's own column, an empty region highlighting
+nothing, a region touching only the wrapped rows it actually spans, and that `tab_size` is respected)
+-- 461 host tests in all (453 + 8). `cases/edit.py` grew from 87 checks to 101: `Alt+A` sets and clears
+the mark with a message and the expected inverse region, the cursor's own cell reading as distinctly
+dim rather than one more selected character; `^K` and `Alt+6` with a mark act on the region (cut then
+paste reproduces the original exactly; copy leaves the original untouched); `Alt+N` shifts the cursor
+by exactly the gutter's own computed width and back; `Alt+I` shows a message and takes effect at once,
+with no `.editrc` involved.
+
+**Regression** (`just test` in `r20_editor`, three consecutive full-suite runs): docs check, 461 host
+tests, 36 `abi` tests and 2127 QEMU-suite checks (2113 + 14) passed every time, no compiler warnings,
+`rustfmt --check` clean on every touched file. `home.img` untouched throughout.
 
 ## Step 9 -- wrap-up
 The docs under `rust/docs/` (`syscalls.md`, `console.md`, `tests.md`, `progs.md`) updated with the steps that changed what they describe, `test/check_docs.py` passing, the "As built" notes, and the demo: launch `edit` on a file on a scratch home disk (a copy of `disk-home-seed/` built into a scratch image), edit and save, power off, rebuild the system image, boot again against the same scratch home disk, confirm the edit.

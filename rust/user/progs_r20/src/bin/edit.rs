@@ -1,9 +1,11 @@
 //! `edit FILE` -- Stage 20's editor. Step 6: typing and deleting, save (`^S`) and save-as (`^O`), the
 //! status bar, the message/prompt row, exiting with unsaved changes, and the `^G` help screen. Step
 //! 7: line cut/copy/paste (`^K`/`Alt+6`/`^U`), forward search (`^W`, `Alt+W` for find next) and go
-//! to line (`^_`/`Alt+G`). Rows 0..R-2 are the text area; row R-2 is the inverse-video status bar;
-//! row R-1 is the help footer, or a transient message, or the one-line prompt widget, whichever is
-//! current.
+//! to line (`^_`/`Alt+G`). Step 8: `Alt+A` sets or clears a mark, after which `^K`/`Alt+6`/`^U` act
+//! on the *region* between it and the cursor (character-granular, drawn `ATTR_INVERSE`) instead of
+//! the whole line; `Alt+N` toggles a line-number gutter; `Alt+I` toggles auto-indent. Rows 0..R-2 are
+//! the text area; row R-2 is the inverse-video status bar; row R-1 is the help footer, or a
+//! transient message, or the one-line prompt widget, whichever is current.
 //!
 //! Reads keys with `CONSOLE_READ_KEY` and draws whole frames with `CONSOLE_DRAW` (see
 //! `abi::ioctl`); nothing here is a raw-mode toggle on `read(0)`; the two are independent readers
@@ -21,11 +23,11 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 
 use abi::errno::ENOENT;
-use abi::ioctl::{ATTR_INVERSE, CELL_SIZE, CONSOLE_DRAW_HEADER_SIZE, Cell, ConsoleDraw};
+use abi::ioctl::{ATTR_DIM, ATTR_INVERSE, CELL_SIZE, CONSOLE_DRAW_HEADER_SIZE, Cell, ConsoleDraw};
 use abi::keys::{
-    KEY_6, KEY_BACKSLASH, KEY_BACKSPACE, KEY_C, KEY_DELETE, KEY_DOWN, KEY_END, KEY_ENTER, KEY_ESC,
-    KEY_G, KEY_HOME, KEY_K, KEY_LEFT, KEY_MINUS, KEY_O, KEY_PAGEDOWN, KEY_PAGEUP, KEY_RIGHT, KEY_S,
-    KEY_SLASH, KEY_U, KEY_UP, KEY_W, KEY_X,
+    KEY_6, KEY_A, KEY_BACKSLASH, KEY_BACKSPACE, KEY_C, KEY_DELETE, KEY_DOWN, KEY_END, KEY_ENTER,
+    KEY_ESC, KEY_G, KEY_HOME, KEY_I, KEY_K, KEY_LEFT, KEY_MINUS, KEY_N, KEY_O, KEY_PAGEDOWN,
+    KEY_PAGEUP, KEY_RIGHT, KEY_S, KEY_SLASH, KEY_U, KEY_UP, KEY_W, KEY_X,
 };
 use progs::{Fd, fail, write_all};
 use progs_r20::buffer::Buffer;
@@ -33,7 +35,7 @@ use progs_r20::editrc::{self, Config};
 use progs_r20::layout::{self, Row};
 use progs_r20::prompt::Prompt;
 use progs_r20::region;
-use progs_r20::render::render_row;
+use progs_r20::render::{self, render_row};
 use progs_r20::scroll::{self, Top};
 use progs_r20::search;
 use userlib::{
@@ -47,14 +49,16 @@ const USAGE: &str = "usage: edit FILE";
 /// Rows reserved below the text area: the status bar, then the footer/message/prompt row.
 const RESERVED_ROWS: usize = 2;
 
-/// The screen's shape: `TIOCGWINSZ`'s rows and columns, plus the configured tab stop width -- the
-/// three unchanging inputs `draw` needs alongside the buffer and overlay state, bundled together
-/// only so `draw` doesn't take eight separate arguments.
+/// The screen's shape: `TIOCGWINSZ`'s rows and columns, the configured tab stop width, and whether
+/// the line-number gutter is on (`Alt+N` toggles it, so unlike the other three this one *can*
+/// change) -- the inputs `draw` needs alongside the buffer and overlay state, bundled together only
+/// so `draw` doesn't take eight separate arguments.
 #[derive(Clone, Copy)]
 struct Screen {
     rows: usize,
     cols: usize,
     tab_size: usize,
+    line_numbers: bool,
 }
 
 impl Screen {
@@ -63,6 +67,38 @@ impl Screen {
     fn text_height(&self) -> usize {
         self.rows.saturating_sub(RESERVED_ROWS).max(1)
     }
+}
+
+/// Digits in `n`, at least 1 (so `0`, which `line_count` and `line + 1` never actually are, would
+/// still get a sensible answer rather than none).
+fn digits(mut n: usize) -> usize {
+    let mut count = 1;
+    while n >= 10 {
+        n /= 10;
+        count += 1;
+    }
+    count
+}
+
+/// The line-number gutter's width: digits of the highest line number plus one separator column, or
+/// `0` when the gutter is off. A free function, not a `Screen` method, since it also needs
+/// `buffer.line_count()` -- which changes as lines are added or removed, so this is recomputed fresh
+/// each frame rather than cached anywhere, exactly the plan's own rule ("the line count gaining a
+/// digit... simply changes it and the next frame re-lays-out").
+fn gutter_width(line_numbers: bool, line_count: usize) -> usize {
+    if line_numbers {
+        digits(line_count) + 1
+    } else {
+        0
+    }
+}
+
+/// Columns left for line content once the gutter (if any) is set aside -- what every wrapping,
+/// scrolling and cursor-position computation uses in place of the screen's raw `cols`.
+fn text_width(screen: Screen, buffer: &Buffer) -> usize {
+    screen
+        .cols
+        .saturating_sub(gutter_width(screen.line_numbers, buffer.line_count()))
 }
 
 /// What the bottom row (and, for `Help`, the whole screen) currently shows instead of plain editing.
@@ -110,24 +146,28 @@ fn run(mut args: userlib::Args) -> ExitCode {
     };
     let (rows, cols) = (usize::from(size.rows), usize::from(size.cols));
     let tab_size = usize::from(config.tab_size);
-    let auto_indent = config.auto_indent;
+    let mut auto_indent = config.auto_indent;
 
     let mut top = Top::default();
     let mut preferred_col: Option<usize> = None;
     let mut overlay = Overlay::None;
     let mut cut_buffer = String::new();
     let mut cut_streak = false; // whether the *previous* key was `^K`, so this one extends it
+    let mut cut_is_region = false; // whether `cut_buffer` is a region (paste_region) or lines (paste_line)
     let mut last_search: Option<String> = None;
+    let mut mark: Option<(usize, usize)> = None; // `Alt+A`'s mark -- the region is (mark, cursor)
 
-    let screen = Screen {
+    let mut screen = Screen {
         rows,
         cols,
         tab_size,
+        line_numbers: config.line_numbers,
     };
     let text_height = screen.text_height();
 
     loop {
-        top = scroll::scroll_to_cursor(&buffer, top, text_height, cols, tab_size);
+        let width = text_width(screen, &buffer);
+        top = scroll::scroll_to_cursor(&buffer, top, text_height, width, tab_size);
         draw(
             &buffer,
             top,
@@ -135,6 +175,7 @@ fn run(mut args: userlib::Args) -> ExitCode {
             &filename,
             &overlay,
             message.as_deref(),
+            mark,
         );
 
         let Ok(event) = read_key(0) else {
@@ -203,7 +244,7 @@ fn run(mut args: userlib::Args) -> ExitCode {
                                         &buffer,
                                         line,
                                         screen.text_height(),
-                                        cols,
+                                        width,
                                         tab_size,
                                     );
                                 }
@@ -268,7 +309,7 @@ fn run(mut args: userlib::Args) -> ExitCode {
                             &mut buffer,
                             true,
                             &mut preferred_col,
-                            cols,
+                            width,
                             tab_size,
                         );
                     }
@@ -277,7 +318,7 @@ fn run(mut args: userlib::Args) -> ExitCode {
                             &mut buffer,
                             false,
                             &mut preferred_col,
-                            cols,
+                            width,
                             tab_size,
                         );
                     }
@@ -292,7 +333,7 @@ fn run(mut args: userlib::Args) -> ExitCode {
                         &mut preferred_col,
                         true,
                         text_height,
-                        cols,
+                        width,
                         tab_size,
                     ),
                     KEY_PAGEDOWN => page(
@@ -300,7 +341,7 @@ fn run(mut args: userlib::Args) -> ExitCode {
                         &mut preferred_col,
                         false,
                         text_height,
-                        cols,
+                        width,
                         tab_size,
                     ),
                     KEY_BACKSLASH if event.alt() => {
@@ -310,12 +351,15 @@ fn run(mut args: userlib::Args) -> ExitCode {
                         buffer.move_to_last_line();
                     }
                     KEY_BACKSPACE => {
+                        mark = None; // a stale mark could no longer name a valid region
                         buffer.backspace();
                     }
                     KEY_DELETE => {
+                        mark = None;
                         buffer.delete_forward();
                     }
                     KEY_ENTER => {
+                        mark = None;
                         buffer.split_line(auto_indent);
                     }
                     KEY_S if event.ctrl() && !event.repeat() => {
@@ -343,20 +387,70 @@ fn run(mut args: userlib::Args) -> ExitCode {
                         message = Some(position_message(&buffer));
                     }
                     KEY_K if event.ctrl() && !event.repeat() => {
-                        is_cut_key = true;
-                        let text = region::cut_line(&mut buffer);
-                        cut_buffer = if cut_streak {
-                            format!("{cut_buffer}\n{text}")
+                        if let Some(m) = mark {
+                            let (start, end) = region::ordered(m, buffer.cursor());
+                            cut_buffer = region::cut_region(&mut buffer, start, end);
+                            cut_is_region = true;
+                            mark = None; // the region it named is gone
                         } else {
-                            text
-                        };
+                            is_cut_key = true;
+                            let text = region::cut_line(&mut buffer);
+                            cut_buffer = if cut_streak {
+                                format!("{cut_buffer}\n{text}")
+                            } else {
+                                text
+                            };
+                            cut_is_region = false;
+                        }
                     }
                     KEY_6 if event.alt() => {
-                        let (line, _) = buffer.cursor();
-                        cut_buffer = buffer.line(line).to_string();
+                        if let Some(m) = mark {
+                            let (start, end) = region::ordered(m, buffer.cursor());
+                            cut_buffer = region::region_text(&buffer, start, end);
+                            cut_is_region = true;
+                            mark = None; // copied, not cut, but the plan's own selection is now spent
+                        } else {
+                            let (line, _) = buffer.cursor();
+                            cut_buffer = buffer.line(line).to_string();
+                            cut_is_region = false;
+                        }
                     }
                     KEY_U if event.ctrl() && !event.repeat() => {
-                        region::paste_line(&mut buffer, &cut_buffer);
+                        mark = None;
+                        if cut_is_region {
+                            region::paste_region(&mut buffer, &cut_buffer);
+                        } else {
+                            region::paste_line(&mut buffer, &cut_buffer);
+                        }
+                    }
+                    KEY_A if event.alt() => {
+                        mark = if mark.is_some() {
+                            None
+                        } else {
+                            Some(buffer.cursor())
+                        };
+                        message = Some(
+                            if mark.is_some() {
+                                "Mark Set"
+                            } else {
+                                "Mark Unset"
+                            }
+                            .to_string(),
+                        );
+                    }
+                    KEY_N if event.alt() => {
+                        screen.line_numbers = !screen.line_numbers;
+                    }
+                    KEY_I if event.alt() => {
+                        auto_indent = !auto_indent;
+                        message = Some(
+                            if auto_indent {
+                                "Auto indent enabled"
+                            } else {
+                                "Auto indent disabled"
+                            }
+                            .to_string(),
+                        );
                     }
                     KEY_W if event.ctrl() && !event.repeat() => {
                         overlay = Overlay::Prompt(
@@ -389,6 +483,7 @@ fn run(mut args: userlib::Args) -> ExitCode {
                         if let Some(c) = event.char()
                             && (!c.is_control() || c == '\t')
                         {
+                            mark = None;
                             buffer.insert_char(c);
                         }
                     }
@@ -416,7 +511,7 @@ fn do_search(buffer: &mut Buffer, top: &mut Top, screen: Screen, term: &str) -> 
                 buffer,
                 line,
                 screen.text_height(),
-                screen.cols,
+                text_width(screen, buffer),
                 screen.tab_size,
             );
             None
@@ -432,11 +527,11 @@ fn page(
     preferred_col: &mut Option<usize>,
     up: bool,
     rows: usize,
-    cols: usize,
+    width: usize,
     tab_size: usize,
 ) {
     for _ in 0..rows {
-        if !scroll::move_vertical(buffer, up, preferred_col, cols, tab_size) {
+        if !scroll::move_vertical(buffer, up, preferred_col, width, tab_size) {
             break; // already at the very first or last row
         }
     }
@@ -560,6 +655,10 @@ const HELP_TEXT: &[&str] = &[
     "^W    Search forward (Alt+W: find the next match)",
     "^_ or Alt+G   Go to a line, or line,column",
     "",
+    "Alt+A Set or clear the mark -- ^K/Alt+6/^U then act on the region",
+    "Alt+N Toggle the line-number gutter",
+    "Alt+I Toggle auto-indent",
+    "",
     "Press any key to continue",
 ];
 
@@ -610,6 +709,27 @@ fn render_footer(cells: &mut Vec<Cell>, cols: usize, text: &str) {
     push_line(cells, cols, text, 0);
 }
 
+/// The line-number gutter for one text-area row: `line`'s own number (1-based), right-aligned with
+/// one trailing separator column, on the row that starts the line (`row.start == 0`); blank on a
+/// continuation row of a line too long for one screen row. `ATTR_DIM` throughout, even the blank
+/// cells, so a continuation row's gutter still reads as part of the gutter, not stray background.
+/// Pushes exactly `width` cells; does nothing when `width` is `0` (the gutter off).
+fn render_gutter(cells: &mut Vec<Cell>, width: usize, line: usize, row: Row) {
+    if width == 0 {
+        return;
+    }
+    if row.start == 0 {
+        push_line(
+            cells,
+            width,
+            &format!("{:>pad$} ", line + 1, pad = width - 1),
+            ATTR_DIM,
+        );
+    } else {
+        push_line(cells, width, "", ATTR_DIM);
+    }
+}
+
 /// Draws the `^G` help screen: `HELP_TEXT`, one line per row, cursor parked at the top left (there
 /// is nothing here to place it meaningfully on).
 fn draw_help(rows: usize, cols: usize) {
@@ -658,11 +778,13 @@ fn draw(
     filename: &str,
     overlay: &Overlay,
     message: Option<&str>,
+    mark: Option<(usize, usize)>,
 ) {
     let Screen {
         rows,
         cols,
         tab_size,
+        ..
     } = screen;
     if let Overlay::Help = overlay {
         draw_help(rows, cols);
@@ -670,45 +792,72 @@ fn draw(
     }
 
     let text_height = rows.saturating_sub(RESERVED_ROWS).max(1);
+    let width = text_width(screen, buffer);
+    let gutter = cols - width;
     let (cursor_line, cursor_byte) = buffer.cursor();
     let (cursor_screen_row, cursor_col) =
-        layout::position_to_cell(buffer.line(cursor_line), cursor_byte, cols, tab_size);
+        layout::position_to_cell(buffer.line(cursor_line), cursor_byte, width, tab_size);
     let cursor_target: Row =
-        layout::wrap_line(buffer.line(cursor_line), cols, tab_size)[cursor_screen_row];
+        layout::wrap_line(buffer.line(cursor_line), width, tab_size)[cursor_screen_row];
+    let cursor_col = cursor_col + gutter; // the text area itself starts `gutter` columns in
+
+    let region = mark.map(|m| region::ordered(m, buffer.cursor()));
 
     let mut cells = Vec::with_capacity(rows * cols);
     let mut cursor_row = 0;
-    for (screen_row, (line, row)) in scroll::visible_rows(buffer, top, text_height, cols, tab_size)
+    for (screen_row, (line, row)) in scroll::visible_rows(buffer, top, text_height, width, tab_size)
         .into_iter()
         .enumerate()
     {
         if line == cursor_line && row == cursor_target {
             cursor_row = screen_row;
         }
-        render_row(&mut cells, buffer.line(line), row, cols, tab_size);
+        render_gutter(&mut cells, gutter, line, row);
+        let row_start = cells.len();
+        render_row(&mut cells, buffer.line(line), row, width, tab_size);
+        if let Some((start, end)) = region
+            && let Some((from, to)) =
+                render::region_columns(buffer.line(line), row, line, start, end, tab_size)
+        {
+            for cell in &mut cells[row_start + from..row_start + to] {
+                cell.attr |= ATTR_INVERSE;
+            }
+        }
     }
     cells.resize(text_height * cols, Cell::plain(' ')); // past the end of the buffer: blank rows
 
     render_status_bar(&mut cells, cols, filename, buffer);
 
-    let (cursor_row, cursor_col) = match overlay {
+    let (cursor_row, cursor_col, cursor_attr) = match overlay {
         Overlay::Prompt(prompt, _) => {
             let col = render_prompt_row(&mut cells, cols, prompt);
-            (text_height + 1, col)
+            (text_height + 1, col, ATTR_INVERSE)
         }
         Overlay::Confirm => {
             render_footer(&mut cells, cols, "Save modified buffer? (Y/N/Cancel)");
-            (cursor_row, cursor_col)
+            (cursor_row, cursor_col, ATTR_INVERSE)
         }
         Overlay::None => {
             render_footer(&mut cells, cols, message.unwrap_or(HELP_FOOTER));
-            (cursor_row, cursor_col)
+            // With a mark set, the region's own highlight is plain `ATTR_INVERSE`; the cursor cell
+            // sits one *past* the actual selected text (the region is [mark, cursor), never
+            // including the cursor's own position) but would otherwise look identical to the cells
+            // that genuinely are selected, since both use the same single attribute bit. Dimming it
+            // too gives the cursor its own, distinct look (black on `DIM_FG`, `console/mod.rs`'s own
+            // combination for `INVERSE | DIM`) so it reads as "the caret is here," not "one more
+            // selected character."
+            let attr = if mark.is_some() {
+                ATTR_INVERSE | ATTR_DIM
+            } else {
+                ATTR_INVERSE
+            };
+            (cursor_row, cursor_col, attr)
         }
         Overlay::Help => unreachable!("handled above"),
     };
 
     if let Some(cell) = cells.get_mut(cursor_row * cols + cursor_col) {
-        cell.attr |= ATTR_INVERSE;
+        cell.attr |= cursor_attr;
     }
 
     send_frame(&cells, rows, cols, cursor_row as u16, cursor_col as u16);
